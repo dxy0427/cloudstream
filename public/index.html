@@ -1,0 +1,869 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+    <meta http-equiv="X-UA-Compatible" content="ie=edge"/>
+    <title>CloudStream 控制面板</title>
+    <link href="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta20/dist/css/tabler.min.css" rel="stylesheet"/>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"/>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%20100%20100%22%3E%3Ctext%20y%3D%22.9em%22%20font-size%3D%2290%22%3E🚀%3C%2Ftext%3E%3C%2Fsvg%3E">
+    <style> .page-center { min-height: 100vh; } </style>
+</head>
+<body>
+    <div id="app">
+        <div class="page page-center">
+            <div class="container-tight py-4">
+                <div class="empty">
+                    <div class="empty-icon"><div class="spinner-border"></div></div>
+                    <p class="empty-title">正在加载应用...</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@tabler/core@1.0.0-beta20/dist/js/tabler.min.js"></script>
+    <script>
+    const API_BASE = '/api/v1';
+    const templates = {
+        loginPage: `
+            <div class="page page-center">
+                <div class="container container-tight py-4">
+                    <div class="text-center mb-4"><h1>🚀 CloudStream</h1></div>
+                    <div class="card card-md">
+                        <div class="card-body">
+                            <h2 class="h2 text-center mb-4">登录您的控制面板</h2>
+                            <div id="error-alert" class="alert alert-danger d-none" role="alert"></div>
+                            <div class="mb-3">
+                                <label class="form-label">用户名</label>
+                                <input type="text" id="login-username" class="form-control" placeholder="首次启动账号为 admin">
+                            </div>
+                            <div class="mb-2">
+                                <label class="form-label">密码</label>
+                                <input type="password" id="login-password" class="form-control" placeholder="首次启动密码为 admin">
+                            </div>
+                            <div class="form-footer">
+                                <button id="login-btn" class="btn btn-primary w-100">登 录</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `,
+        mainPage: `
+            <div class="page">
+                <header class="navbar navbar-expand-md d-print-none">
+                    <div class="container-xl">
+                        <h1 class="navbar-brand navbar-brand-autodark d-none-navbar-horizontal pe-0 pe-md-3">🚀 CloudStream 控制面板</h1>
+                        <div class="navbar-nav flex-row order-md-last">
+                            <div class="nav-item dropdown">
+                                <a href="#" class="nav-link d-flex lh-1 text-reset p-0" data-bs-toggle="dropdown">
+                                    <span class="avatar avatar-sm"><<i class="fa-solid fa-user"></</i></span>
+                                    <div class="d-none d-xl-block ps-2"><div id="current-username">User</div></div>
+                                </a>
+                                <div class="dropdown-menu dropdown-menu-end dropdown-menu-arrow">
+                                    <a href="#" id="security-settings-btn" class="dropdown-item">账户安全</a>
+                                    <a href="#" id="logout-btn" class="dropdown-item">退出登录</a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </header>
+                <div class="page-wrapper">
+                    <div class="page-body">
+                        <div class="container-xl">
+                            <div class="row g-4">
+                                <!-- 云账户管理 -->
+                                <div class="col-lg-12">
+                                    <div class="card">
+                                        <div class="card-header">
+                                            <h3 class="card-title"><<i class="fa-solid fa-cloud me-2 text-primary"></</i>云账户管理</h3>
+                                            <div class="ms-auto">
+                                                <button id="add-account-btn" class="btn btn-primary"><<i class="fa-solid fa-plus me-2"></</i>添加账户</button>
+                                            </div>
+                                        </div>
+                                        <div id="account-list" class="list-group list-group-flush list-group-hoverable">
+                                            <div class="list-group-item text-center text-secondary py-4">正在加载账户...</div>
+                                        </div>
+                                    </div>
+                                </div>
+                                <!-- 任务配置 -->
+                                <div class="col-lg-12">
+                                    <div class="card">
+                                        <div class="card-header">
+                                            <h3 class="card-title"><<i class="fa-solid fa-tasks me-2 text-success"></</i>任务配置</h3>
+                                            <div class="ms-auto">
+                                                <button id="add-task-btn" class="btn btn-success"><<i class="fa-solid fa-plus me-2"></</i>添加任务</button>
+                                            </div>
+                                        </div>
+                                        <div class="table-responsive">
+                                            <table class="table card-table table-vcenter text-nowrap">
+                                                <thead>
+                                                    <tr>
+                                                        <<th>任务名称</</th>
+                                                        <<th>所属账户</</th>
+                                                        <<th>线程数</</th>
+                                                        <<th>云盘目录ID</</th>
+                                                        <<th>本地路径</</th>
+                                                        <<th>同步频率</</th>
+                                                        <<th class="text-end">操作</</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody id="task-table-body"></tbody>
+                                            </table>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `,
+        securityModal: `
+            <div class="modal modal-blur fade" id="security-modal" tabindex="-1">
+                <div class="modal-dialog modal-sm modal-dialog-centered">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">账户安全</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label class="form-label">新用户名</label>
+                                <input type="text" id="newUsername" class="form-control">
+                                <small class="form-hint">留空则不修改用户名</small>
+                            </div>
+                            <hr class="my-3">
+                            <div class="mb-3">
+                                <label class="form-label">新密码</label>
+                                <input type="password" id="newPassword" class="form-control" placeholder="留空则不修改密码">
+                            </div>
+                            <div class="mb-2">
+                                <label class="form-label">确认新密码</label>
+                                <input type="password" id="confirmPassword" class="form-control">
+                            </div>
+                            <hr class="my-3">
+                            <div class="mb-2">
+                                <label class="form-label">当前密码 <span class="text-danger">*</span></label>
+                                <input type="password" id="currentPassword" class="form-control" placeholder="必须填写以确认更改">
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn me-auto" data-bs-dismiss="modal">取消</button>
+                            <button type="button" id="update-credentials-btn" class="btn btn-primary">确认修改</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `,
+        accountModal: `
+            <div class="modal modal-blur fade" id="account-modal" tabindex="-1">
+                <div class="modal-dialog modal-lg modal-dialog-centered" role="document">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 id="account-modal-title" class="modal-title">添加云账户</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                        </div>
+                        <div class="modal-body">
+                            <input type="hidden" id="account-id">
+                            <div class="row g-3">
+                                <div class="col-md-12">
+                                    <label class="form-label">账户名称 <span class="text-danger">*</span></label>
+                                    <input type="text" id="accountName" class="form-control" placeholder="例如：我的大号">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">123Pan Client ID <span class="text-danger">*</span></label>
+                                    <input type="text" id="clientID" class="form-control">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">123Pan Client Secret <span class="text-danger">*</span></label>
+                                    <input type="password" id="clientSecret" class="form-control">
+                                </div>
+                                <div class="col-md-12">
+                                    <label class="form-label">STRM 文件基础 URL <span class="text-danger">*</span></label>
+                                    <input type="text" id="strmBaseURL" class="form-control" placeholder="http://172.17.0.1:12398 [推荐内网地址]">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" id="test-conn-btn" class="btn btn-outline-info me-auto">测试连接</button>
+                            <button type="button" class="btn" data-bs-dismiss="modal">取消</button>
+                            <button type="button" id="save-account-btn" class="btn btn-primary">保存账户</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `,
+        taskModal: `
+            <div class="modal modal-blur fade" id="task-modal" tabindex="-1">
+                <div class="modal-dialog modal-lg modal-dialog-centered">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">添加任务</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="row g-3">
+                                <div class="col-md-6">
+                                    <label class="form-label">任务名称 <span class="text-danger">*</span></label>
+                                    <input type="text" id="taskName" class="form-control">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">所属云账户 <span class="text-danger">*</span></label>
+                                    <select id="taskAccountID" class="form-select"></select>
+                                </div>
+                                <div class="col-md-12">
+                                    <label class="form-label">云盘目录 ID <span class="text-danger">*</span></label>
+                                    <div class="input-group">
+                                        <input type="text" id="sourceFolderID" class="form-control">
+                                        <button id="browse-folder-btn" class="btn">浏览</button>
+                                    </div>
+                                </div>
+                                <div class="col-md-12">
+                                    <label class="form-label">本地路径(容器内) <span class="text-danger">*</span></label>
+                                    <input type="text" id="localPath" class="form-control">
+                                </div>
+                                <div class="col-md-7">
+                                    <label class="form-label">任务线程数 (QPS): <span id="threads-value" class="badge bg-primary">4</span></label>
+                                    <input type="range" id="taskThreads" class="form-range" min="1" max="8" step="1" value="4">
+                                </div>
+                                <div class="col-md-5 d-flex align-items-end">
+                                    <label class="form-check form-switch">
+                                        <input class="form-check-input" type="checkbox" id="overwriteMode">
+                                        <span class="form-check-label">覆盖模式</span>
+                                    </label>
+                                    <span class="form-hint ms-2" data-bs-toggle="tooltip" title="开启后，每次执行任务都会重新生成所有文件。">?</span>
+                                </div>
+                                <div class="col-md-12">
+                                    <label class="form-label">同步频率(CRON) <span class="text-danger">*</span></label>
+                                    <input type="text" id="taskCron" class="form-control">
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">STRM 文件后缀</label>
+                                    <textarea id="strmExtensions" class="form-control" rows="2"></textarea>
+                                </div>
+                                <div class="col-md-6">
+                                    <label class="form-label">元数据文件后缀</label>
+                                    <textarea id="metaExtensions" class="form-control" rows="2"></textarea>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn me-auto" data-bs-dismiss="modal">取消</button>
+                            <button type="button" id="save-task-btn" class="btn btn-primary">确认保存</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `,
+        fileBrowserModal: `
+            <div class="modal modal-blur fade" id="file-browser-modal" tabindex="-1">
+                <div class="modal-dialog modal-lg modal-dialog-centered">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">浏览云盘目录</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div id="file-browser" class="border rounded p-2" style="min-height: 20rem; max-height: 60vh; overflow-y: auto;"></div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn" data-bs-dismiss="modal">关闭</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `
+    };
+
+    class App {
+        constructor() {
+            this.token = localStorage.getItem('jwt_token');
+            this.modals = {};
+            this.refreshInterval = null;
+            this.accounts = [];
+            this.browserState = { path: [] };
+        }
+
+        run() {
+            clearInterval(this.refreshInterval);
+            document.body.querySelectorAll('.modal').forEach(m => m.remove());
+            this.token ? this.renderMainPage() : this.renderLoginPage();
+        }
+
+        renderLoginPage() {
+            document.getElementById('app').innerHTML = templates.loginPage;
+            this.initLoginPage();
+        }
+
+        renderMainPage() {
+            document.getElementById('app').innerHTML = templates.mainPage;
+            // 插入所有模态框
+            document.body.insertAdjacentHTML('beforeend', templates.securityModal);
+            document.body.insertAdjacentHTML('beforeend', templates.accountModal);
+            document.body.insertAdjacentHTML('beforeend', templates.taskModal);
+            document.body.insertAdjacentHTML('beforeend', templates.fileBrowserModal);
+            this.initMainPage();
+        }
+
+        initLoginPage() {
+            // 登录按钮点击事件
+            document.getElementById('login-btn').addEventListener('click', () => this.handleLogin());
+            // 密码框回车登录
+            document.getElementById('login-password').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') this.handleLogin();
+            });
+            // 聚焦用户名输入框
+            document.getElementById('login-username').focus();
+        }
+
+        initMainPage() {
+            // 初始化模态框
+            this.modals.security = new bootstrap.Modal(document.getElementById('security-modal'));
+            this.modals.account = new bootstrap.Modal(document.getElementById('account-modal'));
+            this.modals.task = new bootstrap.Modal(document.getElementById('task-modal'));
+            this.modals.fileBrowser = new bootstrap.Modal(document.getElementById('file-browser-modal'));
+            // 初始化提示工具
+            new bootstrap.Tooltip(document.body, { selector: '[data-bs-toggle="tooltip"]' });
+
+            // 绑定顶部菜单事件
+            document.getElementById('logout-btn').addEventListener('click', () => this.handleLogout());
+            document.getElementById('security-settings-btn').addEventListener('click', () => this.openSecurityModal());
+            // 账户安全模态框事件
+            document.getElementById('update-credentials-btn').addEventListener('click', () => this.updateCredentials());
+
+            // 云账户管理事件
+            document.getElementById('add-account-btn').addEventListener('click', () => this.openAccountModal());
+            document.getElementById('save-account-btn').addEventListener('click', () => this.saveAccount());
+            document.getElementById('test-conn-btn').addEventListener('click', () => this.testConnection());
+
+            // 任务配置事件
+            document.getElementById('add-task-btn').addEventListener('click', () => this.openTaskModal());
+            document.getElementById('save-task-btn').addEventListener('click', () => this.saveTask());
+            // 线程数滑块同步显示
+            document.getElementById('taskThreads').addEventListener('input', (e) => {
+                document.getElementById('threads-value').textContent = e.target.value;
+            });
+
+            // 加载所有数据
+            this.loadAllData();
+            // 定时刷新任务状态（5秒一次）
+            this.refreshInterval = setInterval(() => this.loadTasks(true), 5000);
+        }
+
+        async loadAllData() {
+            await this.loadUsername();
+            await this.loadAccounts();
+            await this.loadTasks(false);
+        }
+
+        async handleLogin() {
+            const username = document.getElementById('login-username').value;
+            const password = document.getElementById('login-password').value;
+            const errorAlert = document.getElementById('error-alert');
+
+            try {
+                const res = await fetch(`${API_BASE}/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password })
+                });
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.error || '登录失败');
+
+                localStorage.setItem('jwt_token', data.token);
+                this.token = data.token;
+                this.run();
+            } catch (err) {
+                errorAlert.textContent = err.message;
+                errorAlert.classList.remove('d-none');
+            }
+        }
+
+        handleLogout() {
+            localStorage.removeItem('jwt_token');
+            this.token = null;
+            this.run();
+        }
+
+        async fetchAPI(endpoint, options = {}) {
+            const headers = {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${this.token}`,
+                ...options.headers
+            };
+
+            try {
+                const res = await fetch(`${API_BASE}${endpoint}`, { ...options, headers });
+                // 401 直接登出
+                if (res.status === 401) {
+                    this.handleLogout();
+                    throw new Error('认证已过期，请重新登录');
+                }
+
+                const data = await res.json();
+                // 业务错误抛出异常
+                if (!res.ok) throw new Error(data.error || data.message || '请求失败');
+                if (res.ok && data.code !== 0) throw new Error(data.message || '操作失败');
+
+                return data;
+            } catch (err) {
+                if (!options.silent) this.showToast(err.message, true);
+                return null;
+            }
+        }
+
+        async loadUsername() {
+            const res = await this.fetchAPI('/username');
+            if (res) document.getElementById('current-username').textContent = res.data.username;
+        }
+
+        openSecurityModal() {
+            // 清空输入框
+            document.getElementById('currentPassword').value = '';
+            document.getElementById('newPassword').value = '';
+            document.getElementById('confirmPassword').value = '';
+            // 加载当前用户名到新用户名输入框
+            this.loadUsername().then(() => {
+                document.getElementById('newUsername').value = document.getElementById('current-username').textContent;
+            });
+            this.modals.security.show();
+        }
+
+        async updateCredentials() {
+            const payload = {
+                newUsername: document.getElementById('newUsername').value.trim(),
+                currentPassword: document.getElementById('currentPassword').value,
+                newPassword: document.getElementById('newPassword').value,
+                confirmPassword: document.getElementById('confirmPassword').value
+            };
+
+            // 基础校验
+            if (!payload.currentPassword) {
+                this.showToast('必须填写当前密码以确认更改', true);
+                return;
+            }
+            if (payload.newPassword !== payload.confirmPassword) {
+                this.showToast('两次输入的新密码不一致', true);
+                return;
+            }
+
+            const res = await this.fetchAPI('/update_credentials', {
+                method: 'POST',
+                body: JSON.stringify(payload)
+            });
+
+            if (res) {
+                this.showToast('凭证更新成功，请重新登录。');
+                this.modals.security.hide();
+                setTimeout(() => this.handleLogout(), 1500);
+            }
+        }
+
+        async loadAccounts() {
+            const res = await this.fetchAPI('/accounts');
+            const list = document.getElementById('account-list');
+            list.innerHTML = '';
+
+            if (!res || !res.data || res.data.length === 0) {
+                list.innerHTML = '<div class="list-group-item text-center text-secondary py-4">暂无云账户，请添加一个</div>';
+                this.accounts = [];
+                return;
+            }
+
+            // 按ID升序排序
+            this.accounts = res.data.sort((a, b) => a.ID - b.ID);
+
+            this.accounts.forEach(acc => {
+                const item = document.createElement('div');
+                item.className = 'list-group-item';
+                item.innerHTML = `
+                    <div class="row align-items-center">
+                        <div class="col text-truncate">
+                            <strong>${acc.Name}</strong>
+                            <div class="d-block text-secondary text-truncate mt-n1">Client ID: ${acc.ClientID}</div>
+                        </div>
+                        <div class="col-auto">
+                            <button class="btn btn-outline-secondary btn-sm me-2">编辑</button>
+                            <button class="btn btn-outline-danger btn-sm">删除</button>
+                        </div>
+                    </div>
+                `;
+                // 绑定编辑/删除事件
+                item.querySelector('.btn-outline-secondary').addEventListener('click', () => this.openAccountModal(acc));
+                item.querySelector('.btn-outline-danger').addEventListener('click', () => this.deleteAccount(acc.ID));
+                list.appendChild(item);
+            });
+        }
+
+        openAccountModal(account = null) {
+            const isEdit = account !== null;
+            // 设置模态框标题
+            document.getElementById('account-modal-title').textContent = isEdit 
+                ? `编辑云账户: ${account.Name}` 
+                : '添加云账户';
+            // 填充表单数据
+            document.getElementById('account-id').value = isEdit ? account.ID : '';
+            document.getElementById('accountName').value = isEdit ? account.Name : '';
+            document.getElementById('clientID').value = isEdit ? account.ClientID : '';
+            document.getElementById('clientSecret').value = isEdit ? account.ClientSecret : '';
+            document.getElementById('strmBaseURL').value = isEdit ? account.StrmBaseURL : '';
+
+            this.modals.account.show();
+        }
+
+        async saveAccount() {
+            const id = document.getElementById('account-id').value;
+            const payload = {
+                ID: id ? parseInt(id) : 0,
+                Name: document.getElementById('accountName').value.trim(),
+                ClientID: document.getElementById('clientID').value.trim(),
+                ClientSecret: document.getElementById('clientSecret').value.trim(),
+                StrmBaseURL: document.getElementById('strmBaseURL').value.trim()
+            };
+
+            // 基础校验
+            if (!payload.Name || !payload.ClientID || !payload.ClientSecret) {
+                this.showToast('账户名称和凭证不能为空', true);
+                return;
+            }
+
+            const method = id ? 'PUT' : 'POST';
+            const endpoint = id ? `/accounts/${id}` : '/accounts';
+            const res = await this.fetchAPI(endpoint, {
+                method,
+                body: JSON.stringify(payload)
+            });
+
+            if (res) {
+                this.showToast(`云账户保存成功!`);
+                this.modals.account.hide();
+                await this.loadAccounts();
+            }
+        }
+
+        async deleteAccount(id) {
+            if (!confirm('确定要删除此云账户吗？所有关联的任务也将被一并删除！')) return;
+            const res = await this.fetchAPI(`/accounts/${id}`, { method: 'DELETE' });
+            if (res) {
+                this.showToast('云账户删除成功!');
+                await this.loadAccounts();
+                await this.loadTasks();
+            }
+        }
+
+        async testConnection() {
+            const btn = document.getElementById('test-conn-btn');
+            const originalText = btn.innerHTML;
+            // 按钮加载状态
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>测试中...';
+            btn.disabled = true;
+
+            const payload = {
+                ClientID: document.getElementById('clientID').value.trim(),
+                ClientSecret: document.getElementById('clientSecret').value.trim()
+            };
+
+            const res = await this.fetchAPI('/accounts/test', {
+                method: 'POST',
+                body: JSON.stringify(payload)
+            });
+
+            if (res) this.showToast(res.message);
+            // 恢复按钮状态
+            btn.innerHTML = originalText;
+            btn.disabled = false;
+        }
+
+        async loadTasks(isSilent = false) {
+            const res = await this.fetchAPI('/tasks', { silent: isSilent });
+            if (!res) return;
+
+            const tbody = document.getElementById('task-table-body');
+            tbody.innerHTML = '';
+
+            if (!res.data || res.data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="7" class="text-center py-5 text-secondary">暂无任务，请添加一个</td></tr>';
+                return;
+            }
+
+            // 按ID升序排序
+            const tasks = res.data.sort((a, b) => a.ID - b.ID);
+
+            tasks.forEach(task => {
+                const accountName = this.accounts.find(a => a.ID === task.AccountID)?.Name || '未知账户';
+                const isRunning = task.IsRunning;
+                // 操作按钮（运行/停止）
+                const actionBtn = isRunning 
+                    ? `<button class="btn btn-sm btn-outline-warning me-2">停止执行</button>` 
+                    : `<button class="btn btn-sm btn-outline-primary me-2">立即执行</button>`;
+
+                const row = document.createElement('tr');
+                row.innerHTML = `
+                    <td>${task.Name}</td>
+                    <td>${accountName}</td>
+                    <td><span class="badge bg-purple-lt">${task.Threads}</span></td>
+                    <td><span class="badge bg-blue-lt">${task.SourceFolderID}</span></td>
+                    <td>${task.LocalPath}</td>
+                    <td>${task.Cron}</td>
+                    <td class="text-end">${actionBtn}<button class="btn btn-sm btn-danger">删除</button></td>
+                `;
+
+                // 绑定执行/停止事件
+                const btn = row.querySelector('.btn-outline-primary, .btn-outline-warning');
+                btn.addEventListener('click', (e) => {
+                    isRunning ? this.stopTask(task.ID, e.currentTarget) : this.executeTask(task.ID, e.currentTarget);
+                });
+                // 绑定删除事件
+                row.querySelector('.btn-danger').addEventListener('click', () => this.deleteTask(task.ID));
+
+                tbody.appendChild(row);
+            });
+        }
+
+        openTaskModal() {
+            const select = document.getElementById('taskAccountID');
+            select.innerHTML = '';
+
+            // 无账户时提示
+            if (this.accounts.length === 0) {
+                this.showToast('请先在“云账户管理”中添加一个账户', true);
+                return;
+            }
+
+            // 填充账户下拉框
+            this.accounts.forEach(acc => {
+                select.insertAdjacentHTML('beforeend', `<option value="${acc.ID}">${acc.Name}</option>`);
+            });
+
+            // 绑定目录浏览按钮事件
+            document.getElementById('browse-folder-btn').onclick = () => {
+                const accountId = document.getElementById('taskAccountID').value;
+                this.openFileBrowser(accountId);
+            };
+
+            // 初始化表单默认值
+            document.getElementById('taskName').value = '';
+            document.getElementById('sourceFolderID').value = '0';
+            document.getElementById('localPath').value = '/app/strm/';
+            document.getElementById('taskCron').value = '0 */2 * * *';
+            document.getElementById('overwriteMode').checked = false;
+            document.getElementById('taskThreads').value = 4;
+            document.getElementById('threads-value').textContent = '4';
+            document.getElementById('strmExtensions').value = 'mp4,mkv,ts,iso,rmvb,avi,mov,wmv,flv';
+            document.getElementById('metaExtensions').value = 'jpg,jpeg,png,webp,srt,ass,sub,nfo';
+
+            this.modals.task.show();
+        }
+
+        async saveTask() {
+            const payload = {
+                Name: document.getElementById('taskName').value.trim(),
+                AccountID: parseInt(document.getElementById('taskAccountID').value),
+                SourceFolderID: document.getElementById('sourceFolderID').value.trim(),
+                LocalPath: document.getElementById('localPath').value.trim(),
+                Cron: document.getElementById('taskCron').value.trim(),
+                Overwrite: document.getElementById('overwriteMode').checked,
+                StrmExtensions: document.getElementById('strmExtensions').value.trim(),
+                MetaExtensions: document.getElementById('metaExtensions').value.trim(),
+                Threads: parseInt(document.getElementById('taskThreads').value, 10),
+                Enabled: true
+            };
+
+            // 基础校验
+            if (!payload.Name || !payload.SourceFolderID || !payload.AccountID) {
+                this.showToast('任务名、所属账户和目录ID不能为空', true);
+                return;
+            }
+
+            const res = await this.fetchAPI('/tasks', {
+                method: 'POST',
+                body: JSON.stringify(payload)
+            });
+
+            if (res) {
+                this.showToast('任务保存成功!');
+                this.modals.task.hide();
+                await this.loadTasks();
+            }
+        }
+
+        async deleteTask(id) {
+            if (!confirm('确定要删除此任务吗？')) return;
+            const res = await this.fetchAPI(`/tasks/${id}`, { method: 'DELETE' });
+            if (res) {
+                this.showToast('任务删除成功!');
+                await this.loadTasks();
+            }
+        }
+
+        async executeTask(id, btn) {
+            const originalText = btn.innerHTML;
+            // 按钮加载状态
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+            btn.disabled = true;
+
+            const res = await this.fetchAPI(`/tasks/${id}/run`, { method: 'POST' });
+            if (res) {
+                this.showToast(res.message);
+                await this.loadTasks(true);
+            } else {
+                // 失败时恢复按钮
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        }
+
+        async stopTask(id, btn) {
+            const originalText = btn.innerHTML;
+            // 按钮加载状态
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+            btn.disabled = true;
+
+            const res = await this.fetchAPI(`/tasks/${id}/stop`, { method: 'POST' });
+            if (res) {
+                this.showToast(res.message);
+                await this.loadTasks(true);
+            } else {
+                // 失败时恢复按钮
+                btn.innerHTML = originalText;
+                btn.disabled = false;
+            }
+        }
+
+        openFileBrowser(accountId) {
+            // 初始化浏览状态（根目录）
+            this.browserState = {
+                path: [{ id: '0', name: '根目录' }],
+                accountId: accountId
+            };
+            this.modals.fileBrowser.show();
+            this.loadCloudFiles('0');
+        }
+
+        async loadCloudFiles(folderId, folderName) {
+            // 更新面包屑路径
+            if (folderName) {
+                const existingIdx = this.browserState.path.findIndex(p => p.id === folderId);
+                if (existingIdx > -1) {
+                    this.browserState.path.splice(existingIdx + 1);
+                } else {
+                    this.browserState.path.push({ id: folderId, name: folderName });
+                }
+            }
+
+            const browserEl = document.getElementById('file-browser');
+            browserEl.innerHTML = '<div class="text-center text-secondary py-5"><div class="spinner-border"></div></div>';
+
+            const res = await this.fetchAPI(`/cloud/files?accountId=${this.browserState.accountId}&parentFileId=${folderId}`);
+            browserEl.innerHTML = '';
+
+            // 渲染面包屑
+            const pathHtml = this.browserState.path.map(p => `
+                <li class="breadcrumb-item">
+                    <a href="#" data-folder-id="${p.id}" data-folder-name="${p.name}">${p.name}</a>
+                </li>
+            `).join('');
+            browserEl.insertAdjacentHTML('beforeend', `<ol class="breadcrumb breadcrumb-arrows">${pathHtml}</ol>`);
+
+            // 面包屑点击事件（跳转目录）
+            browserEl.querySelector('.breadcrumb').addEventListener('click', (e) => {
+                if (e.target.tagName === 'A') {
+                    e.preventDefault();
+                    this.loadCloudFiles(e.target.dataset.folderId, e.target.dataset.folderName);
+                }
+            });
+
+            if (!res || !res.data || !res.data.fileList) {
+                browserEl.insertAdjacentHTML('beforeend', '<div class="text-center text-danger py-4">加载失败</div>');
+                return;
+            }
+
+            const fileList = res.data.fileList;
+            const listGroup = document.createElement('div');
+            listGroup.className = 'list-group list-group-flush mt-2';
+
+            if (fileList.length === 0) {
+                listGroup.innerHTML = '<div class="text-center text-secondary py-4">此目录为空</div>';
+                browserEl.appendChild(listGroup);
+                return;
+            }
+
+            // 渲染文件列表
+            fileList.forEach(file => {
+                const isFolder = file.type === 1;
+                const icon = isFolder ? 'fa-folder text-yellow' : 'fa-file text-secondary';
+                const actionBtn = isFolder ? `<button class="btn btn-sm btn-outline-primary" data-folder-id="${file.fileId}">选择此目录</button>` : '';
+
+                listGroup.insertAdjacentHTML('beforeend', `
+                    <div class="list-group-item">
+                        <div class="row align-items-center">
+                            <div class="col text-truncate">
+                                <a href="#" class="text-body d-block" data-folder-id="${file.fileId}" data-folder-name="${file.filename}">
+                                    <<i class="fa ${icon} me-2"></</i>${file.filename}
+                                </a>
+                            </div>
+                            <div class="col-auto">${actionBtn}</div>
+                        </div>
+                    </div>
+                `);
+            });
+
+            browserEl.appendChild(listGroup);
+
+            // 绑定文件列表事件（进入目录/选择目录）
+            listGroup.addEventListener('click', (e) => {
+                // 进入子目录
+                if (e.target.tagName === 'A' && e.target.closest('.list-group-item').querySelector('.fa-folder')) {
+                    e.preventDefault();
+                    this.loadCloudFiles(e.target.dataset.folderId, e.target.dataset.folderName);
+                }
+                // 选择目录（赋值并关闭模态框）
+                if (e.target.tagName === 'BUTTON') {
+                    document.getElementById('sourceFolderID').value = e.target.dataset.folderId;
+                    this.modals.fileBrowser.hide();
+                    this.showToast(`已选择目录 ID: ${e.target.dataset.folderId}`);
+                }
+            });
+        }
+
+        showToast(msg, isError = false) {
+            const type = isError ? 'danger' : 'success';
+            const icon = isError ? 'fa-exclamation-circle' : 'fa-check';
+            
+            // 创建toast容器（不存在则创建）
+            let container = document.querySelector('.toast-container');
+            if (!container) {
+                container = document.createElement('div');
+                container.className = 'toast-container position-fixed top-0 end-0 p-3';
+                container.style.zIndex = '1080';
+                document.body.appendChild(container);
+            }
+
+            // 创建toast元素
+            const toastHtml = `
+                <div class="toast show" role="alert" aria-live="assertive" aria-atomic="true" 
+                     data-bs-autohide="true" data-bs-delay="3000">
+                    <div class="toast-header text-bg-${type}">
+                        <<i class="fa-solid ${icon} me-2"></</i>
+                        <strong class="me-auto">通知</strong>
+                    </div>
+                    <div class="toast-body">${msg}</div>
+                </div>
+            `;
+            container.insertAdjacentHTML('beforeend', toastHtml);
+
+            // 初始化并显示toast，隐藏后移除
+            const toastEl = container.lastElementChild;
+            const toast = new bootstrap.Toast(toastEl);
+            toast.show();
+            toastEl.addEventListener('hidden.bs.toast', () => toastEl.remove());
+        }
+    }
+
+    // 页面加载完成后初始化应用
+    document.addEventListener('DOMContentLoaded', () => { new App().run(); });
+    </script>
+</body>
+</html>
