@@ -1,66 +1,59 @@
 name: Build and Push Docker Image
 
-# 触发条件：推main分支、打v*.*.*格式Tag、手动触发（workflow_dispatch）
 on:
   push:
-    branches: [ "main" ]                # 推main分支→自动构建并更新标签
-    tags: [ 'v*.*.*' ]                  # 打规范版本Tag（如v1.0.0）→ 推对应版本标签
-  workflow_dispatch:                    # 支持在GitHub页面手动触发构建
+    branches: [ "main" ]
+    tags: [ 'v*.*.*' ]
+  workflow_dispatch:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest              # 基于Ubuntu运行
+    runs-on: ubuntu-latest
     permissions:
-      contents: read                    # 允许读取仓库代码（必需）
-      packages: write                   # 允许推送镜像到GHCR（必需）
+      contents: read
+      packages: write
 
     steps:
-      # 1. 检出项目代码
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. 初始化Docker Buildx（支持多平台构建）
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 3. 登录GHCR（用仓库所有者身份+内置GITHUB_TOKEN，无需手动配置）
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io                          # 固定GHCR仓库域名
-          username: ${{ github.repository_owner }}    # 自动获取仓库所有者（即dxy0427）
-          password: ${{ secrets.GITHUB_TOKEN }}       # 内置令牌（GitHub自动注入，无需手动生成）
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      # 4. 自动提取镜像元数据（生成标签、标签，避免手动写标签出错）
+      # 修正：标签和标签用正确的YAML多行格式，变量语法符合metadata-action要求
       - name: Extract metadata for Docker
         id: meta
         uses: docker/metadata-action@v5
         with:
-          # 镜像地址：ghcr.io/仓库所有者/cloudstream（自动对应ghcr.io/dxy0427/cloudstream）
           images: ghcr.io/${{ github.repository_owner }}/cloudstream
-          # 自动生成标签规则（参考示例，贴合主流规范）：
-          # - 推main分支→tag为"latest"
-          # - 打Tag（如v1.0.0）→tag为"v1.0.0"和"1.0.0"
-          # - 所有构建→附加commit短SHA作为标签（如sha-abc123）
+          # tags规则：每行一个，用正确的YAML缩进
           tags: |
             type=ref,event=branch
             type=ref,event=tag
             type=sha,format=short
-          # 自动生成镜像标签（包含构建时间、commit信息等，增强可追溯性）
+          # labels规则：每行一个键值对，变量用{{ .变量名 }}，确保YAML解析正确
           labels: |
             org.opencontainers.image.title=CloudStream
             org.opencontainers.image.description=CloudStream 云盘同步工具
             org.opencontainers.image.version={{ .Version }}
             org.opencontainers.image.revision={{ .Commit }}
+            org.opencontainers.image.source=${{ github.event.repository.html_url }}
+            org.opencontainers.image.created={{ .Created }}
 
-      # 5. 核心：构建并推送镜像（用元数据自动生成的标签和标签）
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: .                                  # 构建上下文：项目根目录（Dockerfile在根目录）
-          push: true                                  # 始终推送（仅PR不触发此job，无需判断）
-          tags: ${{ steps.meta.outputs.tags }}        # 使用元数据生成的标签（自动避免格式错误）
-          labels: ${{ steps.meta.outputs.labels }}    # 使用元数据生成的标签
-          platforms: linux/amd64,linux/arm64          # 构建多平台镜像（x86/ARM，适配不同设备）
-          cache-from: type=gha                        # 从GitHub Actions缓存加载（比本地缓存更高效）
-          cache-to: type=gha,mode=max                 # 保存缓存到GitHub Actions（加速后续构建）
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
