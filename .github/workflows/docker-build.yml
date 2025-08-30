@@ -1,36 +1,43 @@
-name: Docker 自动构建与推送
+name: 自动构建并推送到GHCR
 
-# 触发条件：推送到main分支 或 创建Tag时触发
+# 触发条件：推main分支（更latest）、打v*标签（发版）、PR仅验证
 on:
   push:
-    branches: [ main ]  # 代码推送到main分支时构建
-    tags: [ 'v*' ]      # 打Tag（如v1.0.0）时构建（用于发版）
+    branches: [ main ]  # 推main分支→更新 ghcr.io/dxy0427/cloudstream:latest
+    tags: [ 'v*' ]      # 打Tag（如v1.0.0）→ 推 ghcr.io/dxy0427/cloudstream:v1.0.0
   pull_request:
-    branches: [ main ]  # PR到main分支时也触发（可选，用于验证构建是否正常）
+    branches: [ main ]  # PR时仅构建不推送（避免垃圾镜像）
 
 jobs:
-  build:
-    runs-on: ubuntu-latest  # 基于Ubuntu运行（通用且支持Docker Buildx）
+  build-and-push:
+    runs-on: ubuntu-latest
+    # 核心：配置内置GITHUB_TOKEN的权限（无需手动令牌）
+    permissions:
+      packages: write  # 允许推送镜像到GHCR（必需）
+      contents: read   # 允许读取仓库代码（必需）
+      actions: read    # 可选：避免不必要的权限警告
     steps:
-      # 1. 检出项目代码
+      # 1. 检出代码
       - name: 检出代码
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 完整检出历史（如果需要基于Git信息打标签，可选）
+          fetch-depth: 0
 
-      # 2. 设置Docker Buildx（支持多平台构建，如amd64/arm64）
+      # 2. 设置Docker Buildx（支持多平台构建）
       - name: 设置Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 3. 登录Docker仓库（如需推送镜像，必选；如仅构建不推送，可删除此步骤）
-      - name: 登录Docker Hub
-        if: github.event_name != 'pull_request'  # PR时不登录（避免泄露凭证）
+      # 3. 登录GHCR（自动用内置GITHUB_TOKEN，无需手动Secrets！）
+      - name: 登录GitHub Container Registry
+        if: github.event_name != 'pull_request'  # PR时不登录、不推送
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_HUB_USERNAME }}  # 你的Docker Hub用户名（需在GitHub仓库设置secrets）
-          password: ${{ secrets.DOCKER_HUB_TOKEN }}     # Docker Hub访问令牌（非密码，在Docker Hub个人设置中生成）
+          registry: ghcr.io  # 固定GHCR域名
+          # 自动使用GitHub内置身份：用户名=仓库所有者（dxy0427），密码=内置令牌
+          username: ${{ github.actor }}          # 自动获取当前仓库所有者（即dxy0427）
+          password: ${{ github.token }}          # 内置令牌（无需手动生成，GitHub自动注入）
 
-      # 4. 缓存加速（Go模块缓存 + Docker层缓存，减少重复构建时间）
+      # 4. 缓存加速（减少重复构建时间）
       - name: 缓存Go模块
         uses: actions/cache@v3
         with:
@@ -49,23 +56,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-buildx-
 
-      # 5. 构建并推送Docker镜像（核心步骤，适配项目的Dockerfile）
-      - name: 构建并推送Docker镜像
+      # 5. 构建并推送到GHCR（最终镜像地址：ghcr.io/dxy0427/cloudstream:xxx）
+      - name: 构建并推送镜像
         uses: docker/build-push-action@v5
         with:
-          context: .  # 构建上下文：项目根目录（与Dockerfile中COPY的路径匹配）
-          file: ./Dockerfile  # Dockerfile路径（项目根目录的Dockerfile）
-          push: ${{ github.event_name != 'pull_request' }}  # PR时仅构建不推送，其他情况推送
-          platforms: linux/amd64,linux/arm64  # 构建多平台镜像（适配不同CPU架构，可选）
-          # 镜像标签：根据触发事件设置不同标签（如main分支→latest，Tag→v1.0.0）
+          context: .                          # 项目根目录（与Dockerfile匹配）
+          file: ./Dockerfile                   # Dockerfile路径
+          push: ${{ github.event_name != 'pull_request' }}  # PR时不推送
+          platforms: linux/amd64,linux/arm64  # 多平台（适配x86/ARM，可选）
+          # 镜像标签：自动匹配你的需求（ghcr.io/dxy0427/cloudstream:latest）
           tags: |
-            ${{ secrets.DOCKER_HUB_USERNAME }}/cloudstream:latest  # 固定latest标签（main分支推送时覆盖）
-            ${{ secrets.DOCKER_HUB_USERNAME }}/cloudstream:${{ github.ref_name }}  # 分支名/Tag名标签（如main、v1.0.0）
-          # Docker层缓存配置（加速后续构建）
+            ghcr.io/${{ github.actor }}/cloudstream:latest  # main分支→latest标签
+            ghcr.io/${{ github.actor }}/cloudstream:${{ github.ref_name }}  # 分支/Tag→对应标签（如v1.0.0）
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
 
-      # 6. 清理缓存（避免缓存过大）
+      # 6. 清理缓存
       - name: 清理缓存
         run: |
           rm -rf /tmp/.buildx-cache
