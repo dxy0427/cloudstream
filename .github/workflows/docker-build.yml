@@ -1,68 +1,66 @@
-name: 自动构建并推送到GHCR
+name: Build and Push Docker Image
 
+# 触发条件：推main分支、打v*.*.*格式Tag、手动触发（workflow_dispatch）
 on:
   push:
-    branches: [ main ]
-    tags: [ 'v*' ]
-  pull_request:
-    branches: [ main ]
+    branches: [ "main" ]                # 推main分支→自动构建并更新标签
+    tags: [ 'v*.*.*' ]                  # 打规范版本Tag（如v1.0.0）→ 推对应版本标签
+  workflow_dispatch:                    # 支持在GitHub页面手动触发构建
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest              # 基于Ubuntu运行
     permissions:
-      packages: write
-      contents: read
-    steps:
-      - name: 检出代码
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+      contents: read                    # 允许读取仓库代码（必需）
+      packages: write                   # 允许推送镜像到GHCR（必需）
 
-      - name: 设置Docker Buildx
+    steps:
+      # 1. 检出项目代码
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. 初始化Docker Buildx（支持多平台构建）
+      - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: 登录GitHub Container Registry
-        if: github.event_name != 'pull_request'
+      # 3. 登录GHCR（用仓库所有者身份+内置GITHUB_TOKEN，无需手动配置）
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ github.token }}
+          registry: ghcr.io                          # 固定GHCR仓库域名
+          username: ${{ github.repository_owner }}    # 自动获取仓库所有者（即dxy0427）
+          password: ${{ secrets.GITHUB_TOKEN }}       # 内置令牌（GitHub自动注入，无需手动生成）
 
-      - name: 缓存Go模块
-        uses: actions/cache@v3
+      # 4. 自动提取镜像元数据（生成标签、标签，避免手动写标签出错）
+      - name: Extract metadata for Docker
+        id: meta
+        uses: docker/metadata-action@v5
         with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-          restore-keys: |
-            ${{ runner.os }}-go-
+          # 镜像地址：ghcr.io/仓库所有者/cloudstream（自动对应ghcr.io/dxy0427/cloudstream）
+          images: ghcr.io/${{ github.repository_owner }}/cloudstream
+          # 自动生成标签规则（参考示例，贴合主流规范）：
+          # - 推main分支→tag为"latest"
+          # - 打Tag（如v1.0.0）→tag为"v1.0.0"和"1.0.0"
+          # - 所有构建→附加commit短SHA作为标签（如sha-abc123）
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=sha,format=short
+          # 自动生成镜像标签（包含构建时间、commit信息等，增强可追溯性）
+          labels: |
+            org.opencontainers.image.title=CloudStream
+            org.opencontainers.image.description=CloudStream 云盘同步工具
+            org.opencontainers.image.version={{ .Version }}
+            org.opencontainers.image.revision={{ .Commit }}
 
-      - name: 缓存Docker层
-        uses: actions/cache@v3
-        with:
-          path: /tmp/.buildx-cache
-          key: ${{ runner.os }}-buildx-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-buildx-
-
-      - name: 构建并推送镜像
+      # 5. 核心：构建并推送镜像（用元数据自动生成的标签和标签）
+      - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: .
-          file: ./Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
-          platforms: linux/amd64,linux/arm64
-          # 核心修正：删除标签后的所有注释和空格，只保留纯标签字符串
-          tags: |
-            ghcr.io/${{ github.actor }}/cloudstream:latest
-            ghcr.io/${{ github.actor }}/cloudstream:${{ github.ref_name }}
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
-
-      - name: 清理缓存
-        run: |
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+          context: .                                  # 构建上下文：项目根目录（Dockerfile在根目录）
+          push: true                                  # 始终推送（仅PR不触发此job，无需判断）
+          tags: ${{ steps.meta.outputs.tags }}        # 使用元数据生成的标签（自动避免格式错误）
+          labels: ${{ steps.meta.outputs.labels }}    # 使用元数据生成的标签
+          platforms: linux/amd64,linux/arm64          # 构建多平台镜像（x86/ARM，适配不同设备）
+          cache-from: type=gha                        # 从GitHub Actions缓存加载（比本地缓存更高效）
+          cache-to: type=gha,mode=max                 # 保存缓存到GitHub Actions（加速后续构建）
