@@ -10,6 +10,7 @@ import (
 	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -57,45 +58,29 @@ func (t *FileTracker) Keys() []string {
 	return keys
 }
 
-var (
-	scannerTaskMutex   sync.Mutex
-	scannerRunningTasks = make(map[uint]struct{})
-)
-
 func RunScanTask(ctx context.Context, task models.Task) {
-	scannerTaskMutex.Lock()
-	scannerRunningTasks[task.ID] = struct{}{}
-	scannerTaskMutex.Unlock()
-
 	defer func() {
-		scannerTaskMutex.Lock()
-		delete(scannerRunningTasks, task.ID)
-		scannerTaskMutex.Unlock()
+		taskMutex.Lock()
+		delete(runningTasks, task.ID)
+		taskMutex.Unlock()
 		log.Info().Str("task", task.Name).Msg("任务控制权已释放")
 	}()
 
 	var account models.Account
 	if err := database.DB.First(&account, task.AccountID).Error; err != nil {
 		log.Error().Err(err).Str("task", task.Name).Uint("accountID", task.AccountID).Msg("任务启动失败：找不到关联的云账户")
-		SendNotification("任务启动失败", fmt.Sprintf("任务 '%s' 启动失败：找不到关联的云账户", task.Name))
 		return
 	}
 
 	threads := task.Threads
-	if threads < 1 {
-		threads = 1
-	}
-	if threads > 16 {
-		threads = 16
-	}
+	if threads < 1 { threads = 1 }
+	if threads > 16 { threads = 16 }
 
 	log.Info().Str("task", task.Name).Str("account", account.Name).Int("threads", threads).Msg("开始执行任务")
-	SendNotification("任务开始", fmt.Sprintf("任务 '%s' 已开始执行（账户：%s，线程数：%d）", task.Name, account.Name, threads))
-
 	client := pan123.NewClient(account)
 	strmExtMap := parseExtensions(task.StrmExtensions)
 	metaExtMap := parseExtensions(task.MetaExtensions)
-
+	
 	tracker := NewFileTracker()
 
 	var wg sync.WaitGroup
@@ -114,50 +99,42 @@ func RunScanTask(ctx context.Context, task models.Task) {
 
 	select {
 	case <-ctx.Done():
-		log.Warn().Str("task", task.Name).Msg("任务已被手动停止，跳过数据库更新和清理")
+		log.Warn().Str("task", task.Name).Msg("任务已被手动停止")
 		SendNotification("任务停止", fmt.Sprintf("任务 '%s' 已被手动停止", task.Name))
 	default:
+		// 1. 批量更新数据库记录
 		if err := updateFileRecordsOptimized(task.ID, tracker); err != nil {
 			log.Error().Err(err).Msg("更新数据库文件记录失败")
-			SendNotification("任务执行异常", fmt.Sprintf("任务 '%s' 执行完毕，但更新数据库文件记录失败", task.Name))
 		}
 
+		// 2. 同步删除
 		if task.SyncDelete {
 			performSafeSyncDeleteOptimized(task.ID, tracker)
 			cleanEmptyDirs(task.LocalPath)
 		}
 		log.Info().Str("task", task.Name).Msg("任务执行完毕")
-		SendNotification("任务完成", fmt.Sprintf("任务 '%s' 已成功执行完毕", task.Name))
+		SendNotification("任务完成", fmt.Sprintf("任务 '%s' 已执行完毕", task.Name))
 	}
 }
 
-// 递归清理空目录逻辑
+// 递归清理空目录
 func cleanEmptyDirs(root string) {
 	var dirs []string
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if info.IsDir() {
-			dirs = append(dirs, path)
-		}
+		if err != nil { return nil }
+		if info.IsDir() { dirs = append(dirs, path) }
 		return nil
 	})
-	if err != nil {
-		log.Error().Err(err).Msg("遍历目录失败")
-		return
-	}
+	if err != nil { return }
 
+	// 按路径长度倒序排序，先处理子目录
 	sort.Slice(dirs, func(i, j int) bool {
 		return len(dirs[i]) > len(dirs[j])
 	})
 
 	removedCount := 0
 	for _, d := range dirs {
-		if d == root || d == strings.TrimSuffix(root, "/") {
-			continue
-		}
-
+		if d == root || d == strings.TrimSuffix(root, "/") { continue }
 		entries, err := os.ReadDir(d)
 		if err == nil && len(entries) == 0 {
 			if err := os.Remove(d); err == nil {
@@ -189,7 +166,7 @@ func updateFileRecordsOptimized(taskID uint, tracker *FileTracker) error {
 
 			if len(records) >= batchSize || i == len(paths)-1 {
 				if err := tx.Clauses(clause.OnConflict{
-					DoNothing: true,
+					DoNothing: true, 
 				}).CreateInBatches(records, len(records)).Error; err != nil {
 					return err
 				}
@@ -202,7 +179,7 @@ func updateFileRecordsOptimized(taskID uint, tracker *FileTracker) error {
 
 func performSafeSyncDeleteOptimized(taskID uint, currentScanTracker *FileTracker) {
 	log.Info().Uint("taskID", taskID).Msg("开始执行安全清理...")
-
+	
 	deletedCount := 0
 	dbDeletedCount := 0
 	var lastID uint = 0
@@ -446,7 +423,7 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 	if err := os.MkdirAll(filepath.Dir(localFilePath), 0755); err != nil {
 		return
 	}
-
+	
 	if err := os.WriteFile(localFilePath, []byte(streamURL), 0644); err == nil {
 		log.Info().Str("file", strmFileName).Msg("已生成 STRM 文件")
 	}
@@ -454,7 +431,7 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 
 func downloadAndSaveMetaFile(client *pan123.Client, task models.Task, identity interface{}, fileName string, localBasePath string, tracker *FileTracker) {
 	localFilePath := filepath.Join(localBasePath, fileName)
-
+	
 	tracker.Add(localFilePath)
 
 	if !task.Overwrite {
@@ -509,7 +486,7 @@ func joinOpenListPath(parts ...string) string {
 		}
 		if i == 0 {
 			if p == "/" {
-				cleaned = append(cleaned, "")
+				cleaned = append(cleaned, "") 
 				continue
 			}
 			p = "/" + strings.TrimLeft(p, "/")
