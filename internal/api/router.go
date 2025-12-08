@@ -11,9 +11,14 @@ import (
 )
 
 func InitRouter() *gin.Engine {
+	// 设置为发布模式，减少 Gin 内部的调试输出
 	gin.SetMode(gin.ReleaseMode)
+	
 	r := gin.New()
-	r.Use(gin.Logger(), gin.Recovery())
+	
+	// 优化：移除 gin.Logger()，只保留 Recovery (崩溃恢复)
+	// 这样就不会有烦人的 [GIN] 200 | ... 访问日志了
+	r.Use(gin.Recovery())
 
 	v1 := r.Group("/api/v1")
 	{
@@ -52,24 +57,20 @@ func InitRouter() *gin.Engine {
 		}
 	}
 
-	// 静态资源修复：明确映射 assets
 	r.Static("/assets", "./public/assets")
 	r.StaticFile("/favicon.ico", "./public/favicon.ico")
 
-	// SPA 路由兜底
 	r.NoRoute(func(c *gin.Context) {
 		path := c.Request.URL.Path
 		if strings.HasPrefix(path, "/api") {
 			c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "API route not found"})
 			return
 		}
-		// 检查物理文件是否存在
 		fullPath := filepath.Join("./public", path)
 		if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
 			c.File(fullPath)
 			return
 		}
-		// 默认返回 index.html
 		c.File("./public/index.html")
 	})
 
