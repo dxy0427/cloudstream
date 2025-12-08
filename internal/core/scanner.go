@@ -10,13 +10,12 @@ import (
 	"github.com/rs/zerolog/log"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
-	"sort" // 新增：用于排序目录深度
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -58,86 +57,26 @@ func (t *FileTracker) Keys() []string {
 	return keys
 }
 
-// 发送通知（从 notifier.go 整合，确保函数可调用）
-func SendNotification(title, content string) {
-	var user models.User
-	// 获取第一个用户（管理员）的配置
-	if err := database.DB.First(&user).Error; err != nil {
-		return
-	}
-	if user.WebhookURL == "" {
-		return
-	}
-
-	// 构造通用的 JSON 格式 (适配大多数 Webhook，如 Bark, 企业微信等)
-	payload := map[string]string{
-		"title":   title,
-		"body":    content,
-		"content": content, // 兼容部分服务
-		"msg":     content, // 兼容部分服务
-	}
-	data, _ := json.Marshal(payload)
-
-	go func() {
-		resp, err := http.Post(user.WebhookURL, "application/json", bytes.NewBuffer(data))
-		if err != nil {
-			log.Error().Err(err).Msg("发送通知失败")
-			return
-		}
-		defer resp.Body.Close()
-	}()
-}
-
-// 读取最后 N 字节的日志（从 notifier.go 整合，确保函数可调用）
-func ReadRecentLogs() (string, error) {
-	logPath := "./data/cloudstream.log"
-	file, err := os.Open(logPath)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	stat, err := file.Stat()
-	if err != nil {
-		return "", err
-	}
-
-	fileSize := stat.Size()
-	readSize := int64(20480) // 读取最后 20KB
-	if fileSize < readSize {
-		readSize = fileSize
-	}
-
-	offset := fileSize - readSize
-	buffer := make([]byte, readSize)
-
-	_, err = file.ReadAt(buffer, offset)
-	if err != nil && err != io.EOF {
-		return "", err
-	}
-
-	return string(buffer), nil
-}
-
-var taskMutex sync.Mutex
-var runningTasks = make(map[uint]struct{})
+var (
+	scannerTaskMutex   sync.Mutex
+	scannerRunningTasks = make(map[uint]struct{})
+)
 
 func RunScanTask(ctx context.Context, task models.Task) {
-	taskMutex.Lock()
-	runningTasks[task.ID] = struct{}{}
-	taskMutex.Unlock()
+	scannerTaskMutex.Lock()
+	scannerRunningTasks[task.ID] = struct{}{}
+	scannerTaskMutex.Unlock()
 
 	defer func() {
-		taskMutex.Lock()
-		delete(runningTasks, task.ID)
-		taskMutex.Unlock()
+		scannerTaskMutex.Lock()
+		delete(scannerRunningTasks, task.ID)
+		scannerTaskMutex.Unlock()
 		log.Info().Str("task", task.Name).Msg("任务控制权已释放")
 	}()
 
 	var account models.Account
 	if err := database.DB.First(&account, task.AccountID).Error; err != nil {
 		log.Error().Err(err).Str("task", task.Name).Uint("accountID", task.AccountID).Msg("任务启动失败：找不到关联的云账户")
-		// 任务启动失败通知
 		SendNotification("任务启动失败", fmt.Sprintf("任务 '%s' 启动失败：找不到关联的云账户", task.Name))
 		return
 	}
@@ -151,7 +90,6 @@ func RunScanTask(ctx context.Context, task models.Task) {
 	}
 
 	log.Info().Str("task", task.Name).Str("account", account.Name).Int("threads", threads).Msg("开始执行任务")
-	// === 新增：任务开始通知 ===
 	SendNotification("任务开始", fmt.Sprintf("任务 '%s' 已开始执行（账户：%s，线程数：%d）", task.Name, account.Name, threads))
 
 	client := pan123.NewClient(account)
@@ -177,30 +115,24 @@ func RunScanTask(ctx context.Context, task models.Task) {
 	select {
 	case <-ctx.Done():
 		log.Warn().Str("task", task.Name).Msg("任务已被手动停止，跳过数据库更新和清理")
-		// === 新增：任务停止通知 ===
 		SendNotification("任务停止", fmt.Sprintf("任务 '%s' 已被手动停止", task.Name))
 	default:
 		if err := updateFileRecordsOptimized(task.ID, tracker); err != nil {
 			log.Error().Err(err).Msg("更新数据库文件记录失败")
-			// 数据库更新失败通知
 			SendNotification("任务执行异常", fmt.Sprintf("任务 '%s' 执行完毕，但更新数据库文件记录失败", task.Name))
 		}
 
 		if task.SyncDelete {
-			// 1. 先删文件
 			performSafeSyncDeleteOptimized(task.ID, tracker)
-			// 2. 后删空目录 (新增)
 			cleanEmptyDirs(task.LocalPath)
 		}
 		log.Info().Str("task", task.Name).Msg("任务执行完毕")
-		// === 新增：任务完成通知 ===
 		SendNotification("任务完成", fmt.Sprintf("任务 '%s' 已成功执行完毕", task.Name))
 	}
 }
 
-// === 新增：递归清理空目录逻辑 ===
+// 递归清理空目录逻辑
 func cleanEmptyDirs(root string) {
-	// 1. 收集所有目录路径
 	var dirs []string
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -216,25 +148,19 @@ func cleanEmptyDirs(root string) {
 		return
 	}
 
-	// 2. 按路径长度倒序排序 (确保先处理子目录 A/B/C，再处理 A/B)
 	sort.Slice(dirs, func(i, j int) bool {
 		return len(dirs[i]) > len(dirs[j])
 	})
 
-	// 3. 遍历检查并删除
 	removedCount := 0
 	for _, d := range dirs {
-		// 不删除根目录
 		if d == root || d == strings.TrimSuffix(root, "/") {
 			continue
 		}
 
-		// 读取目录内容
 		entries, err := os.ReadDir(d)
 		if err == nil && len(entries) == 0 {
-			// 如果为空，则删除
 			if err := os.Remove(d); err == nil {
-				// log.Debug().Str("dir", d).Msg("删除空目录") // 嫌吵可以注释掉
 				removedCount++
 			}
 		}
