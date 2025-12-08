@@ -11,7 +11,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  # 自动获取当前仓库名称 (例如: dxy0427/cloudstream)
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
