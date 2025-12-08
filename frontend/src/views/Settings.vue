@@ -17,7 +17,10 @@
     
     <n-divider>Webhook 通知</n-divider>
     <n-form-item label="通知 URL">
-      <n-input v-model:value="form.webhookUrl" placeholder="例如 Bark 或 自定义 API 地址" />
+      <n-input-group>
+        <n-input v-model:value="form.webhookUrl" placeholder="例如 Bark 或 自定义 API 地址" />
+        <n-button @click="testWebhook">发送测试</n-button>
+      </n-input-group>
     </n-form-item>
     
     <n-divider>安全修改</n-divider>
@@ -67,6 +70,14 @@ onMounted(async () => {
 const saveTitle = () => {
   store.setSiteTitle(titleForm.title)
   message.success('网站标题已更新')
+}
+
+const testWebhook = async () => {
+  if (!form.webhookUrl) return message.warning('请先输入 Webhook URL')
+  try {
+    const res = await api.post('/webhook/test', { url: form.webhookUrl })
+    message.success(res.message)
+  } catch (e) {}
 }
 
 const submit = async () => {
