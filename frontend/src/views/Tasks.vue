@@ -7,7 +7,8 @@
    </n-space>
   </n-card>
 
-  <n-data-table :columns="columns" :data="data" :loading="loading" />
+  <!-- 优化：增加横向滚动支持 -->
+  <n-data-table :columns="columns" :data="data" :loading="loading" :scroll-x="1000" />
 
   <n-modal v-model:show="showModal" preset="card" title="任务配置" style="width: 700px">
    <n-form label-placement="left" label-width="120">
@@ -48,6 +49,7 @@
       <n-input-number v-model:value="form.Threads" :min="1" :max="8" />
     </n-form-item>
     <n-space justify="end">
+     <n-button @click="showModal = false">取消</n-button>
      <n-button type="primary" @click="submit">保存</n-button>
     </n-space>
    </n-form>
@@ -91,11 +93,11 @@ const defaultForm = {
 const form = reactive({ ...defaultForm })
 
 const columns = [
- { title: '名称', key: 'Name' },
- { title: '本地路径', key: 'LocalPath' },
- { title: 'CRON', key: 'Cron' },
+ { title: '名称', key: 'Name', fixed: 'left', width: 150 }, // 固定左侧
+ { title: '本地路径', key: 'LocalPath', width: 200, ellipsis: { tooltip: true } },
+ { title: 'CRON', key: 'Cron', width: 120 },
  { 
-  title: '状态', key: 'IsRunning',
+  title: '状态', key: 'IsRunning', width: 100,
   render(row) {
    return row.IsRunning 
     ? h(NTag, { type: 'success' }, { default: () => '运行中' }) 
@@ -105,6 +107,8 @@ const columns = [
  {
   title: '操作',
   key: 'actions',
+  fixed: 'right', // 固定右侧
+  width: 220,
   render(row) {
    return h(NSpace, null, {
     default: () => [
@@ -175,7 +179,7 @@ const stopTask = async (row) => {
 
 const handleDelete = (row) => {
  dialog.warning({
-  title: '警告', content: '删除任务?',
+  title: '警告', content: '确定删除任务？关联的文件记录也会被清理（但物理文件不会被删）。',
   positiveText: '删除', negativeText: '取消',
   onPositiveClick: async () => {
    await api.delete(`/tasks/${row.ID}`)
