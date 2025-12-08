@@ -20,7 +20,7 @@ func UnifiedStreamHandler(c *gin.Context) {
 	var identifier interface{}
 
 	if sign != "" {
-		// 签名模式：验证并提取 RealIdentity (包含随机Salt，验证更严格)
+		// 签名模式：验证并提取 RealIdentity
 		accID, realIdentity, err := auth.VerifyStreamSign(sign)
 		if err != nil {
 			c.String(http.StatusForbidden, "Invalid signature: "+err.Error())
@@ -28,6 +28,7 @@ func UnifiedStreamHandler(c *gin.Context) {
 		}
 		accountID = accID
 
+		// 检查 RealIdentity 是否为路径 (OpenList) 还是 ID (123Pan)
 		if strings.HasPrefix(realIdentity, "/") {
 			identifier = realIdentity
 		} else {
@@ -61,7 +62,13 @@ func UnifiedStreamHandler(c *gin.Context) {
 		}
 
 		if account.Type == models.AccountTypeOpenList {
-			identifier = "/" + strings.Join(parts[1:], "/")
+			// OpenList 路径必须包含前面的斜杠，组合后续所有部分
+			pathPart := strings.Join(parts[1:], "/")
+			if !strings.HasPrefix(pathPart, "/") {
+				identifier = "/" + pathPart
+			} else {
+				identifier = pathPart
+			}
 		} else {
 			// 123Pan: 第二部分必须是 FileID
 			fileIdStr := parts[1]
