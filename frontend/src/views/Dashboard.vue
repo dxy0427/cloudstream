@@ -32,7 +32,7 @@
       :log="logs"
       language="text"
       :rows="15"
-      style="background-color: #1e1e1e; padding: 10px; border-radius: 4px;"
+      style="background-color: #1e1e1e; padding: 10px; border-radius: 4px; color: #ddd;"
     />
   </n-card>
  </n-space>
