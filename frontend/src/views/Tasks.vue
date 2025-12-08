@@ -1,17 +1,45 @@
 <template>
  <n-space vertical>
   <n-card>
-   <n-space justify="space-between">
+   <n-space justify="space-between" align="center">
     <h3>任务管理</h3>
-    <n-button type="primary" @click="openModal(null)">新建任务</n-button>
+    <n-button type="primary" @click="openModal(null)">新建</n-button>
    </n-space>
   </n-card>
 
-  <!-- 优化：增加横向滚动支持 -->
-  <n-data-table :columns="columns" :data="data" :loading="loading" :scroll-x="1000" />
+  <!-- 桌面端显示表格 -->
+  <div class="desktop-view">
+    <n-data-table :columns="columns" :data="data" :loading="loading" :scroll-x="1000" />
+  </div>
 
-  <n-modal v-model:show="showModal" preset="card" title="任务配置" style="width: 700px">
-   <n-form label-placement="left" label-width="120">
+  <!-- 移动端显示列表卡片 -->
+  <div class="mobile-view">
+    <n-spin :show="loading">
+      <n-list hoverable clickable>
+        <n-list-item v-for="row in data" :key="row.ID">
+          <template #prefix>
+            <n-tag :type="row.IsRunning ? 'success' : 'default'" size="small">
+              {{ row.IsRunning ? '运行' : '空闲' }}
+            </n-tag>
+          </template>
+          <n-thing :title="row.Name" :description="row.LocalPath">
+            <template #footer>
+              <n-space size="small" style="margin-top: 5px">
+                <n-button size="tiny" type="info" ghost @click.stop="runTask(row)" :disabled="row.IsRunning">执行</n-button>
+                <n-button size="tiny" type="warning" ghost @click.stop="stopTask(row)" :disabled="!row.IsRunning">停止</n-button>
+                <n-button size="tiny" ghost @click.stop="openModal(row)">编辑</n-button>
+                <n-button size="tiny" type="error" ghost @click.stop="handleDelete(row)">删</n-button>
+              </n-space>
+            </template>
+          </n-thing>
+        </n-list-item>
+        <n-empty v-if="data.length === 0" description="暂无任务" style="margin-top: 20px" />
+      </n-list>
+    </n-spin>
+  </div>
+
+  <n-modal v-model:show="showModal" preset="card" title="任务配置" style="width: 700px; max-width: 95%;">
+   <n-form label-placement="top" label-width="auto">
     <n-form-item label="任务名称">
      <n-input v-model:value="form.Name" />
     </n-form-item>
@@ -35,16 +63,17 @@
       <n-input v-model:value="form.StrmExtensions" placeholder="mp4,mkv,ts,iso" />
     </n-form-item>
     <n-form-item label="元数据 扩展名">
-      <n-input v-model:value="form.MetaExtensions" placeholder="jpg,jpeg,png,nfo,srt,ass" />
+      <n-input v-model:value="form.MetaExtensions" placeholder="jpg,jpeg,png,nfo" />
     </n-form-item>
 
     <n-form-item label="选项">
-     <n-space>
+     <n-space vertical>
        <n-checkbox v-model:checked="form.Overwrite">覆盖模式</n-checkbox>
-       <n-checkbox v-model:checked="form.SyncDelete">同步删除 (自动清理)</n-checkbox>
+       <n-checkbox v-model:checked="form.SyncDelete">同步删除</n-checkbox>
        <n-checkbox v-model:checked="form.EncodePath">加密路径</n-checkbox>
      </n-space>
     </n-form-item>
+    
     <n-form-item label="并发线程">
       <n-input-number v-model:value="form.Threads" :min="1" :max="8" />
     </n-form-item>
@@ -55,7 +84,7 @@
    </n-form>
   </n-modal>
 
-  <n-modal v-model:show="showBrowser" preset="card" title="选择目录" style="width: 600px; height: 500px">
+  <n-modal v-model:show="showBrowser" preset="card" title="选择目录" style="width: 600px; height: 80vh; max-width: 95%">
    <file-browser :account-id="form.AccountID" @select="handleFolderSelect" />
   </n-modal>
  </n-space>
@@ -76,46 +105,30 @@ const showBrowser = ref(false)
 const accountOptions = ref([])
 
 const defaultForm = {
-  ID: 0, 
-  Name: '', 
-  AccountID: null, 
-  SourceFolderID: '0', 
-  LocalPath: '/app/strm/', 
-  Cron: '0 */2 * * *', 
-  Overwrite: false, 
-  SyncDelete: false, 
-  EncodePath: false, 
-  Threads: 4,
-  StrmExtensions: 'mp4,mkv,ts,iso,mov,avi', 
-  MetaExtensions: 'jpg,jpeg,png,nfo,srt,ass,sub'
+  ID: 0, Name: '', AccountID: null, SourceFolderID: '0', LocalPath: '/app/strm/', Cron: '0 */2 * * *', Overwrite: false, SyncDelete: false, EncodePath: false, Threads: 4,
+  StrmExtensions: 'mp4,mkv,ts,iso,mov,avi', MetaExtensions: 'jpg,jpeg,png,nfo,srt,ass,sub'
 }
-
 const form = reactive({ ...defaultForm })
 
 const columns = [
- { title: '名称', key: 'Name', fixed: 'left', width: 150 }, // 固定左侧
- { title: '本地路径', key: 'LocalPath', width: 200, ellipsis: { tooltip: true } },
- { title: 'CRON', key: 'Cron', width: 120 },
+ { title: '名称', key: 'Name', fixed: 'left', width: 120, ellipsis: { tooltip: true } },
+ { title: '路径', key: 'LocalPath', width: 150, ellipsis: { tooltip: true } },
+ { title: 'CRON', key: 'Cron', width: 100 },
  { 
-  title: '状态', key: 'IsRunning', width: 100,
+  title: '状态', key: 'IsRunning', width: 80,
   render(row) {
-   return row.IsRunning 
-    ? h(NTag, { type: 'success' }, { default: () => '运行中' }) 
-    : h(NTag, { type: 'default' }, { default: () => '空闲' })
+   return h(NTag, { type: row.IsRunning ? 'success' : 'default', size: 'small' }, { default: () => row.IsRunning ? '运行' : '空闲' })
   }
  },
  {
-  title: '操作',
-  key: 'actions',
-  fixed: 'right', // 固定右侧
-  width: 220,
+  title: '操作', key: 'actions', fixed: 'right', width: 180,
   render(row) {
-   return h(NSpace, null, {
+   return h(NSpace, { size: 'small' }, {
     default: () => [
-     h(NButton, { size: 'small', type: 'info', disabled: row.IsRunning, onClick: () => runTask(row) }, { default: () => '执行' }),
-     h(NButton, { size: 'small', type: 'warning', disabled: !row.IsRunning, onClick: () => stopTask(row) }, { default: () => '停止' }),
-     h(NButton, { size: 'small', onClick: () => openModal(row) }, { default: () => '编辑' }),
-     h(NButton, { size: 'small', type: 'error', onClick: () => handleDelete(row) }, { default: () => '删除' })
+     h(NButton, { size: 'tiny', type: 'info', disabled: row.IsRunning, onClick: () => runTask(row) }, { default: () => '跑' }),
+     h(NButton, { size: 'tiny', type: 'warning', disabled: !row.IsRunning, onClick: () => stopTask(row) }, { default: () => '停' }),
+     h(NButton, { size: 'tiny', onClick: () => openModal(row) }, { default: () => '改' }),
+     h(NButton, { size: 'tiny', type: 'error', onClick: () => handleDelete(row) }, { default: () => '删' })
     ]
    })
   }
@@ -123,10 +136,7 @@ const columns = [
 ]
 
 const loadData = async () => {
- const [taskRes, accRes] = await Promise.all([
-  api.get('/tasks'),
-  api.get('/accounts')
- ])
+ const [taskRes, accRes] = await Promise.all([api.get('/tasks'), api.get('/accounts')])
  data.value = taskRes.data || []
  accountOptions.value = (accRes.data || []).map(a => ({ label: a.Name, value: a.ID }))
 }
@@ -139,13 +149,10 @@ onMounted(() => {
 onUnmounted(() => clearInterval(timer))
 
 const openModal = (row) => {
- if (row) {
-   Object.assign(form, row)
- } else {
+ if (row) Object.assign(form, row)
+ else {
    Object.assign(form, defaultForm)
-   if (accountOptions.value.length > 0) {
-     form.AccountID = accountOptions.value[0].value
-   }
+   if (accountOptions.value.length > 0) form.AccountID = accountOptions.value[0].value
  }
  showModal.value = true
 }
@@ -165,26 +172,24 @@ const submit = async () => {
  } catch(e) {}
 }
 
-const runTask = async (row) => {
- await api.post(`/tasks/${row.ID}/run`)
- message.success('已触发')
- loadData()
-}
-
-const stopTask = async (row) => {
- await api.post(`/tasks/${row.ID}/stop`)
- message.success('已发送停止信号')
- loadData()
-}
-
+const runTask = async (row) => { await api.post(`/tasks/${row.ID}/run`); message.success('已触发'); loadData() }
+const stopTask = async (row) => { await api.post(`/tasks/${row.ID}/stop`); message.success('已发送停止信号'); loadData() }
 const handleDelete = (row) => {
  dialog.warning({
-  title: '警告', content: '确定删除任务？关联的文件记录也会被清理（但物理文件不会被删）。',
-  positiveText: '删除', negativeText: '取消',
-  onPositiveClick: async () => {
-   await api.delete(`/tasks/${row.ID}`)
-   loadData()
-  }
+  title: '警告', content: '删除任务？', positiveText: '删除', negativeText: '取消',
+  onPositiveClick: async () => { await api.delete(`/tasks/${row.ID}`); loadData() }
  })
 }
 </script>
+
+<style scoped>
+/* 桌面端默认显示表格，隐藏列表 */
+.mobile-view { display: none; }
+.desktop-view { display: block; }
+
+/* 移动端显示列表，隐藏表格 */
+@media (max-width: 600px) {
+  .desktop-view { display: none; }
+  .mobile-view { display: block; }
+}
+</style>
