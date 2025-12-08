@@ -28,6 +28,24 @@ func GetSystemLogsHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": logs})
 }
 
+// 新增：Webhook 测试接口
+func TestWebhookHandler(c *gin.Context) {
+	var req struct {
+		URL string `json:"url"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "参数错误"})
+		return
+	}
+	
+	if err := core.SendTestNotification(req.URL); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "发送失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "发送成功，请检查接收端"})
+}
+
 func UpdateCredentialsHandler(c *gin.Context) {
 	var req struct {
 		NewUsername     string `json:"newUsername"`
