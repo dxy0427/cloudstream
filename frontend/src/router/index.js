@@ -14,7 +14,7 @@ const router = createRouter({
   {
    path: '/',
    component: Layout,
-   redirect: '/dashboard',
+   redirect: '/',
    children: [
     { path: 'dashboard', component: Dashboard },
     { path: 'accounts', component: Accounts },
