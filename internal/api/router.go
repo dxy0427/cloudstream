@@ -18,6 +18,7 @@ func InitRouter() *gin.Engine {
 	v1 := r.Group("/api/v1")
 	{
 		// 统一流地址 (STRM文件内指向的地址)
+		// 同时允许 GET 和 HEAD，以便播放器探测
 		v1.Match([]string{"GET", "HEAD"}, "/stream/s/*path", handlers.UnifiedStreamHandler)
 
 		// 登录
@@ -59,26 +60,31 @@ func InitRouter() *gin.Engine {
 		}
 	}
 
-	// 静态文件服务修复
+	// 静态文件服务 (适配 Vue Router History 模式)
+	// 1. 明确映射 /assets 路径，确保 JS/CSS 能被找到
 	r.Static("/assets", "./public/assets")
+
+	// 2. 映射根目录下的特定文件 (如 favicon.ico)
 	r.StaticFile("/favicon.ico", "./public/favicon.ico")
 
-	// SPA 回退逻辑
+	// 3. 所有未匹配 API 的路由都处理为 SPA 回退
 	r.NoRoute(func(c *gin.Context) {
 		path := c.Request.URL.Path
+
+		// 如果是 API 请求但没匹配到，返回 404 JSON
 		if strings.HasPrefix(path, "/api") {
 			c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "API route not found"})
 			return
 		}
 
-		// 检查文件是否存在于 public 目录
+		// 检查请求的文件是否真实存在于 public 目录 (例如 /logo.png, /manifest.json)
 		fullPath := filepath.Join("./public", path)
 		if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
 			c.File(fullPath)
 			return
 		}
 
-		// 默认返回 index.html 供 Vue Router 处理
+		// 否则返回 index.html，交给前端 Vue Router 处理
 		c.File("./public/index.html")
 	})
 
