@@ -36,7 +36,10 @@ type Task struct {
 	Cron           string `gorm:"not null" json:"Cron"`
 	Enabled        bool   `gorm:"default:true" json:"Enabled"`
 	Overwrite      bool   `gorm:"default:false" json:"Overwrite"`
+	
+	// 同步删除开关
 	SyncDelete     bool   `gorm:"default:false" json:"SyncDelete"`
+	
 	EncodePath     bool   `gorm:"default:false" json:"EncodePath"`
 	StrmExtensions string `gorm:"default:'mp4,mkv,ts,iso'" json:"StrmExtensions"`
 	MetaExtensions string `gorm:"default:'jpg,jpeg,png,webp,srt,ass,sub'" json:"MetaExtensions"`
@@ -44,8 +47,10 @@ type Task struct {
 }
 
 // 新增：文件归属记录表
+// 记录哪个任务生成了哪个文件，用于安全清理
 type TaskFile struct {
 	ID        uint   `gorm:"primarykey"`
-	TaskID    uint   `gorm:"index;not null"` // 归属的任务ID
-	FilePath  string `gorm:"index;not null"` // 本地绝对路径
+	// 建立联合唯一索引，确保同一任务下路径唯一，且大幅提升查询性能
+	TaskID    uint   `gorm:"index;uniqueIndex:idx_task_file;not null"` 
+	FilePath  string `gorm:"index;uniqueIndex:idx_task_file;not null"` 
 }
