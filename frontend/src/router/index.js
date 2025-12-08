@@ -14,7 +14,7 @@ const router = createRouter({
   {
    path: '/',
    component: Layout,
-   redirect: '/',
+   redirect: '/dashboard',
    children: [
     { path: 'dashboard', component: Dashboard },
     { path: 'accounts', component: Accounts },
@@ -26,7 +26,6 @@ const router = createRouter({
  ]
 })
 
-// 简单稳健的鉴权拦截
 router.beforeEach((to, from, next) => {
  const token = localStorage.getItem('jwt_token')
  if (!token && !to.meta.noAuth) {
