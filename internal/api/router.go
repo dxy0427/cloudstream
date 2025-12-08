@@ -5,6 +5,8 @@ import (
 	"cloudstream/internal/auth"
 	"github.com/gin-gonic/gin"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -16,7 +18,6 @@ func InitRouter() *gin.Engine {
 	v1 := r.Group("/api/v1")
 	{
 		// 统一流地址 (STRM文件内指向的地址)
-		// 同时允许 GET 和 HEAD，以便播放器探测
 		v1.Match([]string{"GET", "HEAD"}, "/stream/s/*path", handlers.UnifiedStreamHandler)
 
 		// 登录
@@ -58,18 +59,27 @@ func InitRouter() *gin.Engine {
 		}
 	}
 
-	// 静态文件服务 (适配 Vue Router History 模式)
-	// Dockerfile 会将前端构建产物复制到 ./public
+	// 静态文件服务修复
 	r.Static("/assets", "./public/assets")
 	r.StaticFile("/favicon.ico", "./public/favicon.ico")
 
-	// 所有未匹配 API 的路由都返回 index.html，交给 Vue 前端路由处理
+	// SPA 回退逻辑
 	r.NoRoute(func(c *gin.Context) {
-		if strings.HasPrefix(c.Request.URL.Path, "/api") {
+		path := c.Request.URL.Path
+		if strings.HasPrefix(path, "/api") {
 			c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "API route not found"})
-		} else {
-			c.File("./public/index.html")
+			return
 		}
+
+		// 检查文件是否存在于 public 目录
+		fullPath := filepath.Join("./public", path)
+		if info, err := os.Stat(fullPath); err == nil && !info.IsDir() {
+			c.File(fullPath)
+			return
+		}
+
+		// 默认返回 index.html 供 Vue Router 处理
+		c.File("./public/index.html")
 	})
 
 	return r
