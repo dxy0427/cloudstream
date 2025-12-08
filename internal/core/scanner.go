@@ -158,7 +158,7 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 				case pool <- struct{}{}:
 				}
 				defer func() { <-pool }()
-				scanDirectoryRecursive(ctx, client, task, accountType, nextFolderID, itemCloudPath, nextLocalPath, strmExtMap, metaExtMap, &wg, pool, limiter)
+				scanDirectoryRecursive(ctx, client, task, accountType, nextFolderID, itemCloudPath, nextLocalPath, strmExtMap, metaExtMap, wg, pool, limiter)
 			}()
 		} else {
 			wg.Add(1)
@@ -326,7 +326,7 @@ func joinOpenListPath(parts ...string) string {
 		}
 		if i == 0 {
 			if p == "/" {
-				cleaned = append(cleaned, "")
+				cleaned = append(cleaned, "") 
 				continue
 			}
 			p = "/" + strings.TrimLeft(p, "/")
