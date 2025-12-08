@@ -14,7 +14,6 @@ func GetUsernameHandler(c *gin.Context) {
 	var user models.User
 	database.DB.Where("username = ?", username).First(&user)
 	
-	// 默认值
 	notifyType := user.NotifyType
 	if notifyType == "" {
 		notifyType = models.NotifyTypeWebhook
@@ -38,7 +37,6 @@ func GetSystemLogsHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": logs})
 }
 
-// 统一测试接口
 func TestWebhookHandler(c *gin.Context) {
 	var req map[string]string
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -54,13 +52,9 @@ func TestWebhookHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "测试消息发送成功！"})
 }
 
-func UpdateCredentialsHandler(c *gin.Context) {
+// 新增：专门更新通知配置的接口
+func UpdateNotificationHandler(c *gin.Context) {
 	var req struct {
-		NewUsername     string `json:"newUsername"`
-		CurrentPassword string `json:"currentPassword" binding:"required"`
-		NewPassword     string `json:"newPassword"`
-		ConfirmPassword string `json:"confirmPassword"`
-		
 		NotifyType      string `json:"notifyType"`
 		WebhookURL      string `json:"webhookUrl"`
 		TelegramToken   string `json:"telegramToken"`
@@ -73,19 +67,45 @@ func UpdateCredentialsHandler(c *gin.Context) {
 
 	currentUsername, _ := c.Get("username")
 	var user models.User
-	database.DB.Where("username = ?", currentUsername).First(&user)
-
-	if !utils.CheckPasswordHash(req.CurrentPassword, user.PasswordHash) {
-		c.JSON(http.StatusUnauthorized, gin.H{"code": 1, "message": "当前密码不正确，无法保存修改"})
+	if err := database.DB.Where("username = ?", currentUsername).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "用户未找到"})
 		return
 	}
 
-	// 更新通知配置
 	user.NotifyType = req.NotifyType
 	user.WebhookURL = req.WebhookURL
 	user.TelegramToken = req.TelegramToken
 	user.TelegramChatID = req.TelegramChatID
-	database.DB.Save(&user)
+	
+	if err := database.DB.Save(&user).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "保存失败: " + err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "通知设置已保存"})
+}
+
+// 安全设置：只负责改密码和用户名
+func UpdateCredentialsHandler(c *gin.Context) {
+	var req struct {
+		NewUsername     string `json:"newUsername"`
+		CurrentPassword string `json:"currentPassword" binding:"required"`
+		NewPassword     string `json:"newPassword"`
+		ConfirmPassword string `json:"confirmPassword"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "参数错误"})
+		return
+	}
+
+	currentUsername, _ := c.Get("username")
+	var user models.User
+	database.DB.Where("username = ?", currentUsername).First(&user)
+
+	if !utils.CheckPasswordHash(req.CurrentPassword, user.PasswordHash) {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": 1, "message": "当前密码不正确"})
+		return
+	}
 
 	changed := false
 	if req.NewUsername != "" && req.NewUsername != user.Username {
@@ -120,6 +140,6 @@ func UpdateCredentialsHandler(c *gin.Context) {
 		}
 		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "凭证更新成功，请重新登录"})
 	} else {
-		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "所有设置已保存"})
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "未做任何修改"})
 	}
 }
