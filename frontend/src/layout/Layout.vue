@@ -53,7 +53,6 @@ import {
 const store = useGlobalStore()
 const router = useRouter()
 const route = useRoute()
-
 const collapsed = ref(false)
 
 function renderIcon(icon) {
