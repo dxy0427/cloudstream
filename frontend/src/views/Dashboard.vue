@@ -26,26 +26,34 @@
 
   <n-card title="系统日志" size="small">
     <template #header-extra>
-      <n-button size="tiny" @click="fetchLogs">刷新日志</n-button>
+      <n-space align="center">
+        <n-switch v-model:value="autoRefresh" size="small">
+          <template #checked>自动刷新</template>
+          <template #unchecked>暂停刷新</template>
+        </n-switch>
+        <n-button size="tiny" @click="fetchLogs">刷新</n-button>
+      </n-space>
     </template>
     <n-log
       :log="logs"
       language="text"
       :rows="15"
-      style="background-color: #1e1e1e; padding: 10px; border-radius: 4px; color: #ddd;"
+      style="background-color: #1e1e1e; padding: 10px; border-radius: 4px; color: #ddd; font-family: 'Fira Code', monospace;"
     />
   </n-card>
  </n-space>
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { CloudOutlined, UnorderedListOutlined, SyncOutlined } from '@vicons/antd'
 import { NIcon, NLog } from 'naive-ui'
 import api from '../api'
 
 const stats = ref({ accountCount: 0, taskCount: 0, runningCount: 0 })
 const logs = ref('加载中...')
+const autoRefresh = ref(true)
+let logTimer = null
 
 const fetchData = async () => {
  const [accRes, taskRes] = await Promise.all([
@@ -64,12 +72,35 @@ const fetchLogs = async () => {
     const res = await api.get('/logs')
     logs.value = res.data || '暂无日志'
   } catch (e) {
-    logs.value = '获取日志失败'
+    // 失败时不覆盖错误提示，除非是第一次
+    if (logs.value === '加载中...') logs.value = '获取日志失败'
   }
 }
 
+const startTimer = () => {
+  stopTimer()
+  fetchLogs()
+  logTimer = setInterval(fetchLogs, 3000)
+}
+
+const stopTimer = () => {
+  if (logTimer) {
+    clearInterval(logTimer)
+    logTimer = null
+  }
+}
+
+watch(autoRefresh, (val) => {
+  if (val) startTimer()
+  else stopTimer()
+})
+
 onMounted(() => {
   fetchData()
-  fetchLogs()
+  startTimer()
+})
+
+onUnmounted(() => {
+  stopTimer()
 })
 </script>
