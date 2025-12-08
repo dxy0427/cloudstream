@@ -1,11 +1,14 @@
 <template>
  <n-config-provider :theme="theme">
   <n-global-style />
-  <n-message-provider>
-   <n-dialog-provider>
-    <router-view />
-   </n-dialog-provider>
-  </n-message-provider>
+  <!-- 核心修复：增加加载条 Provider -->
+  <n-loading-bar-provider>
+    <n-message-provider>
+     <n-dialog-provider>
+      <router-view />
+     </n-dialog-provider>
+    </n-message-provider>
+  </n-loading-bar-provider>
  </n-config-provider>
 </template>
 
