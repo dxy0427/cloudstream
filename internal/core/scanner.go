@@ -52,7 +52,6 @@ func RunScanTask(ctx context.Context, task models.Task) {
 	rateLimiter := time.NewTicker(time.Second / time.Duration(threads))
 	defer rateLimiter.Stop()
 
-	// 修复: OpenList 根目录ID "0" 转为 "/"
 	startFolderID := task.SourceFolderID
 	if account.Type == models.AccountTypeOpenList && (startFolderID == "0" || startFolderID == "") {
 		startFolderID = "/"
@@ -199,6 +198,7 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 	strmFileName := fileNameWithoutExt + ".strm"
 	localFilePath := filepath.Join(localBasePath, strmFileName)
 
+	// 如果文件已存在且不覆盖，直接跳过（不打印日志）
 	if !task.Overwrite {
 		if _, err := os.Stat(localFilePath); err == nil {
 			return
@@ -267,7 +267,10 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 	if err := os.MkdirAll(filepath.Dir(localFilePath), 0755); err != nil {
 		return
 	}
-	os.WriteFile(localFilePath, []byte(streamURL), 0644)
+	
+	if err := os.WriteFile(localFilePath, []byte(streamURL), 0644); err == nil {
+		log.Info().Str("file", strmFileName).Msg("已生成 STRM 文件")
+	}
 }
 
 func downloadAndSaveMetaFile(client *pan123.Client, task models.Task, identity interface{}, fileName string, localBasePath string) {
@@ -298,7 +301,9 @@ func downloadAndSaveMetaFile(client *pan123.Client, task models.Task, identity i
 		return
 	}
 	defer outFile.Close()
-	io.Copy(outFile, resp.Body)
+	if _, err := io.Copy(outFile, resp.Body); err == nil {
+		log.Info().Str("file", fileName).Msg("已下载元数据文件")
+	}
 }
 
 func parseExtensions(extStr string) map[string]bool {
