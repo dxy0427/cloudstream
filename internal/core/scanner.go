@@ -20,6 +20,20 @@ import (
 	"time"
 )
 
+// 使用 sync.Map 安全地记录已生成的文件
+type FileTracker struct {
+	sync.Map
+}
+
+func (t *FileTracker) Add(path string) {
+	t.Store(path, true)
+}
+
+func (t *FileTracker) Has(path string) bool {
+	_, ok := t.Load(path)
+	return ok
+}
+
 func RunScanTask(ctx context.Context, task models.Task) {
 	defer func() {
 		taskMutex.Lock()
@@ -35,19 +49,18 @@ func RunScanTask(ctx context.Context, task models.Task) {
 	}
 
 	threads := task.Threads
-	if threads < 1 {
-		threads = 1
-	}
-	if threads > 8 {
-		threads = 8
-	}
+	if threads < 1 { threads = 1 }
+	if threads > 8 { threads = 8 }
 
 	log.Info().Str("task", task.Name).Str("account", account.Name).Int("threads", threads).Msg("开始执行任务")
 	client := pan123.NewClient(account)
 	strmExtMap := parseExtensions(task.StrmExtensions)
 	metaExtMap := parseExtensions(task.MetaExtensions)
-	var wg sync.WaitGroup
+	
+	// 初始化文件追踪器
+	tracker := &FileTracker{}
 
+	var wg sync.WaitGroup
 	workerPool := make(chan struct{}, threads)
 	rateLimiter := time.NewTicker(time.Second / time.Duration(threads))
 	defer rateLimiter.Stop()
@@ -57,18 +70,76 @@ func RunScanTask(ctx context.Context, task models.Task) {
 		startFolderID = "/"
 	}
 
-	scanDirectoryRecursive(ctx, client, task, account.Type, startFolderID, "", task.LocalPath, strmExtMap, metaExtMap, &wg, workerPool, rateLimiter)
+	// 开始递归扫描
+	scanDirectoryRecursive(ctx, client, task, account.Type, startFolderID, "", task.LocalPath, strmExtMap, metaExtMap, &wg, workerPool, rateLimiter, tracker)
 
 	wg.Wait()
+
 	select {
 	case <-ctx.Done():
-		log.Warn().Str("task", task.Name).Msg("任务已被手动停止")
+		log.Warn().Str("task", task.Name).Msg("任务已被手动停止，跳过清理步骤")
 	default:
+		// 如果开启了同步删除，执行清理
+		if task.SyncDelete {
+			performSyncDelete(task, tracker, strmExtMap, metaExtMap)
+		}
 		log.Info().Str("task", task.Name).Msg("任务执行完毕")
 	}
 }
 
-func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task models.Task, accountType, folderID, currentCloudPath, localBasePath string, strmExtMap, metaExtMap map[string]bool, wg *sync.WaitGroup, pool chan struct{}, limiter *time.Ticker) {
+// performSyncDelete 遍历本地目录，删除多余文件
+func performSyncDelete(task models.Task, tracker *FileTracker, strmExts, metaExts map[string]bool) {
+	log.Info().Str("task", task.Name).Msg("开始执行本地清理 (Sync Delete)...")
+	deletedCount := 0
+
+	err := filepath.Walk(task.LocalPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			return nil
+		}
+
+		// 检查扩展名是否在我们的管理范围内
+		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
+		// 如果是 STRM 文件，或者是元数据文件，我们才考虑删除
+		if !strmExts[ext] && !metaExts[ext] && ext != "strm" {
+			return nil
+		}
+
+		// 如果该文件没有在本次扫描中生成/确认，则删除
+		if !tracker.Has(path) {
+			if err := os.Remove(path); err == nil {
+				log.Info().Str("file", path).Msg("删除已失效的本地文件")
+				deletedCount++
+			} else {
+				log.Warn().Err(err).Str("file", path).Msg("删除文件失败")
+			}
+		}
+		return nil
+	})
+
+	if err != nil {
+		log.Error().Err(err).Msg("清理本地文件时出错")
+	} else {
+		log.Info().Int("count", deletedCount).Msg("本地清理完成")
+	}
+	
+	// 清理空目录 (可选，简单实现)
+	cleanEmptyDirs(task.LocalPath)
+}
+
+func cleanEmptyDirs(root string) {
+	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if info.IsDir() && path != root {
+			// 尝试删除，如果非空会失败，忽略错误即可
+			os.Remove(path)
+		}
+		return nil
+	})
+}
+
+func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task models.Task, accountType, folderID, currentCloudPath, localBasePath string, strmExtMap, metaExtMap map[string]bool, wg *sync.WaitGroup, pool chan struct{}, limiter *time.Ticker, tracker *FileTracker) {
 	select {
 	case <-ctx.Done():
 		return
@@ -158,7 +229,7 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 				case pool <- struct{}{}:
 				}
 				defer func() { <-pool }()
-				scanDirectoryRecursive(ctx, client, task, accountType, nextFolderID, itemCloudPath, nextLocalPath, strmExtMap, metaExtMap, wg, pool, limiter)
+				scanDirectoryRecursive(ctx, client, task, accountType, nextFolderID, itemCloudPath, nextLocalPath, strmExtMap, metaExtMap, wg, pool, limiter, tracker)
 			}()
 		} else {
 			wg.Add(1)
@@ -178,7 +249,7 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 
 				ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(fileToProcess.FileName), "."))
 				if strmExtMap[ext] {
-					createStrmFile(client, task, fileToProcess, cloudRelPath, localBasePath)
+					createStrmFile(client, task, fileToProcess, cloudRelPath, localBasePath, tracker)
 				} else if metaExtMap[ext] {
 					var downloadIdentity interface{}
 					if accountType == models.AccountTypeOpenList {
@@ -186,17 +257,21 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 					} else {
 						downloadIdentity = fileToProcess.FileId
 					}
-					downloadAndSaveMetaFile(client, task, downloadIdentity, fileToProcess.FileName, localBasePath)
+					downloadAndSaveMetaFile(client, task, downloadIdentity, fileToProcess.FileName, localBasePath, tracker)
 				}
 			}(currentItem, itemCloudPath)
 		}
 	}
 }
 
-func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInfo, cloudRelPath string, localBasePath string) {
+func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInfo, cloudRelPath string, localBasePath string, tracker *FileTracker) {
 	fileNameWithoutExt := strings.TrimSuffix(file.FileName, filepath.Ext(file.FileName))
 	strmFileName := fileNameWithoutExt + ".strm"
 	localFilePath := filepath.Join(localBasePath, strmFileName)
+
+	// === 核心修改：记录此文件路径，证明它在云端存在 ===
+	tracker.Add(localFilePath)
+	// ==================================================
 
 	if !task.Overwrite {
 		if _, err := os.Stat(localFilePath); err == nil {
@@ -272,8 +347,13 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 	}
 }
 
-func downloadAndSaveMetaFile(client *pan123.Client, task models.Task, identity interface{}, fileName string, localBasePath string) {
+func downloadAndSaveMetaFile(client *pan123.Client, task models.Task, identity interface{}, fileName string, localBasePath string, tracker *FileTracker) {
 	localFilePath := filepath.Join(localBasePath, fileName)
+	
+	// === 核心修改：记录此文件路径 ===
+	tracker.Add(localFilePath)
+	// ===========================
+
 	if !task.Overwrite {
 		if _, err := os.Stat(localFilePath); err == nil {
 			return
