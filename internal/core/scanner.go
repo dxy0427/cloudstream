@@ -20,7 +20,7 @@ import (
 	"time"
 )
 
-// 使用 sync.Map 安全地记录已生成的文件
+// FileTracker 仅用于本次扫描的内存去重和记录
 type FileTracker struct {
 	sync.Map
 }
@@ -57,7 +57,6 @@ func RunScanTask(ctx context.Context, task models.Task) {
 	strmExtMap := parseExtensions(task.StrmExtensions)
 	metaExtMap := parseExtensions(task.MetaExtensions)
 	
-	// 初始化文件追踪器
 	tracker := &FileTracker{}
 
 	var wg sync.WaitGroup
@@ -70,7 +69,7 @@ func RunScanTask(ctx context.Context, task models.Task) {
 		startFolderID = "/"
 	}
 
-	// 开始递归扫描
+	// 1. 执行扫描
 	scanDirectoryRecursive(ctx, client, task, account.Type, startFolderID, "", task.LocalPath, strmExtMap, metaExtMap, &wg, workerPool, rateLimiter, tracker)
 
 	wg.Wait()
@@ -79,64 +78,68 @@ func RunScanTask(ctx context.Context, task models.Task) {
 	case <-ctx.Done():
 		log.Warn().Str("task", task.Name).Msg("任务已被手动停止，跳过清理步骤")
 	default:
-		// 如果开启了同步删除，执行清理
+		// 2. 无论是否开启 SyncDelete，都要更新数据库记录 (为了防止未来开启 SyncDelete 时误删)
+		updateFileRecords(task.ID, tracker)
+
+		// 3. 如果开启了同步删除，执行清理
 		if task.SyncDelete {
-			performSyncDelete(task, tracker, strmExtMap, metaExtMap)
+			performSafeSyncDelete(task.ID, tracker)
 		}
 		log.Info().Str("task", task.Name).Msg("任务执行完毕")
 	}
 }
 
-// performSyncDelete 遍历本地目录，删除多余文件
-func performSyncDelete(task models.Task, tracker *FileTracker, strmExts, metaExts map[string]bool) {
-	log.Info().Str("task", task.Name).Msg("开始执行本地清理 (Sync Delete)...")
-	deletedCount := 0
-
-	err := filepath.Walk(task.LocalPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
+// updateFileRecords 将本次扫描生成的文件记录到数据库
+func updateFileRecords(taskID uint, tracker *FileTracker) {
+	// 这是一个简单的实现：遍历 tracker，确保数据库里有记录
+	// 性能优化：实际场景中可能需要批量插入，这里为了代码简单使用逐条检查
+	tracker.Range(func(key, value interface{}) bool {
+		filePath := key.(string)
+		var count int64
+		database.DB.Model(&models.TaskFile{}).Where("task_id = ? AND file_path = ?", taskID, filePath).Count(&count)
+		if count == 0 {
+			database.DB.Create(&models.TaskFile{
+				TaskID:   taskID,
+				FilePath: filePath,
+			})
 		}
-		if info.IsDir() {
-			return nil
-		}
-
-		// 检查扩展名是否在我们的管理范围内
-		ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(path), "."))
-		// 如果是 STRM 文件，或者是元数据文件，我们才考虑删除
-		if !strmExts[ext] && !metaExts[ext] && ext != "strm" {
-			return nil
-		}
-
-		// 如果该文件没有在本次扫描中生成/确认，则删除
-		if !tracker.Has(path) {
-			if err := os.Remove(path); err == nil {
-				log.Info().Str("file", path).Msg("删除已失效的本地文件")
-				deletedCount++
-			} else {
-				log.Warn().Err(err).Str("file", path).Msg("删除文件失败")
-			}
-		}
-		return nil
+		return true
 	})
-
-	if err != nil {
-		log.Error().Err(err).Msg("清理本地文件时出错")
-	} else {
-		log.Info().Int("count", deletedCount).Msg("本地清理完成")
-	}
-	
-	// 清理空目录 (可选，简单实现)
-	cleanEmptyDirs(task.LocalPath)
 }
 
-func cleanEmptyDirs(root string) {
-	filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if info.IsDir() && path != root {
-			// 尝试删除，如果非空会失败，忽略错误即可
-			os.Remove(path)
+// performSafeSyncDelete 基于数据库记录进行安全删除
+func performSafeSyncDelete(taskID uint, currentScanTracker *FileTracker) {
+	log.Info().Uint("taskID", taskID).Msg("开始执行基于数据库的安全清理...")
+	
+	// 1. 获取数据库中该任务记录的所有历史文件
+	var historyFiles []models.TaskFile
+	if err := database.DB.Where("task_id = ?", taskID).Find(&historyFiles).Error; err != nil {
+		log.Error().Err(err).Msg("获取历史文件记录失败，跳过清理")
+		return
+	}
+
+	deletedCount := 0
+	for _, record := range historyFiles {
+		// 2. 如果历史记录的文件，在本次扫描中不存在 (currentScanTracker 中没有)
+		if !currentScanTracker.Has(record.FilePath) {
+			// 说明云端已经删除了这个文件，或者文件改名/移动了
+			
+			// 删除本地文件
+			if err := os.Remove(record.FilePath); err == nil || os.IsNotExist(err) {
+				log.Info().Str("file", record.FilePath).Msg("同步删除本地失效文件")
+				deletedCount++
+			} else {
+				log.Warn().Err(err).Str("file", record.FilePath).Msg("删除文件失败")
+			}
+
+			// 删除数据库记录
+			database.DB.Delete(&record)
 		}
-		return nil
-	})
+	}
+
+	if deletedCount > 0 {
+		log.Info().Int("count", deletedCount).Msg("清理完成")
+	}
 }
 
 func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task models.Task, accountType, folderID, currentCloudPath, localBasePath string, strmExtMap, metaExtMap map[string]bool, wg *sync.WaitGroup, pool chan struct{}, limiter *time.Ticker, tracker *FileTracker) {
@@ -269,9 +272,8 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 	strmFileName := fileNameWithoutExt + ".strm"
 	localFilePath := filepath.Join(localBasePath, strmFileName)
 
-	// === 核心修改：记录此文件路径，证明它在云端存在 ===
+	// 记录文件归属
 	tracker.Add(localFilePath)
-	// ==================================================
 
 	if !task.Overwrite {
 		if _, err := os.Stat(localFilePath); err == nil {
@@ -350,9 +352,7 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 func downloadAndSaveMetaFile(client *pan123.Client, task models.Task, identity interface{}, fileName string, localBasePath string, tracker *FileTracker) {
 	localFilePath := filepath.Join(localBasePath, fileName)
 	
-	// === 核心修改：记录此文件路径 ===
 	tracker.Add(localFilePath)
-	// ===========================
 
 	if !task.Overwrite {
 		if _, err := os.Stat(localFilePath); err == nil {
