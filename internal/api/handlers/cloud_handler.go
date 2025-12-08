@@ -44,6 +44,7 @@ func FileBrowserHandler(c *gin.Context) {
 	case models.AccountTypeOpenList:
 		// OpenList 使用 path
 		parentPath := parentParam
+		// 修复：处理根目录
 		if parentPath == "" || parentPath == "0" {
 			parentPath = "/"
 		}
