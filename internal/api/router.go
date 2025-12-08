@@ -24,10 +24,11 @@ func InitRouter() *gin.Engine {
 		authorized.Use(auth.JWTAuthMiddleware())
 		{
 			authorized.GET("/username", handlers.GetUsernameHandler)
-			authorized.GET("/logs", handlers.GetSystemLogsHandler) // 新增路由
+			authorized.GET("/logs", handlers.GetSystemLogsHandler)
 			authorized.POST("/update_credentials", handlers.UpdateCredentialsHandler)
-			authorized.POST("/accounts/test", handlers.TestAccountConnectionHandler)
 			
+			// 账户相关
+			authorized.POST("/accounts/test", handlers.TestAccountConnectionHandler)
 			accounts := authorized.Group("/accounts")
 			{
 				accounts.GET("", handlers.ListAccountsHandler)
@@ -36,6 +37,10 @@ func InitRouter() *gin.Engine {
 				accounts.DELETE("/:id", handlers.DeleteAccountHandler)
 			}
 
+			// Webhook 测试 (新增)
+			authorized.POST("/webhook/test", handlers.TestWebhookHandler)
+
+			// 任务相关
 			tasks := authorized.Group("/tasks")
 			{
 				tasks.GET("", handlers.ListTasksHandler)
