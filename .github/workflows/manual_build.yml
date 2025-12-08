@@ -11,12 +11,12 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: ${{ github.actor }}/cloudstream
 
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
-    
+
     # 需要写入包的权限
     permissions:
       contents: read
@@ -53,6 +53,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
             type=raw,value=${{ inputs.version }}
+            type=sha,format=short  # 新增：添加 commit 哈希标签，方便回滚
 
       # 6. 构建并推送
       - name: Build and push Docker image
@@ -65,3 +66,5 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha  # 新增：缓存加速，减少构建时间
+          cache-to: type=gha,mode=max
