@@ -8,7 +8,6 @@ RUN npm run build
 
 # --- Stage 2: Build Backend ---
 FROM golang:1.22-alpine AS backend-builder
-# 安装 SQLite 编译依赖
 RUN apk add --no-cache gcc musl-dev sqlite-dev
 
 WORKDIR /app
@@ -16,25 +15,18 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-# 编译 (开启 CGO 以支持 SQLite)
 RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o /cloudstream ./cmd/cloudstream
 
 # --- Stage 3: Final Image ---
 FROM alpine:latest
 
-# 安装 SQLite 运行库, CA 证书, 以及 mailcap (MIME支持)
 RUN apk add --no-cache sqlite-libs ca-certificates tzdata mailcap && update-ca-certificates
 
 WORKDIR /app
 
-# 复制后端二进制文件
 COPY --from=backend-builder /cloudstream .
-
-# 复制前端构建产物到 public 目录 (Gin 将 serve 这个目录)
 COPY --from=frontend-builder /web/dist ./public
 
-# 暴露端口
 EXPOSE 12398
 
-# 启动
 CMD ["./cloudstream"]
