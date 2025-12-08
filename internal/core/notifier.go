@@ -13,29 +13,46 @@ import (
 	"time"
 )
 
-// 发送 Webhook 通知 (生产环境使用，读取数据库配置)
+// 发送通知 (生产环境)
 func SendNotification(title, content string) {
 	var user models.User
 	if err := database.DB.First(&user).Error; err != nil {
 		return
 	}
-	if user.WebhookURL == "" {
-		return
+
+	if user.NotifyType == models.NotifyTypeTelegram {
+		if user.TelegramToken != "" && user.TelegramChatID != "" {
+			go pushToTelegram(user.TelegramToken, user.TelegramChatID, fmt.Sprintf("*%s*\n%s", title, content))
+		}
+	} else {
+		// 默认 Webhook
+		if user.WebhookURL != "" {
+			go pushToWebhook(user.WebhookURL, title, content)
+		}
 	}
-	go pushToWebhook(user.WebhookURL, title, content)
 }
 
-// 发送测试通知 (测试按钮使用，直接使用传入的 URL)
-func SendTestNotification(targetURL string) error {
-	if targetURL == "" {
-		return fmt.Errorf("URL 不能为空")
+// 发送测试通知
+func SendTestNotification(req map[string]string) error {
+	nType := req["type"]
+	if nType == models.NotifyTypeTelegram {
+		token := req["token"]
+		chatID := req["chatId"]
+		if token == "" || chatID == "" {
+			return fmt.Errorf("Telegram Token 和 ChatID 不能为空")
+		}
+		return pushToTelegram(token, chatID, "*CloudStream 测试*\n通知服务配置成功！")
+	} else {
+		url := req["url"]
+		if url == "" {
+			return fmt.Errorf("Webhook URL 不能为空")
+		}
+		return pushToWebhook(url, "CloudStream 测试", "通知服务配置成功！")
 	}
-	return pushToWebhook(targetURL, "CloudStream 测试", "这是一条测试消息，证明 Webhook 配置正确！")
 }
 
-// 统一推送逻辑
+// 通用 Webhook 推送
 func pushToWebhook(url, title, content string) error {
-	// 构造通用的 JSON 格式
 	payload := map[string]string{
 		"title":   title,
 		"body":    content,
@@ -47,18 +64,39 @@ func pushToWebhook(url, title, content string) error {
 	client := http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Post(url, "application/json", bytes.NewBuffer(data))
 	if err != nil {
-		log.Error().Err(err).Str("url", url).Msg("发送通知失败")
+		log.Error().Err(err).Str("url", url).Msg("Webhook 发送失败")
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
+}
+
+// Telegram 推送
+func pushToTelegram(token, chatID, text string) error {
+	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
+	payload := map[string]string{
+		"chat_id":    chatID,
+		"text":       text,
+		"parse_mode": "Markdown",
+	}
+	data, _ := json.Marshal(payload)
+
+	client := http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Post(apiURL, "application/json", bytes.NewBuffer(data))
+	if err != nil {
+		log.Error().Err(err).Msg("Telegram 发送失败")
 		return err
 	}
 	defer resp.Body.Close()
 	
 	if resp.StatusCode >= 400 {
-		return fmt.Errorf("HTTP 状态码错误: %d", resp.StatusCode)
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("Telegram API 错误: %s", string(body))
 	}
 	return nil
 }
 
-// 读取最后 N 字节的日志
+// 读取日志
 func ReadRecentLogs() (string, error) {
 	logPath := "./data/cloudstream.log"
 	file, err := os.Open(logPath)
@@ -73,7 +111,7 @@ func ReadRecentLogs() (string, error) {
 	}
 
 	fileSize := stat.Size()
-	readSize := int64(50 * 1024) // 50KB
+	readSize := int64(50 * 1024) 
 	if fileSize < readSize {
 		readSize = fileSize
 	}
