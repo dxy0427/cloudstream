@@ -17,12 +17,10 @@ var DB *gorm.DB
 func ConnectDatabase(dbPath string) error {
 	var err error
 
-	// 确保数据库目录存在
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
 		return fmt.Errorf("创建数据目录失败: %w", err)
 	}
 
-	// 连接 SQLite 数据库
 	DB, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
@@ -30,17 +28,17 @@ func ConnectDatabase(dbPath string) error {
 		return fmt.Errorf("连接数据库失败: %w", err)
 	}
 
-	// 自动迁移结构
+	// 自动迁移结构，加入 TaskFile
 	err = DB.AutoMigrate(
 		&models.User{},
 		&models.Task{},
 		&models.Account{},
+		&models.TaskFile{},
 	)
 	if err != nil {
 		return fmt.Errorf("数据库迁移失败: %w", err)
 	}
 
-	// 如果没有用户，自动创建默认账号 admin/admin
 	var userCount int64
 	if err := DB.Model(&models.User{}).Count(&userCount).Error; err != nil {
 		return fmt.Errorf("统计用户数量失败: %w", err)
