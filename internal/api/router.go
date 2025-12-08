@@ -11,13 +11,10 @@ import (
 )
 
 func InitRouter() *gin.Engine {
-	// 设置为发布模式，减少 Gin 内部的调试输出
 	gin.SetMode(gin.ReleaseMode)
-	
+
 	r := gin.New()
-	
-	// 优化：移除 gin.Logger()，只保留 Recovery (崩溃恢复)
-	// 这样就不会有烦人的 [GIN] 200 | ... 访问日志了
+
 	r.Use(gin.Recovery())
 
 	v1 := r.Group("/api/v1")
@@ -29,9 +26,10 @@ func InitRouter() *gin.Engine {
 		authorized.Use(auth.JWTAuthMiddleware())
 		{
 			authorized.GET("/username", handlers.GetUsernameHandler)
+			authorized.GET("/logs", handlers.GetSystemLogsHandler) // <--- 新增日志接口路由
 			authorized.POST("/update_credentials", handlers.UpdateCredentialsHandler)
 			authorized.POST("/accounts/test", handlers.TestAccountConnectionHandler)
-			
+
 			accounts := authorized.Group("/accounts")
 			{
 				accounts.GET("", handlers.ListAccountsHandler)
