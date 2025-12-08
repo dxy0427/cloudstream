@@ -8,6 +8,8 @@ import (
 	"context"
 	"fmt"
 	"github.com/rs/zerolog/log"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 	"io"
 	"net/http"
 	"net/url"
@@ -20,18 +22,39 @@ import (
 	"time"
 )
 
-// FileTracker 仅用于本次扫描的内存去重和记录
+// 高性能 FileTracker (Mutex + Map)
 type FileTracker struct {
-	sync.Map
+	sync.RWMutex
+	files map[string]struct{}
+}
+
+func NewFileTracker() *FileTracker {
+	return &FileTracker{
+		files: make(map[string]struct{}),
+	}
 }
 
 func (t *FileTracker) Add(path string) {
-	t.Store(path, true)
+	t.Lock()
+	t.files[path] = struct{}{}
+	t.Unlock()
 }
 
 func (t *FileTracker) Has(path string) bool {
-	_, ok := t.Load(path)
+	t.RLock()
+	_, ok := t.files[path]
+	t.RUnlock()
 	return ok
+}
+
+func (t *FileTracker) Keys() []string {
+	t.RLock()
+	defer t.RUnlock()
+	keys := make([]string, 0, len(t.files))
+	for k := range t.files {
+		keys = append(keys, k)
+	}
+	return keys
 }
 
 func RunScanTask(ctx context.Context, task models.Task) {
@@ -50,14 +73,14 @@ func RunScanTask(ctx context.Context, task models.Task) {
 
 	threads := task.Threads
 	if threads < 1 { threads = 1 }
-	if threads > 8 { threads = 8 }
+	if threads > 16 { threads = 16 } // 适当放宽线程限制
 
 	log.Info().Str("task", task.Name).Str("account", account.Name).Int("threads", threads).Msg("开始执行任务")
 	client := pan123.NewClient(account)
 	strmExtMap := parseExtensions(task.StrmExtensions)
 	metaExtMap := parseExtensions(task.MetaExtensions)
 	
-	tracker := &FileTracker{}
+	tracker := NewFileTracker()
 
 	var wg sync.WaitGroup
 	workerPool := make(chan struct{}, threads)
@@ -69,76 +92,108 @@ func RunScanTask(ctx context.Context, task models.Task) {
 		startFolderID = "/"
 	}
 
-	// 1. 执行扫描
 	scanDirectoryRecursive(ctx, client, task, account.Type, startFolderID, "", task.LocalPath, strmExtMap, metaExtMap, &wg, workerPool, rateLimiter, tracker)
 
 	wg.Wait()
 
 	select {
 	case <-ctx.Done():
-		log.Warn().Str("task", task.Name).Msg("任务已被手动停止，跳过清理步骤")
+		log.Warn().Str("task", task.Name).Msg("任务已被手动停止，跳过数据库更新和清理")
 	default:
-		// 2. 无论是否开启 SyncDelete，都要更新数据库记录 (为了防止未来开启 SyncDelete 时误删)
-		updateFileRecords(task.ID, tracker)
+		// 1. 批量更新数据库记录 (无论是否开启 SyncDelete 都要做，保证记录最新)
+		if err := updateFileRecordsOptimized(task.ID, tracker); err != nil {
+			log.Error().Err(err).Msg("更新数据库文件记录失败")
+		}
 
-		// 3. 如果开启了同步删除，执行清理
+		// 2. 如果开启了同步删除，执行高性能清理
 		if task.SyncDelete {
-			performSafeSyncDelete(task.ID, tracker)
+			performSafeSyncDeleteOptimized(task.ID, tracker)
 		}
 		log.Info().Str("task", task.Name).Msg("任务执行完毕")
 	}
 }
 
-// updateFileRecords 将本次扫描生成的文件记录到数据库
-func updateFileRecords(taskID uint, tracker *FileTracker) {
-	// 这是一个简单的实现：遍历 tracker，确保数据库里有记录
-	// 性能优化：实际场景中可能需要批量插入，这里为了代码简单使用逐条检查
-	tracker.Range(func(key, value interface{}) bool {
-		filePath := key.(string)
-		var count int64
-		database.DB.Model(&models.TaskFile{}).Where("task_id = ? AND file_path = ?", taskID, filePath).Count(&count)
-		if count == 0 {
-			database.DB.Create(&models.TaskFile{
+// 性能优化：使用 Transaction + Batch Insert + OnConflict Do Nothing
+func updateFileRecordsOptimized(taskID uint, tracker *FileTracker) error {
+	log.Info().Msg("正在更新数据库文件记录...")
+	paths := tracker.Keys()
+	if len(paths) == 0 {
+		return nil
+	}
+
+	batchSize := 500 // SQLite 变量限制，分批插入
+	records := make([]models.TaskFile, 0, batchSize)
+
+	return database.DB.Transaction(func(tx *gorm.DB) error {
+		for i, p := range paths {
+			records = append(records, models.TaskFile{
 				TaskID:   taskID,
-				FilePath: filePath,
+				FilePath: p,
 			})
+
+			if len(records) >= batchSize || i == len(paths)-1 {
+				// 利用联合唯一索引，如果记录存在则忽略，极大提升速度
+				if err := tx.Clauses(clause.OnConflict{
+					DoNothing: true, 
+				}).CreateInBatches(records, len(records)).Error; err != nil {
+					return err
+				}
+				records = records[:0]
+			}
 		}
-		return true
+		return nil
 	})
 }
 
-// performSafeSyncDelete 基于数据库记录进行安全删除
-func performSafeSyncDelete(taskID uint, currentScanTracker *FileTracker) {
-	log.Info().Uint("taskID", taskID).Msg("开始执行基于数据库的安全清理...")
+// 性能优化：使用 ID 游标分页查询，内存占用极低
+func performSafeSyncDeleteOptimized(taskID uint, currentScanTracker *FileTracker) {
+	log.Info().Uint("taskID", taskID).Msg("开始执行安全清理...")
 	
-	// 1. 获取数据库中该任务记录的所有历史文件
-	var historyFiles []models.TaskFile
-	if err := database.DB.Where("task_id = ?", taskID).Find(&historyFiles).Error; err != nil {
-		log.Error().Err(err).Msg("获取历史文件记录失败，跳过清理")
-		return
-	}
-
 	deletedCount := 0
-	for _, record := range historyFiles {
-		// 2. 如果历史记录的文件，在本次扫描中不存在 (currentScanTracker 中没有)
-		if !currentScanTracker.Has(record.FilePath) {
-			// 说明云端已经删除了这个文件，或者文件改名/移动了
-			
-			// 删除本地文件
-			if err := os.Remove(record.FilePath); err == nil || os.IsNotExist(err) {
-				log.Info().Str("file", record.FilePath).Msg("同步删除本地失效文件")
-				deletedCount++
-			} else {
-				log.Warn().Err(err).Str("file", record.FilePath).Msg("删除文件失败")
-			}
+	dbDeletedCount := 0
+	var lastID uint = 0
+	batchSize := 1000
 
-			// 删除数据库记录
-			database.DB.Delete(&record)
+	for {
+		var historyFiles []models.TaskFile
+		// 使用 ID > ? 的方式分页，比 OFFSET 快得多
+		if err := database.DB.Where("task_id = ? AND id > ?", taskID, lastID).
+			Order("id asc").Limit(batchSize).Find(&historyFiles).Error; err != nil {
+			log.Error().Err(err).Msg("查询历史记录失败")
+			break
+		}
+
+		if len(historyFiles) == 0 {
+			break
+		}
+
+		idsToDelete := make([]uint, 0)
+
+		for _, record := range historyFiles {
+			lastID = record.ID // 更新游标
+
+			// 如果历史记录里的文件，在本次扫描中不存在，说明云端已删
+			if !currentScanTracker.Has(record.FilePath) {
+				// 删除本地文件
+				if err := os.Remove(record.FilePath); err == nil || os.IsNotExist(err) {
+					log.Info().Str("file", record.FilePath).Msg("同步删除本地失效文件")
+					deletedCount++
+				}
+				// 记录要删除的 DB ID
+				idsToDelete = append(idsToDelete, record.ID)
+			}
+		}
+
+		// 批量删除数据库记录
+		if len(idsToDelete) > 0 {
+			if err := database.DB.Delete(&models.TaskFile{}, idsToDelete).Error; err == nil {
+				dbDeletedCount += len(idsToDelete)
+			}
 		}
 	}
 
 	if deletedCount > 0 {
-		log.Info().Int("count", deletedCount).Msg("清理完成")
+		log.Info().Int("deleted_files", deletedCount).Int("db_records_removed", dbDeletedCount).Msg("清理完成")
 	}
 }
 
@@ -272,7 +327,6 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 	strmFileName := fileNameWithoutExt + ".strm"
 	localFilePath := filepath.Join(localBasePath, strmFileName)
 
-	// 记录文件归属
 	tracker.Add(localFilePath)
 
 	if !task.Overwrite {
