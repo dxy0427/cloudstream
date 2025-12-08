@@ -36,6 +36,10 @@ type Task struct {
 	Cron           string `gorm:"not null" json:"Cron"`
 	Enabled        bool   `gorm:"default:true" json:"Enabled"`
 	Overwrite      bool   `gorm:"default:false" json:"Overwrite"`
+	
+	// 新增：同步删除 (云端删了，本地也删)
+	SyncDelete     bool   `gorm:"default:false" json:"SyncDelete"`
+	
 	EncodePath     bool   `gorm:"default:false" json:"EncodePath"`
 	StrmExtensions string `gorm:"default:'mp4,mkv,ts,iso'" json:"StrmExtensions"`
 	MetaExtensions string `gorm:"default:'jpg,jpeg,png,webp,srt,ass,sub'" json:"MetaExtensions"`
