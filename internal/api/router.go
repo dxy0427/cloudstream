@@ -18,9 +18,7 @@ func InitRouter() *gin.Engine {
 	v1 := r.Group("/api/v1")
 	{
 		v1.Match([]string{"GET", "HEAD"}, "/stream/s/*path", handlers.UnifiedStreamHandler)
-		
-		// 核心修复：增加登录频率限制，防止暴力破解
-		v1.POST("/login", auth.LoginRateLimiter(), auth.LoginHandler)
+		v1.POST("/login", auth.LoginHandler)
 
 		authorized := v1.Group("/")
 		authorized.Use(auth.JWTAuthMiddleware())
@@ -28,11 +26,15 @@ func InitRouter() *gin.Engine {
 			authorized.GET("/username", handlers.GetUsernameHandler)
 			authorized.GET("/logs", handlers.GetSystemLogsHandler)
 			
+			// 通知相关
 			authorized.POST("/webhook/test", handlers.TestWebhookHandler)
-			authorized.POST("/notifications", handlers.UpdateNotificationHandler)
+			authorized.POST("/notifications", handlers.UpdateNotificationHandler) // 新增
+
+			// 安全设置相关
 			authorized.POST("/update_credentials", handlers.UpdateCredentialsHandler)
-			authorized.POST("/accounts/test", handlers.TestAccountConnectionHandler)
 			
+			// 账户相关
+			authorized.POST("/accounts/test", handlers.TestAccountConnectionHandler)
 			accounts := authorized.Group("/accounts")
 			{
 				accounts.GET("", handlers.ListAccountsHandler)
@@ -41,6 +43,7 @@ func InitRouter() *gin.Engine {
 				accounts.DELETE("/:id", handlers.DeleteAccountHandler)
 			}
 
+			// 任务相关
 			tasks := authorized.Group("/tasks")
 			{
 				tasks.GET("", handlers.ListTasksHandler)
