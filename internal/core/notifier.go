@@ -5,15 +5,13 @@ import (
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
 	"encoding/json"
-	"fmt"
 	"github.com/rs/zerolog/log"
 	"io"
 	"net/http"
 	"os"
-	"time"
 )
 
-// 发送通知
+// 发送 Webhook 通知
 func SendNotification(title, content string) {
 	var user models.User
 	// 获取第一个用户（管理员）的配置
@@ -24,9 +22,7 @@ func SendNotification(title, content string) {
 		return
 	}
 
-	// 构造通用的 JSON 格式 (适配大多数 Webhook，如 Bark, 企业微信等)
-	// 如果是 Bark: { "title": "...", "body": "..." }
-	// 这里做一个简单的通用 payload
+	// 构造通用的 JSON 格式 (适配 Bark, 企业微信等)
 	payload := map[string]string{
 		"title":   title,
 		"body":    content,
@@ -45,7 +41,7 @@ func SendNotification(title, content string) {
 	}()
 }
 
-// 读取最后 N 字节的日志
+// 读取最后 N 字节的日志用于前端展示
 func ReadRecentLogs() (string, error) {
 	logPath := "./data/cloudstream.log"
 	file, err := os.Open(logPath)
@@ -60,7 +56,7 @@ func ReadRecentLogs() (string, error) {
 	}
 
 	fileSize := stat.Size()
-	readSize := int64(20480) // 读取最后 20KB
+	readSize := int64(50 * 1024) // 读取最后 50KB
 	if fileSize < readSize {
 		readSize = fileSize
 	}
