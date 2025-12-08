@@ -16,6 +16,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort" // 新增：用于排序目录深度
 	"strconv"
 	"strings"
 	"sync"
@@ -73,7 +74,7 @@ func RunScanTask(ctx context.Context, task models.Task) {
 
 	threads := task.Threads
 	if threads < 1 { threads = 1 }
-	if threads > 16 { threads = 16 } // 适当放宽线程限制
+	if threads > 16 { threads = 16 }
 
 	log.Info().Str("task", task.Name).Str("account", account.Name).Int("threads", threads).Msg("开始执行任务")
 	client := pan123.NewClient(account)
@@ -100,20 +101,66 @@ func RunScanTask(ctx context.Context, task models.Task) {
 	case <-ctx.Done():
 		log.Warn().Str("task", task.Name).Msg("任务已被手动停止，跳过数据库更新和清理")
 	default:
-		// 1. 批量更新数据库记录 (无论是否开启 SyncDelete 都要做，保证记录最新)
 		if err := updateFileRecordsOptimized(task.ID, tracker); err != nil {
 			log.Error().Err(err).Msg("更新数据库文件记录失败")
 		}
 
-		// 2. 如果开启了同步删除，执行高性能清理
 		if task.SyncDelete {
+			// 1. 先删文件
 			performSafeSyncDeleteOptimized(task.ID, tracker)
+			// 2. 后删空目录 (新增)
+			cleanEmptyDirs(task.LocalPath)
 		}
 		log.Info().Str("task", task.Name).Msg("任务执行完毕")
 	}
 }
 
-// 性能优化：使用 Transaction + Batch Insert + OnConflict Do Nothing
+// === 新增：递归清理空目录逻辑 ===
+func cleanEmptyDirs(root string) {
+	// 1. 收集所有目录路径
+	var dirs []string
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			dirs = append(dirs, path)
+		}
+		return nil
+	})
+	if err != nil {
+		log.Error().Err(err).Msg("遍历目录失败")
+		return
+	}
+
+	// 2. 按路径长度倒序排序 (确保先处理子目录 A/B/C，再处理 A/B)
+	sort.Slice(dirs, func(i, j int) bool {
+		return len(dirs[i]) > len(dirs[j])
+	})
+
+	// 3. 遍历检查并删除
+	removedCount := 0
+	for _, d := range dirs {
+		// 不删除根目录
+		if d == root || d == strings.TrimSuffix(root, "/") {
+			continue
+		}
+
+		// 读取目录内容
+		entries, err := os.ReadDir(d)
+		if err == nil && len(entries) == 0 {
+			// 如果为空，则删除
+			if err := os.Remove(d); err == nil {
+				// log.Debug().Str("dir", d).Msg("删除空目录") // 嫌吵可以注释掉
+				removedCount++
+			}
+		}
+	}
+	if removedCount > 0 {
+		log.Info().Int("count", removedCount).Msg("已清理空目录")
+	}
+}
+
 func updateFileRecordsOptimized(taskID uint, tracker *FileTracker) error {
 	log.Info().Msg("正在更新数据库文件记录...")
 	paths := tracker.Keys()
@@ -121,7 +168,7 @@ func updateFileRecordsOptimized(taskID uint, tracker *FileTracker) error {
 		return nil
 	}
 
-	batchSize := 500 // SQLite 变量限制，分批插入
+	batchSize := 500
 	records := make([]models.TaskFile, 0, batchSize)
 
 	return database.DB.Transaction(func(tx *gorm.DB) error {
@@ -132,7 +179,6 @@ func updateFileRecordsOptimized(taskID uint, tracker *FileTracker) error {
 			})
 
 			if len(records) >= batchSize || i == len(paths)-1 {
-				// 利用联合唯一索引，如果记录存在则忽略，极大提升速度
 				if err := tx.Clauses(clause.OnConflict{
 					DoNothing: true, 
 				}).CreateInBatches(records, len(records)).Error; err != nil {
@@ -145,7 +191,6 @@ func updateFileRecordsOptimized(taskID uint, tracker *FileTracker) error {
 	})
 }
 
-// 性能优化：使用 ID 游标分页查询，内存占用极低
 func performSafeSyncDeleteOptimized(taskID uint, currentScanTracker *FileTracker) {
 	log.Info().Uint("taskID", taskID).Msg("开始执行安全清理...")
 	
@@ -156,7 +201,6 @@ func performSafeSyncDeleteOptimized(taskID uint, currentScanTracker *FileTracker
 
 	for {
 		var historyFiles []models.TaskFile
-		// 使用 ID > ? 的方式分页，比 OFFSET 快得多
 		if err := database.DB.Where("task_id = ? AND id > ?", taskID, lastID).
 			Order("id asc").Limit(batchSize).Find(&historyFiles).Error; err != nil {
 			log.Error().Err(err).Msg("查询历史记录失败")
@@ -170,21 +214,17 @@ func performSafeSyncDeleteOptimized(taskID uint, currentScanTracker *FileTracker
 		idsToDelete := make([]uint, 0)
 
 		for _, record := range historyFiles {
-			lastID = record.ID // 更新游标
+			lastID = record.ID
 
-			// 如果历史记录里的文件，在本次扫描中不存在，说明云端已删
 			if !currentScanTracker.Has(record.FilePath) {
-				// 删除本地文件
 				if err := os.Remove(record.FilePath); err == nil || os.IsNotExist(err) {
 					log.Info().Str("file", record.FilePath).Msg("同步删除本地失效文件")
 					deletedCount++
 				}
-				// 记录要删除的 DB ID
 				idsToDelete = append(idsToDelete, record.ID)
 			}
 		}
 
-		// 批量删除数据库记录
 		if len(idsToDelete) > 0 {
 			if err := database.DB.Delete(&models.TaskFile{}, idsToDelete).Error; err == nil {
 				dbDeletedCount += len(idsToDelete)
