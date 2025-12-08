@@ -22,8 +22,8 @@ RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o /cloudstream ./cmd/clo
 # --- Stage 3: Final Image ---
 FROM alpine:latest
 
-# 安装 SQLite 运行库和 CA 证书
-RUN apk add --no-cache sqlite-libs ca-certificates tzdata && update-ca-certificates
+# 安装 SQLite 运行库, CA 证书, 以及 mailcap (MIME支持)
+RUN apk add --no-cache sqlite-libs ca-certificates tzdata mailcap && update-ca-certificates
 
 WORKDIR /app
 
