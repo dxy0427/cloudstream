@@ -1,22 +1,23 @@
 <template>
  <n-space vertical>
-  <n-grid x-gap="12" :cols="3">
+  <!-- 修复：响应式布局，强制等高 -->
+  <n-grid x-gap="12" y-gap="12" cols="1 s:3" responsive="screen">
    <n-gi>
-    <n-card title="云账户">
+    <n-card title="云账户" style="height: 100%">
      <n-statistic label="已配置" :value="stats.accountCount">
       <template #prefix><n-icon><CloudOutlined /></n-icon></template>
      </n-statistic>
     </n-card>
    </n-gi>
    <n-gi>
-    <n-card title="任务总数">
+    <n-card title="任务总数" style="height: 100%">
      <n-statistic label="自动扫描" :value="stats.taskCount">
       <template #prefix><n-icon><UnorderedListOutlined /></n-icon></template>
      </n-statistic>
     </n-card>
    </n-gi>
    <n-gi>
-    <n-card title="运行中">
+    <n-card title="运行中" style="height: 100%">
      <n-statistic label="正在执行" :value="stats.runningCount">
       <template #prefix><n-icon><SyncOutlined spin /></n-icon></template>
      </n-statistic>
@@ -34,7 +35,6 @@
         <n-button size="tiny" @click="fetchLogs">手动刷新</n-button>
       </n-space>
     </template>
-    <!-- 使用原生 pre + ref 控制滚动 -->
     <div 
       ref="logContainer"
       style="background-color: #1e1e1e; padding: 10px; border-radius: 4px; height: 300px; overflow-y: auto; font-family: 'Fira Code', monospace; font-size: 12px; color: #ddd; white-space: pre-wrap;"
@@ -74,10 +74,8 @@ const fetchLogs = async () => {
     const res = await api.get('/logs')
     const newLogs = res.data || '暂无日志'
     
-    // 只有内容变了才滚动，防止用户在看历史日志时乱跳
     if (newLogs !== logs.value) {
         logs.value = newLogs
-        // 等待 DOM 更新后滚动到底部
         nextTick(() => {
             if (logContainer.value) {
                 logContainer.value.scrollTop = logContainer.value.scrollHeight
