@@ -55,13 +55,13 @@ const form = reactive({
   currentPassword: '', 
   newPassword: '', 
   confirmPassword: '',
-  webhookUrl: '' // 新增
+  webhookUrl: ''
 })
 
 onMounted(async () => {
  const res = await api.get('/username')
  username.value = res.data.username
- form.webhookUrl = res.data.webhook // 回显 webhook
+ form.webhookUrl = res.data.webhook
 })
 
 const saveTitle = () => {
@@ -72,7 +72,6 @@ const saveTitle = () => {
 const submit = async () => {
  if(!form.currentPassword) return message.error('请输入当前密码以保存设置')
  await api.post('/update_credentials', form)
- // 如果改了密码或用户名，才需要重新登录
  if (form.newPassword || (form.newUsername && form.newUsername !== username.value)) {
     message.success('凭证已修改，请重新登录')
     setTimeout(() => {
