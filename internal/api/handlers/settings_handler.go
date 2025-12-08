@@ -13,9 +13,19 @@ func GetUsernameHandler(c *gin.Context) {
 	username, _ := c.Get("username")
 	var user models.User
 	database.DB.Where("username = ?", username).First(&user)
+	
+	// 默认值
+	notifyType := user.NotifyType
+	if notifyType == "" {
+		notifyType = models.NotifyTypeWebhook
+	}
+
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
-		"username": username,
-		"webhook":  user.WebhookURL,
+		"username":       username,
+		"notifyType":     notifyType,
+		"webhookUrl":     user.WebhookURL,
+		"telegramToken":  user.TelegramToken,
+		"telegramChatId": user.TelegramChatID,
 	}})
 }
 
@@ -28,22 +38,20 @@ func GetSystemLogsHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": logs})
 }
 
-// 新增：Webhook 测试接口
+// 统一测试接口
 func TestWebhookHandler(c *gin.Context) {
-	var req struct {
-		URL string `json:"url"`
-	}
+	var req map[string]string
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "参数错误"})
 		return
 	}
 	
-	if err := core.SendTestNotification(req.URL); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "发送失败: " + err.Error()})
+	if err := core.SendTestNotification(req); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "测试发送失败: " + err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "发送成功，请检查接收端"})
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "测试消息发送成功！"})
 }
 
 func UpdateCredentialsHandler(c *gin.Context) {
@@ -52,7 +60,11 @@ func UpdateCredentialsHandler(c *gin.Context) {
 		CurrentPassword string `json:"currentPassword" binding:"required"`
 		NewPassword     string `json:"newPassword"`
 		ConfirmPassword string `json:"confirmPassword"`
+		
+		NotifyType      string `json:"notifyType"`
 		WebhookURL      string `json:"webhookUrl"`
+		TelegramToken   string `json:"telegramToken"`
+		TelegramChatID  string `json:"telegramChatId"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "参数错误"})
@@ -64,16 +76,18 @@ func UpdateCredentialsHandler(c *gin.Context) {
 	database.DB.Where("username = ?", currentUsername).First(&user)
 
 	if !utils.CheckPasswordHash(req.CurrentPassword, user.PasswordHash) {
-		c.JSON(http.StatusUnauthorized, gin.H{"code": 1, "message": "当前密码不正确"})
+		c.JSON(http.StatusUnauthorized, gin.H{"code": 1, "message": "当前密码不正确，无法保存修改"})
 		return
 	}
 
-	changed := false
-	if req.WebhookURL != user.WebhookURL {
-		user.WebhookURL = req.WebhookURL
-		database.DB.Save(&user)
-	}
+	// 更新通知配置
+	user.NotifyType = req.NotifyType
+	user.WebhookURL = req.WebhookURL
+	user.TelegramToken = req.TelegramToken
+	user.TelegramChatID = req.TelegramChatID
+	database.DB.Save(&user)
 
+	changed := false
 	if req.NewUsername != "" && req.NewUsername != user.Username {
 		var existingUser models.User
 		if database.DB.Where("username = ?", req.NewUsername).First(&existingUser).Error == nil {
@@ -106,6 +120,6 @@ func UpdateCredentialsHandler(c *gin.Context) {
 		}
 		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "凭证更新成功，请重新登录"})
 	} else {
-		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "设置已更新"})
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "所有设置已保存"})
 	}
 }
