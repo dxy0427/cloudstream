@@ -3,7 +3,6 @@ import { ref } from 'vue'
 
 export const useGlobalStore = defineStore('global', () => {
   const siteTitle = ref('CloudStream')
-  
   const isDark = ref(localStorage.getItem('theme') !== 'light')
 
   const toggleTheme = () => {
