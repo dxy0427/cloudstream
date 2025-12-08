@@ -11,7 +11,7 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.actor }}/cloudstream
+  IMAGE_NAME: dxy0427/cloudstream
 
 jobs:
   build-and-push:
