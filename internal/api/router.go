@@ -12,9 +12,7 @@ import (
 
 func InitRouter() *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
-
 	r := gin.New()
-
 	r.Use(gin.Recovery())
 
 	v1 := r.Group("/api/v1")
@@ -26,10 +24,10 @@ func InitRouter() *gin.Engine {
 		authorized.Use(auth.JWTAuthMiddleware())
 		{
 			authorized.GET("/username", handlers.GetUsernameHandler)
-			authorized.GET("/logs", handlers.GetSystemLogsHandler) // <--- 新增日志接口路由
+			authorized.GET("/logs", handlers.GetSystemLogsHandler) // 新增路由
 			authorized.POST("/update_credentials", handlers.UpdateCredentialsHandler)
 			authorized.POST("/accounts/test", handlers.TestAccountConnectionHandler)
-
+			
 			accounts := authorized.Group("/accounts")
 			{
 				accounts.GET("", handlers.ListAccountsHandler)
