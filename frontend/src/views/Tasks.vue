@@ -29,6 +29,7 @@
     <n-form-item label="CRON 表达式">
      <n-input v-model:value="form.Cron" placeholder="0 */2 * * *" />
     </n-form-item>
+    
     <n-form-item label="STRM 扩展名">
       <n-input v-model:value="form.StrmExtensions" placeholder="mp4,mkv,ts,iso" />
     </n-form-item>
@@ -38,12 +39,11 @@
 
     <n-form-item label="选项">
      <n-space>
-       <n-checkbox v-model:checked="form.Overwrite">覆盖模式 (即使本地存在也重写)</n-checkbox>
-       <n-checkbox v-model:checked="form.SyncDelete">同步删除 (自动删除云端已不存在的本地文件)</n-checkbox>
+       <n-checkbox v-model:checked="form.Overwrite">覆盖模式</n-checkbox>
+       <n-checkbox v-model:checked="form.SyncDelete">同步删除 (自动清理)</n-checkbox>
        <n-checkbox v-model:checked="form.EncodePath">加密路径</n-checkbox>
      </n-space>
     </n-form-item>
-    
     <n-form-item label="并发线程">
       <n-input-number v-model:value="form.Threads" :min="1" :max="8" />
     </n-form-item>
@@ -81,7 +81,7 @@ const defaultForm = {
   LocalPath: '/app/strm/', 
   Cron: '0 */2 * * *', 
   Overwrite: false, 
-  SyncDelete: false, // 新增
+  SyncDelete: false, 
   EncodePath: false, 
   Threads: 4,
   StrmExtensions: 'mp4,mkv,ts,iso,mov,avi', 
