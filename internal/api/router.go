@@ -25,6 +25,12 @@ func InitRouter() *gin.Engine {
 		{
 			authorized.GET("/username", handlers.GetUsernameHandler)
 			authorized.GET("/logs", handlers.GetSystemLogsHandler)
+			
+			// 通知相关
+			authorized.POST("/webhook/test", handlers.TestWebhookHandler)
+			authorized.POST("/notifications", handlers.UpdateNotificationHandler) // 新增
+
+			// 安全设置相关
 			authorized.POST("/update_credentials", handlers.UpdateCredentialsHandler)
 			
 			// 账户相关
@@ -36,9 +42,6 @@ func InitRouter() *gin.Engine {
 				accounts.PUT("/:id", handlers.UpdateAccountHandler)
 				accounts.DELETE("/:id", handlers.DeleteAccountHandler)
 			}
-
-			// Webhook 测试 (新增)
-			authorized.POST("/webhook/test", handlers.TestWebhookHandler)
 
 			// 任务相关
 			tasks := authorized.Group("/tasks")
