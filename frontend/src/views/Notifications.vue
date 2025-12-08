@@ -68,6 +68,10 @@ const testNotify = async () => {
       payload.chatId = form.telegramChatId
   } else {
       if (!form.webhookUrl) return message.warning('请填写 Webhook URL')
+      // 修复：增加 http 校验
+      if (!/^https?:\/\//.test(form.webhookUrl)) {
+          return message.error('URL 必须以 http:// 或 https:// 开头')
+      }
       payload.url = form.webhookUrl
   }
 
@@ -78,6 +82,9 @@ const testNotify = async () => {
 }
 
 const saveNotify = async () => {
+  if (form.notifyType === 'webhook' && form.webhookUrl && !/^https?:\/\//.test(form.webhookUrl)) {
+      return message.error('Webhook URL 格式不正确')
+  }
   try {
     await api.post('/notifications', form)
     message.success('通知配置已保存')
