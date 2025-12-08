@@ -10,7 +10,6 @@
   >
    <div style="padding: 16px; font-weight: bold; font-size: 1.2em; display:flex; align-items:center; gap:10px; overflow: hidden;">
     <span>🚀</span>
-    <!-- 使用 Store 中的标题 -->
     <span v-if="!collapsed" style="white-space: nowrap;">{{ store.siteTitle }}</span>
    </div>
    <n-menu
@@ -21,11 +20,9 @@
   </n-layout-sider>
   <n-layout>
    <n-layout-header bordered style="padding: 10px 20px; display: flex; justify-content: space-between; align-items: center;">
-     <!-- 左侧面包屑或其他内容占位 -->
      <div></div>
      
      <n-space align="center">
-       <!-- 主题切换开关 -->
        <n-switch :value="store.isDark" @update:value="store.toggleTheme">
          <template #checked-icon>🌙</template>
          <template #unchecked-icon>☀️</template>
@@ -45,7 +42,7 @@
 import { h, ref, computed } from 'vue'
 import { NIcon } from 'naive-ui'
 import { useRoute, useRouter } from 'vue-router'
-import { useGlobalStore } from '../store/global' // 引入 store
+import { useGlobalStore } from '../store/global'
 import {
  DashboardOutlined,
  CloudOutlined,
@@ -56,6 +53,8 @@ import {
 const store = useGlobalStore()
 const router = useRouter()
 const route = useRoute()
+
+const collapsed = ref(false)
 
 function renderIcon(icon) {
  return () => h(NIcon, null, { default: () => h(icon) })
