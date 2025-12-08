@@ -52,7 +52,13 @@ func RunScanTask(ctx context.Context, task models.Task) {
 	rateLimiter := time.NewTicker(time.Second / time.Duration(threads))
 	defer rateLimiter.Stop()
 
-	scanDirectoryRecursive(ctx, client, task, account.Type, task.SourceFolderID, "", task.LocalPath, strmExtMap, metaExtMap, &wg, workerPool, rateLimiter)
+	// 修复：如果 SourceFolderID 是 "0" 且为 OpenList，转换为 "/"
+	startFolderID := task.SourceFolderID
+	if account.Type == models.AccountTypeOpenList && (startFolderID == "0" || startFolderID == "") {
+		startFolderID = "/"
+	}
+
+	scanDirectoryRecursive(ctx, client, task, account.Type, startFolderID, "", task.LocalPath, strmExtMap, metaExtMap, &wg, workerPool, rateLimiter)
 
 	wg.Wait()
 	select {
@@ -82,8 +88,6 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 			log.Error().Err(err).Str("task", task.Name).Str("folderID", folderID).Msg("无效的目录ID")
 			return
 		}
-	} else if accountType == models.AccountTypeOpenList {
-		folderIDInt = 0
 	}
 
 	var lastFileId int64 = 0
@@ -118,9 +122,10 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 			}
 			lastFileId = nextLastFileId
 		} else if accountType == models.AccountTypeOpenList {
+			// 修复：传入路径字符串而非 ID
 			files, err := client.ListOpenListDirectory(folderID)
 			if err != nil {
-				log.Error().Err(err).Str("task", task.Name).Msg("扫描目录失败（OpenList）")
+				log.Error().Err(err).Str("task", task.Name).Str("path", folderID).Msg("扫描目录失败（OpenList）")
 				return
 			}
 			allFiles = append(allFiles, files...)
@@ -144,6 +149,7 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 			if accountType == models.AccountType123Pan {
 				nextFolderID = strconv.FormatInt(currentItem.FileId, 10)
 			} else {
+				// 修复：递归路径拼接
 				nextFolderID = joinOpenListPath(folderID, currentItem.FileName)
 			}
 
@@ -181,6 +187,7 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 				} else if metaExtMap[ext] {
 					var downloadIdentity interface{}
 					if accountType == models.AccountTypeOpenList {
+						// 修复：元数据下载也需要完整路径
 						downloadIdentity = joinOpenListPath(folderID, fileToProcess.FileName)
 					} else {
 						downloadIdentity = fileToProcess.FileId
@@ -203,17 +210,6 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 		}
 	}
 
-	urlPath := cloudRelPath
-	if !strings.HasPrefix(urlPath, "/") {
-		urlPath = "/" + urlPath
-	}
-	parts := strings.Split(urlPath, "/")
-	encodedParts := make([]string, len(parts))
-	for i, p := range parts {
-		encodedParts[i] = url.PathEscape(p)
-	}
-	encodedPath := strings.Join(encodedParts, "/")
-
 	baseURL := client.Account.StrmBaseURL
 	if len(baseURL) > 0 && baseURL[len(baseURL)-1] == '/' {
 		baseURL = baseURL[:len(baseURL)-1]
@@ -224,6 +220,7 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 
 	var realIdentity string
 	if client.Account.Type == models.AccountTypeOpenList {
+		// 修复：对于 OpenList，realIdentity 必须是绝对路径
 		realIdentity = joinOpenListPath(task.SourceFolderID, cloudRelPath)
 	} else {
 		realIdentity = strconv.FormatInt(file.FileId, 10)
@@ -238,10 +235,23 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 			log.Error().Err(err).Msg("生成签名失败")
 			return
 		}
+		displayPath := cloudRelPath
+		if !strings.HasPrefix(displayPath, "/") {
+			displayPath = "/" + displayPath
+		}
+		// URL Path Escape
+		parts := strings.Split(displayPath, "/")
+		encodedParts := make([]string, len(parts))
+		for i, p := range parts {
+			encodedParts[i] = url.PathEscape(p)
+		}
+		encodedPath := strings.Join(encodedParts, "/")
+		
 		streamURL = fmt.Sprintf("%s/api/v1/stream/s%s?sign=%s", baseURL, encodedPath, sign)
 	} else {
 		// 非签名模式
 		if client.Account.Type == models.AccountTypeOpenList {
+			// 修复：OpenList 必须将完整绝对路径编码进 URL
 			realParts := strings.Split(realIdentity, "/")
 			encRealParts := make([]string, len(realParts))
 			for i, p := range realParts {
@@ -250,6 +260,18 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 			encRealIdentity := strings.Join(encRealParts, "/")
 			streamURL = fmt.Sprintf("%s/api/v1/stream/s/%d%s", baseURL, task.AccountID, encRealIdentity)
 		} else {
+			// 123Pan
+			urlPath := cloudRelPath
+			if !strings.HasPrefix(urlPath, "/") {
+				urlPath = "/" + urlPath
+			}
+			parts := strings.Split(urlPath, "/")
+			encodedParts := make([]string, len(parts))
+			for i, p := range parts {
+				encodedParts[i] = url.PathEscape(p)
+			}
+			encodedPath := strings.Join(encodedParts, "/")
+			
 			fileIdStr := strconv.FormatInt(file.FileId, 10)
 			streamURL = fmt.Sprintf("%s/api/v1/stream/s/%d/%s%s", baseURL, task.AccountID, fileIdStr, encodedPath)
 		}
@@ -313,7 +335,7 @@ func joinOpenListPath(parts ...string) string {
 		}
 		if i == 0 {
 			if p == "/" {
-				cleaned = append(cleaned, "/")
+				cleaned = append(cleaned, "")
 				continue
 			}
 			p = "/" + strings.TrimLeft(p, "/")
@@ -322,8 +344,11 @@ func joinOpenListPath(parts ...string) string {
 		}
 		cleaned = append(cleaned, p)
 	}
-	if len(cleaned) == 0 {
-		return "/"
+	
+	result := path.Join(cleaned...)
+	// 确保绝对路径
+	if !strings.HasPrefix(result, "/") {
+		result = "/" + result
 	}
-	return path.Join(cleaned...)
+	return result
 }
