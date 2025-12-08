@@ -48,10 +48,10 @@ const loadFiles = async (parentId, name) => {
  if (!props.accountId) return
  loading.value = true
  try {
-  // 修复：正确处理编码，后端已适配 "0" 和 "/"
+  // 修复：对 parentId 进行 URL 编码，支持 OpenList 路径包含 / 等字符
   const res = await api.get(`/cloud/files?accountId=${props.accountId}&parentFileId=${encodeURIComponent(parentId)}`)
   files.value = res.data.fileList || []
-  if(parentId === '0' || parentId === '/') {
+  if(parentId === '0' || parentId === '/' || parentId === '') {
     pathStack.value = []
   }
  } finally {
