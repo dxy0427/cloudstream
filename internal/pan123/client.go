@@ -231,10 +231,11 @@ func (c *Client) GetDownloadURL(identifier interface{}) (string, error) {
 		case string:
 			pathStr = v
 		default:
-			return "", fmt.Errorf("OpenList 参数必须是路径字符串")
+			return "", fmt.Errorf("OpenList 参数必须是路径字符串，当前类型: %T", v)
 		}
-		if pathStr == "0" || pathStr == "" {
-			return "", fmt.Errorf("OpenList 路径无效: %s", pathStr)
+		// 修复：允许根路径（虽然通常不下载根目录，但逻辑要健壮）
+		if pathStr == "" {
+			return "", fmt.Errorf("OpenList 路径无效")
 		}
 		return c.OpenListClient.GetRawURL(pathStr)
 	}
