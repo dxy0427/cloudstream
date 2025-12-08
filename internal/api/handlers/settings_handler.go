@@ -28,11 +28,6 @@ func GetSystemLogsHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": logs})
 }
 
-func TestAccountConnectionHandler(c *gin.Context) {
-    // (保持原有的测试连接逻辑不变，这里不需要改动，只是为了完整性提及)
-    // 因为我们只改了 Webhook 相关逻辑
-}
-
 func UpdateCredentialsHandler(c *gin.Context) {
 	var req struct {
 		NewUsername     string `json:"newUsername"`
@@ -58,7 +53,7 @@ func UpdateCredentialsHandler(c *gin.Context) {
 	changed := false
 	if req.WebhookURL != user.WebhookURL {
 		user.WebhookURL = req.WebhookURL
-        database.DB.Save(&user)
+		database.DB.Save(&user)
 	}
 
 	if req.NewUsername != "" && req.NewUsername != user.Username {
@@ -91,8 +86,8 @@ func UpdateCredentialsHandler(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "更新凭证失败: " + err.Error()})
 			return
 		}
-        c.JSON(http.StatusOK, gin.H{"code": 0, "message": "凭证更新成功，请重新登录"})
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "凭证更新成功，请重新登录"})
 	} else {
-        c.JSON(http.StatusOK, gin.H{"code": 0, "message": "设置已更新"})
-    }
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "设置已更新"})
+	}
 }
