@@ -16,7 +16,7 @@ import (
 
 const (
 	ApiBaseURL = "https://open-api.123pan.com"
-	Timeout    = 20 * time.Second
+	Timeout    = 60 * time.Second
 	UserAgent  = "CloudStream/1.0.0"
 )
 

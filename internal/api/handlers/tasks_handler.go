@@ -6,9 +6,24 @@ import (
 	"cloudstream/internal/models"
 	"fmt"
 	"github.com/gin-gonic/gin"
+	"github.com/robfig/cron/v3"
 	"net/http"
 	"strconv"
 )
+
+// 辅助函数：校验 Cron 表达式
+func validateCron(spec string) error {
+	parser := cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	_, err := parser.Parse(spec)
+	if err != nil {
+		// 尝试标准 Linux Cron (5位)
+		parserStandard := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+		if _, err2 := parserStandard.Parse(spec); err2 != nil {
+			return fmt.Errorf("Cron 表达式格式错误")
+		}
+	}
+	return nil
+}
 
 func ListTasksHandler(c *gin.Context) {
 	var tasks []models.Task
@@ -36,6 +51,13 @@ func CreateTaskHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": fmt.Sprintf("参数错误: %s", err.Error())})
 		return
 	}
+	
+	// 校验 Cron
+	if err := validateCron(task.Cron); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": err.Error()})
+		return
+	}
+
 	if err := database.DB.Create(&task).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "创建任务失败: " + err.Error()})
 		return
@@ -63,6 +85,11 @@ func UpdateTaskHandler(c *gin.Context) {
 		return
 	}
 
+	if err := validateCron(task.Cron); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": err.Error()})
+		return
+	}
+
 	if err := database.DB.Save(&task).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "更新任务失败: " + err.Error()})
 		return
@@ -81,13 +108,20 @@ func DeleteTaskHandler(c *gin.Context) {
 	}
 	taskID := uint(id)
 
+	// 1. 停止正在运行的任务
 	core.StopTask(taskID)
+
+	// 2. 删除任务本身
 	if err := database.DB.Unscoped().Delete(&models.Task{}, taskID).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": fmt.Sprintf("删除任务失败: %s", err.Error())})
 		return
 	}
+
+	// 3. 核心优化：清理该任务关联的所有文件记录 (防膨胀)
+	database.DB.Unscoped().Where("task_id = ?", taskID).Delete(&models.TaskFile{})
+
 	core.RefreshScheduler()
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "任务删除成功"})
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "任务及关联记录已删除"})
 }
 
 func ExecuteTaskHandler(c *gin.Context) {

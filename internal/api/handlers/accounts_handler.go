@@ -11,7 +11,8 @@ import (
 
 func ListAccountsHandler(c *gin.Context) {
 	var accounts []models.Account
-	database.DB.Order("id desc").Find(&accounts)
+	// 修复：按 ID 升序排列
+	database.DB.Order("id asc").Find(&accounts)
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": accounts})
 }
 
@@ -30,8 +31,8 @@ func validateAccount(a *models.Account) (ok bool, msg string) {
 			return false, "123 云盘账户名称、ClientID、ClientSecret 不能为空"
 		}
 	case models.AccountTypeOpenList:
-		if a.Name == "" || a.OpenListURL == "" || a.OpenListToken == "" {
-			return false, "OpenList 账户名称、地址和令牌不能为空"
+		if a.Name == "" || a.OpenListURL == "" {
+			return false, "OpenList 账户名称和地址不能为空"
 		}
 	default:
 		return false, "不支持的云账户类型"

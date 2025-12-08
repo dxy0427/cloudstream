@@ -16,14 +16,15 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"sort" // 新增：用于排序目录深度
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// 高性能 FileTracker (Mutex + Map)
+// 高性能 FileTracker
 type FileTracker struct {
 	sync.RWMutex
 	files map[string]struct{}
@@ -82,6 +83,10 @@ func RunScanTask(ctx context.Context, task models.Task) {
 	metaExtMap := parseExtensions(task.MetaExtensions)
 	
 	tracker := NewFileTracker()
+	
+	// 核心修复：增加错误标志位 (atomic)
+	var hasError atomic.Bool
+	hasError.Store(false)
 
 	var wg sync.WaitGroup
 	workerPool := make(chan struct{}, threads)
@@ -93,65 +98,57 @@ func RunScanTask(ctx context.Context, task models.Task) {
 		startFolderID = "/"
 	}
 
-	scanDirectoryRecursive(ctx, client, task, account.Type, startFolderID, "", task.LocalPath, strmExtMap, metaExtMap, &wg, workerPool, rateLimiter, tracker)
+	// 执行扫描，传入 hasError 指针
+	scanDirectoryRecursive(ctx, client, task, account.Type, startFolderID, "", task.LocalPath, strmExtMap, metaExtMap, &wg, workerPool, rateLimiter, tracker, &hasError)
 
 	wg.Wait()
 
 	select {
 	case <-ctx.Done():
-		log.Warn().Str("task", task.Name).Msg("任务已被手动停止，跳过数据库更新和清理")
+		log.Warn().Str("task", task.Name).Msg("任务已被手动停止")
+		SendNotification("任务停止", fmt.Sprintf("任务 '%s' 已被手动停止", task.Name))
 	default:
+		// 核心修复：检查是否有错误发生
+		if hasError.Load() {
+			msg := fmt.Sprintf("任务 '%s' 执行过程中出现错误，为防止误删，已跳过数据库更新和本地清理。", task.Name)
+			log.Error().Msg(msg)
+			SendNotification("任务异常", msg)
+			return // 直接退出，不执行清理
+		}
+
+		// 只有完全无错时才更新 DB
 		if err := updateFileRecordsOptimized(task.ID, tracker); err != nil {
 			log.Error().Err(err).Msg("更新数据库文件记录失败")
 		}
 
 		if task.SyncDelete {
-			// 1. 先删文件
 			performSafeSyncDeleteOptimized(task.ID, tracker)
-			// 2. 后删空目录 (新增)
 			cleanEmptyDirs(task.LocalPath)
 		}
 		log.Info().Str("task", task.Name).Msg("任务执行完毕")
+		SendNotification("任务完成", fmt.Sprintf("任务 '%s' 已执行完毕", task.Name))
 	}
 }
 
-// === 新增：递归清理空目录逻辑 ===
 func cleanEmptyDirs(root string) {
-	// 1. 收集所有目录路径
 	var dirs []string
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if info.IsDir() {
-			dirs = append(dirs, path)
-		}
+		if err != nil { return nil }
+		if info.IsDir() { dirs = append(dirs, path) }
 		return nil
 	})
-	if err != nil {
-		log.Error().Err(err).Msg("遍历目录失败")
-		return
-	}
+	if err != nil { return }
 
-	// 2. 按路径长度倒序排序 (确保先处理子目录 A/B/C，再处理 A/B)
 	sort.Slice(dirs, func(i, j int) bool {
 		return len(dirs[i]) > len(dirs[j])
 	})
 
-	// 3. 遍历检查并删除
 	removedCount := 0
 	for _, d := range dirs {
-		// 不删除根目录
-		if d == root || d == strings.TrimSuffix(root, "/") {
-			continue
-		}
-
-		// 读取目录内容
+		if d == root || d == strings.TrimSuffix(root, "/") { continue }
 		entries, err := os.ReadDir(d)
 		if err == nil && len(entries) == 0 {
-			// 如果为空，则删除
 			if err := os.Remove(d); err == nil {
-				// log.Debug().Str("dir", d).Msg("删除空目录") // 嫌吵可以注释掉
 				removedCount++
 			}
 		}
@@ -237,7 +234,12 @@ func performSafeSyncDeleteOptimized(taskID uint, currentScanTracker *FileTracker
 	}
 }
 
-func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task models.Task, accountType, folderID, currentCloudPath, localBasePath string, strmExtMap, metaExtMap map[string]bool, wg *sync.WaitGroup, pool chan struct{}, limiter *time.Ticker, tracker *FileTracker) {
+func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task models.Task, accountType, folderID, currentCloudPath, localBasePath string, strmExtMap, metaExtMap map[string]bool, wg *sync.WaitGroup, pool chan struct{}, limiter *time.Ticker, tracker *FileTracker, hasError *atomic.Bool) {
+	// 如果全局已有错误，停止后续递归
+	if hasError.Load() {
+		return
+	}
+	
 	select {
 	case <-ctx.Done():
 		return
@@ -254,12 +256,14 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 		folderIDInt, err = strconv.ParseInt(folderID, 10, 64)
 		if err != nil {
 			log.Error().Err(err).Str("task", task.Name).Str("folderID", folderID).Msg("无效的目录ID")
+			hasError.Store(true) // 标记错误
 			return
 		}
 	}
 
 	var lastFileId int64 = 0
 	for {
+		if hasError.Load() { return } // 再次检查
 		select {
 		case <-ctx.Done():
 			return
@@ -276,6 +280,7 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 				}
 				if err != nil {
 					log.Error().Err(err).Str("task", task.Name).Msg("扫描目录失败（123云盘）")
+					hasError.Store(true) // 核心修复：标记错误
 					return
 				}
 			}
@@ -292,6 +297,7 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 			files, err := client.ListOpenListDirectory(folderID)
 			if err != nil {
 				log.Error().Err(err).Str("task", task.Name).Str("path", folderID).Msg("扫描目录失败（OpenList）")
+				hasError.Store(true) // 核心修复：标记错误
 				return
 			}
 			allFiles = append(allFiles, files...)
@@ -300,15 +306,11 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 	}
 
 	for _, item := range allFiles {
+		if hasError.Load() { return } // 尽早退出
+
 		currentItem := item
 		itemCloudPath := path.Join(currentCloudPath, currentItem.FileName)
 		nextLocalPath := filepath.Join(localBasePath, currentItem.FileName)
-
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
 
 		if currentItem.IsDir() {
 			var nextFolderID string
@@ -327,12 +329,15 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 				case pool <- struct{}{}:
 				}
 				defer func() { <-pool }()
-				scanDirectoryRecursive(ctx, client, task, accountType, nextFolderID, itemCloudPath, nextLocalPath, strmExtMap, metaExtMap, wg, pool, limiter, tracker)
+				scanDirectoryRecursive(ctx, client, task, accountType, nextFolderID, itemCloudPath, nextLocalPath, strmExtMap, metaExtMap, wg, pool, limiter, tracker, hasError)
 			}()
 		} else {
 			wg.Add(1)
 			go func(fileToProcess pan123.FileInfo, cloudRelPath string) {
 				defer wg.Done()
+				// 如果已有错误，跳过处理
+				if hasError.Load() { return }
+
 				select {
 				case <-ctx.Done():
 					return

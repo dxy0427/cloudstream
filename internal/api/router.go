@@ -11,24 +11,25 @@ import (
 )
 
 func InitRouter() *gin.Engine {
-	// 设置为发布模式，减少 Gin 内部的调试输出
 	gin.SetMode(gin.ReleaseMode)
-	
 	r := gin.New()
-	
-	// 优化：移除 gin.Logger()，只保留 Recovery (崩溃恢复)
-	// 这样就不会有烦人的 [GIN] 200 | ... 访问日志了
 	r.Use(gin.Recovery())
 
 	v1 := r.Group("/api/v1")
 	{
 		v1.Match([]string{"GET", "HEAD"}, "/stream/s/*path", handlers.UnifiedStreamHandler)
-		v1.POST("/login", auth.LoginHandler)
+		
+		// 核心修复：增加登录频率限制，防止暴力破解
+		v1.POST("/login", auth.LoginRateLimiter(), auth.LoginHandler)
 
 		authorized := v1.Group("/")
 		authorized.Use(auth.JWTAuthMiddleware())
 		{
 			authorized.GET("/username", handlers.GetUsernameHandler)
+			authorized.GET("/logs", handlers.GetSystemLogsHandler)
+			
+			authorized.POST("/webhook/test", handlers.TestWebhookHandler)
+			authorized.POST("/notifications", handlers.UpdateNotificationHandler)
 			authorized.POST("/update_credentials", handlers.UpdateCredentialsHandler)
 			authorized.POST("/accounts/test", handlers.TestAccountConnectionHandler)
 			

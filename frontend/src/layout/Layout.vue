@@ -21,13 +21,11 @@
   <n-layout>
    <n-layout-header bordered style="padding: 10px 20px; display: flex; justify-content: space-between; align-items: center;">
      <div></div>
-     
      <n-space align="center">
        <n-switch :value="store.isDark" @update:value="store.toggleTheme">
          <template #checked-icon>🌙</template>
          <template #unchecked-icon>☀️</template>
        </n-switch>
-       
        <n-button strong secondary type="error" size="small" @click="logout">退出登录</n-button>
      </n-space>
    </n-layout-header>
@@ -47,6 +45,7 @@ import {
  DashboardOutlined,
  CloudOutlined,
  SyncOutlined,
+ BellOutlined,
  SettingOutlined
 } from '@vicons/antd'
 
@@ -63,6 +62,7 @@ const menuOptions = [
  { label: '仪表盘', key: 'dashboard', icon: renderIcon(DashboardOutlined) },
  { label: '云账户', key: 'accounts', icon: renderIcon(CloudOutlined) },
  { label: '任务管理', key: 'tasks', icon: renderIcon(SyncOutlined) },
+ { label: '通知管理', key: 'notifications', icon: renderIcon(BellOutlined) },
  { label: '安全设置', key: 'settings', icon: renderIcon(SettingOutlined) },
 ]
 

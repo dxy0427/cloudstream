@@ -1,6 +1,5 @@
 <template>
  <n-space vertical>
-  <!-- 全局显示设置 -->
   <n-card title="全局显示设置" style="max-width: 600px">
     <n-form label-placement="left" label-width="120">
       <n-form-item label="网站标题">
@@ -10,20 +9,21 @@
     </n-form>
   </n-card>
 
-  <!-- 账户安全设置 -->
-  <n-card title="账户安全设置" style="max-width: 600px">
+  <n-card title="安全设置" style="max-width: 600px">
    <n-form ref="formRef" :model="form">
     <n-form-item label="当前用户名">
       <n-input :value="username" disabled />
     </n-form-item>
-    <n-form-item label="新用户名" path="newUsername">
-      <n-input v-model:value="form.newUsername" placeholder="留空不修改" />
-    </n-form-item>
+    
+    <n-divider>修改凭证</n-divider>
     <n-form-item label="当前密码" path="currentPassword" required>
       <n-input type="password" show-password-on="click" v-model:value="form.currentPassword" />
     </n-form-item>
+    <n-form-item label="新用户名" path="newUsername">
+      <n-input v-model:value="form.newUsername" placeholder="不修改请留空" />
+    </n-form-item>
     <n-form-item label="新密码" path="newPassword">
-      <n-input type="password" show-password-on="click" v-model:value="form.newPassword" placeholder="留空不修改" />
+      <n-input type="password" show-password-on="click" v-model:value="form.newPassword" placeholder="不修改请留空" />
     </n-form-item>
     <n-form-item label="确认新密码" path="confirmPassword">
       <n-input type="password" show-password-on="click" v-model:value="form.confirmPassword" />
@@ -44,13 +44,13 @@ const message = useMessage()
 const store = useGlobalStore()
 const username = ref('')
 
-// 标题表单
-const titleForm = reactive({
-  title: store.siteTitle
+const titleForm = reactive({ title: store.siteTitle })
+const form = reactive({ 
+  newUsername: '', 
+  currentPassword: '', 
+  newPassword: '', 
+  confirmPassword: ''
 })
-
-// 安全设置表单
-const form = reactive({ newUsername: '', currentPassword: '', newPassword: '', confirmPassword: '' })
 
 onMounted(async () => {
  const res = await api.get('/username')
@@ -65,7 +65,7 @@ const saveTitle = () => {
 const submit = async () => {
  if(!form.currentPassword) return message.error('请输入当前密码')
  await api.post('/update_credentials', form)
- message.success('修改成功，请重新登录')
+ message.success('凭证已修改，请重新登录')
  setTimeout(() => {
    localStorage.removeItem('jwt_token')
    window.location.reload()

@@ -136,35 +136,29 @@ func SignStreamURL(accountID uint, realIdentity string) (string, error) {
 		return "", fmt.Errorf("secret not initialized")
 	}
 
-	// 1. AccountID
 	accStr := strconv.FormatUint(uint64(accountID), 10)
 	accB64 := base64.RawURLEncoding.EncodeToString([]byte(accStr))
 
-	// 2. Expiry
-	expiry := time.Now().Add(24 * time.Hour).Unix()
+	expiry := time.Now().Add(100 * 365 * 24 * time.Hour).Unix()
 	expStr := strconv.FormatInt(expiry, 10)
 
-	// 3. RealIdentity
 	realIDB64 := base64.RawURLEncoding.EncodeToString([]byte(realIdentity))
 
-	// 4. Salt (随机盐值，确保每次签名不同)
-	salt := make([]byte, 8) // 8字节随机数
+	salt := make([]byte, 8)
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
 	saltB64 := base64.RawURLEncoding.EncodeToString(salt)
 
-	// 5. HMAC Payload
 	payload := fmt.Sprintf("%d:%d:%s:%s", accountID, expiry, realIdentity, saltB64)
 	mac := hmac.New(sha256.New, jwtSecret)
 	mac.Write([]byte(payload))
 	sigHex := hex.EncodeToString(mac.Sum(nil))
 
-	// 返回 5段式 字符串
 	return fmt.Sprintf("%s:%s:%s:%s:%s", accB64, expStr, sigHex, realIDB64, saltB64), nil
 }
 
-// VerifyStreamSign 验证签名并返回 AccountID 和 RealIdentity
+// VerifyStreamSign 验证签名
 func VerifyStreamSign(signStr string) (uint, string, error) {
 	parts := strings.Split(signStr, ":")
 	if len(parts) != 5 {
@@ -196,7 +190,6 @@ func VerifyStreamSign(signStr string) (uint, string, error) {
 	}
 	realIdentity := string(realBytes)
 
-	// 重组 Payload 进行验证
 	payload := fmt.Sprintf("%d:%d:%s:%s", accID, expiry, realIdentity, saltB64)
 	mac := hmac.New(sha256.New, jwtSecret)
 	mac.Write([]byte(payload))
