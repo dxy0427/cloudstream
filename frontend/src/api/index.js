@@ -21,10 +21,13 @@ api.interceptors.response.use(
   res => res.data,
   err => {
     if (err.response && err.response.status === 401) {
-      localStorage.removeItem('jwt_token')
-      window.location.href = '/login'
+      // 防止无限循环跳转，只有当前不在登录页时才跳转
+      if (!window.location.pathname.includes('/login')) {
+        localStorage.removeItem('jwt_token')
+        window.location.href = '/login'
+      }
     }
-    const msg = err.response?.data?.message || err.response?.data?.error || err.message
+    const msg = err.response?.data?.message || err.response?.data?.error || err.message || '未知错误'
     message.error(msg)
     return Promise.reject(err)
   }
