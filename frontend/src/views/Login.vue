@@ -1,72 +1,114 @@
 <template>
- <n-layout has-sider position="absolute">
-  <n-layout-sider
-   bordered
-   collapse-mode="width"
-   :collapsed-width="64"
-   :width="240"
-   :native-scrollbar="false"
-   show-trigger
-   v-model:collapsed="collapsed"
-  >
-   <div style="padding: 16px; font-weight: bold; font-size: 1.2em; display:flex; align-items:center; justify-content: center; overflow: hidden; white-space: nowrap;">
-    <span>🚀</span>
-    <!-- 修复：增加 mobile-hide 类 -->
-    <span v-if="!collapsed" class="mobile-hide" style="margin-left: 10px">{{ store.siteTitle }}</span>
-   </div>
-   <n-menu
-    :options="menuOptions"
-    :value="activeKey"
-    @update:value="handleUpdateValue"
-   />
-  </n-layout-sider>
-  <n-layout>
-   <n-layout-header bordered style="padding: 10px 20px; display: flex; justify-content: space-between; align-items: center;">
-     <div></div>
-     <n-space align="center">
-       <n-switch :value="store.isDark" @update:value="store.toggleTheme">
-         <template #checked-icon>🌙</template>
-         <template #unchecked-icon>☀️</template>
-       </n-switch>
-       <n-button strong secondary type="error" size="small" @click="logout">退出</n-button>
-     </n-space>
-   </n-layout-header>
-   <n-layout-content content-style="padding: 16px;">
-    <router-view />
-   </n-layout-content>
-  </n-layout>
- </n-layout>
+  <div class="login-container">
+    <n-card class="login-card" hoverable>
+      <div class="login-header">
+        <div class="logo">🚀</div>
+        <h2>{{ store.siteTitle }}</h2>
+      </div>
+      <n-form ref="formRef" :model="form" :rules="rules">
+        <n-form-item path="username" label="用户名">
+          <n-input v-model:value="form.username" placeholder="请输入用户名" @keydown.enter="handleLogin" autofocus />
+        </n-form-item>
+        <n-form-item path="password" label="密码">
+          <n-input
+            type="password"
+            show-password-on="click"
+            v-model:value="form.password"
+            placeholder="请输入密码"
+            @keydown.enter="handleLogin"
+          />
+        </n-form-item>
+        <n-button type="primary" block :loading="loading" @click="handleLogin" size="large">
+          登 录
+        </n-button>
+      </n-form>
+    </n-card>
+  </div>
 </template>
 
 <script setup>
-import { h, ref, computed } from 'vue'
-import { NIcon } from 'naive-ui'
-import { useRoute, useRouter } from 'vue-router'
+import { reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { useMessage } from 'naive-ui'
 import { useGlobalStore } from '../store/global'
-import { DashboardOutlined, CloudOutlined, SyncOutlined, BellOutlined, SettingOutlined } from '@vicons/antd'
+import api from '../api'
 
-const store = useGlobalStore()
 const router = useRouter()
-const route = useRoute()
-const collapsed = ref(false)
+const store = useGlobalStore()
+const message = useMessage()
 
-function renderIcon(icon) { return () => h(NIcon, null, { default: () => h(icon) }) }
+const form = reactive({ username: '', password: '' })
+const loading = ref(false)
 
-const menuOptions = [
- { label: '仪表盘', key: 'dashboard', icon: renderIcon(DashboardOutlined) },
- { label: '云账户', key: 'accounts', icon: renderIcon(CloudOutlined) },
- { label: '任务管理', key: 'tasks', icon: renderIcon(SyncOutlined) },
- { label: '通知管理', key: 'notifications', icon: renderIcon(BellOutlined) },
- { label: '安全设置', key: 'settings', icon: renderIcon(SettingOutlined) },
-]
+const rules = {
+  username: { required: true, message: '请输入用户名', trigger: 'blur' },
+  password: { required: true, message: '请输入密码', trigger: 'blur' }
+}
 
-const activeKey = computed(() => route.path.substring(1))
-function handleUpdateValue(key) { router.push('/' + key) }
-function logout() { localStorage.removeItem('jwt_token'); router.push('/login') }
+const handleLogin = async () => {
+  if (!form.username || !form.password) {
+    message.warning('请输入用户名和密码')
+    return
+  }
+  
+  loading.value = true
+  try {
+    const res = await api.post('/login', form)
+    // 保存 Token
+    localStorage.setItem('jwt_token', res.token)
+    message.success('登录成功')
+    // 跳转到仪表盘
+    router.push('/dashboard')
+  } catch (error) {
+    // 错误已由拦截器处理，这里只需重置加载状态
+  } finally {
+    loading.value = false
+  }
+}
 </script>
 
 <style scoped>
-@media (max-width: 600px) {
-  .mobile-hide { display: none; }
+.login-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  background-color: #2c3e50;
+  background-image: linear-gradient(135deg, #2c3e50 0%, #000000 100%);
+}
+
+.login-card {
+  width: 100%;
+  max-width: 400px;
+  border-radius: 12px;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+}
+
+.login-header {
+  text-align: center;
+  margin-bottom: 24px;
+}
+
+.logo {
+  font-size: 48px;
+  margin-bottom: 10px;
+  animation: float 3s ease-in-out infinite;
+}
+
+h2 {
+  margin: 0;
+  font-weight: 600;
+  color: #333;
+}
+
+/* 适配暗色模式 */
+:deep(.n-card) {
+  background-color: rgba(255, 255, 255, 0.95);
+}
+
+@keyframes float {
+  0% { transform: translateY(0px); }
+  50% { transform: translateY(-10px); }
+  100% { transform: translateY(0px); }
 }
 </style>
