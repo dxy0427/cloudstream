@@ -1,39 +1,60 @@
 <template>
-  <n-layout has-sider position="absolute">
-    <n-layout-sider
-      bordered
-      collapse-mode="width"
-      :collapsed-width="64"
-      :width="240"
-      :native-scrollbar="false"
-      show-trigger
-      v-model:collapsed="collapsed"
-    >
-      <div class="logo-area">
-        <span>🚀</span>
-        <span v-if="!collapsed" class="site-title">{{ store.siteTitle }}</span>
+  <n-layout position="absolute">
+    <!-- 顶部导航栏 (Header) -->
+    <n-layout-header bordered style="height: 64px; padding: 0 15px; display: flex; align-items: center; justify-content: space-between; z-index: 2000;">
+      <div style="display: flex; align-items: center; gap: 15px;">
+        <!-- 左上角菜单按钮 -->
+        <n-button text style="font-size: 24px;" @click="toggleSidebar">
+          <n-icon>
+            <MenuUnfoldOutlined v-if="collapsed" />
+            <MenuFoldOutlined v-else />
+          </n-icon>
+        </n-button>
+        
+        <!-- 网站标题 (全端可见) -->
+        <div style="font-weight: bold; font-size: 1.2rem; display: flex; align-items: center; gap: 8px; cursor: pointer;" @click="$router.push('/')">
+          <span style="font-size: 1.4rem;">🚀</span>
+          <span>{{ store.siteTitle }}</span>
+        </div>
       </div>
-      <n-menu
+
+      <!-- 右侧功能区 -->
+      <n-space align="center">
+        <n-switch :value="store.isDark" @update:value="store.toggleTheme">
+          <template #checked-icon>🌙</template>
+          <template #unchecked-icon>☀️</template>
+        </n-switch>
+        <n-button strong secondary type="error" size="small" @click="logout">退出</n-button>
+      </n-space>
+    </n-layout-header>
+
+    <!-- 下方主体区域 -->
+    <n-layout has-sider position="absolute" style="top: 64px; bottom: 0;">
+      <!-- 侧边栏 (Sider) -->
+      <n-layout-sider
+        bordered
+        collapse-mode="transform"
+        :collapsed-width="0" 
+        :width="240"
         :collapsed="collapsed"
-        :collapsed-width="64"
-        :collapsed-icon-size="22"
-        :options="menuOptions"
-        :value="activeKey"
-        @update:value="handleUpdateValue"
-      />
-    </n-layout-sider>
-    <n-layout>
-      <n-layout-header bordered class="nav-header">
-        <div class="header-left"></div>
-        <n-space align="center">
-          <n-switch :value="store.isDark" @update:value="store.toggleTheme">
-            <template #checked-icon>🌙</template>
-            <template #unchecked-icon>☀️</template>
-          </n-switch>
-          <n-button strong secondary type="error" size="small" @click="logout">退出</n-button>
-        </n-space>
-      </n-layout-header>
-      <n-layout-content content-style="padding: 24px; min-height: calc(100vh - 60px);">
+        :native-scrollbar="false"
+        style="z-index: 1000; height: 100%;"
+        @update:collapsed="(val) => collapsed = val"
+      >
+        <n-menu
+          :options="menuOptions"
+          :value="activeKey"
+          @update:value="handleMenuClick"
+        />
+      </n-layout-sider>
+
+      <!-- 内容区域 (Content) -->
+      <n-layout-content 
+        content-style="padding: 16px; min-height: 100%; transition: all 0.3s;"
+        :native-scrollbar="false"
+      >
+        <!-- 遮罩层：仅在移动端且菜单展开时显示，点击关闭菜单 -->
+        <div v-if="!collapsed && isMobile" class="mobile-mask" @click="collapsed = true"></div>
         <router-view />
       </n-layout-content>
     </n-layout>
@@ -41,8 +62,8 @@
 </template>
 
 <script setup>
-import { h, ref, computed } from 'vue'
-import { NIcon } from 'naive-ui'
+import { h, ref, computed, onMounted } from 'vue'
+import { NIcon, useMessage } from 'naive-ui'
 import { useRoute, useRouter } from 'vue-router'
 import { useGlobalStore } from '../store/global'
 import {
@@ -50,13 +71,31 @@ import {
   CloudOutlined,
   SyncOutlined,
   BellOutlined,
-  SettingOutlined
+  SettingOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined
 } from '@vicons/antd'
 
 const store = useGlobalStore()
 const router = useRouter()
 const route = useRoute()
-const collapsed = ref(false)
+const collapsed = ref(true) // 默认收起
+const isMobile = ref(false)
+
+// 检测屏幕宽度
+const checkMobile = () => {
+  isMobile.value = window.innerWidth <= 768
+  if (isMobile.value) {
+    collapsed.value = true
+  } else {
+    collapsed.value = false // 桌面端默认展开，或者你可以改为 true 让它统一
+  }
+}
+
+onMounted(() => {
+  checkMobile()
+  window.addEventListener('resize', checkMobile)
+})
 
 function renderIcon(icon) {
   return () => h(NIcon, null, { default: () => h(icon) })
@@ -70,14 +109,21 @@ const menuOptions = [
   { label: '安全设置', key: 'settings', icon: renderIcon(SettingOutlined) },
 ]
 
-// 修复：确保路由匹配正确
 const activeKey = computed(() => {
   const path = route.path.split('/')[1]
   return path || 'dashboard'
 })
 
-function handleUpdateValue(key) {
+function toggleSidebar() {
+  collapsed.value = !collapsed.value
+}
+
+function handleMenuClick(key) {
   router.push('/' + key)
+  // 移动端点击菜单后自动收起
+  if (isMobile.value) {
+    collapsed.value = true
+  }
 }
 
 function logout() {
@@ -87,26 +133,15 @@ function logout() {
 </script>
 
 <style scoped>
-.logo-area {
-  padding: 16px;
-  font-weight: bold;
-  font-size: 1.2em;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  white-space: nowrap;
-  height: 64px;
-  box-sizing: border-box;
-}
-.site-title {
-  margin-left: 10px;
-}
-.nav-header {
-  padding: 0 20px;
-  height: 64px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
+/* 移动端遮罩层 */
+.mobile-mask {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  z-index: 900;
+  backdrop-filter: blur(2px);
 }
 </style>
