@@ -5,7 +5,8 @@ const { message } = createDiscreteApi(['message'])
 
 const api = axios.create({
   baseURL: '/api/v1',
-  timeout: 10000
+  // 修复：将超时时间延长至 60 秒，防止大目录加载失败
+  timeout: 60000
 })
 
 api.interceptors.request.use(config => {
@@ -25,7 +26,13 @@ api.interceptors.response.use(
         window.location.href = '/login'
       }
     }
-    const msg = err.response?.data?.message || err.response?.data?.error || err.message || '未知错误'
+    // 优化错误提示：处理超时情况
+    let msg = '未知错误'
+    if (err.code === 'ECONNABORTED' && err.message.includes('timeout')) {
+      msg = '请求超时，请检查网络或稍后重试'
+    } else {
+      msg = err.response?.data?.message || err.response?.data?.error || err.message
+    }
     message.error(msg)
     return Promise.reject(err)
   }
