@@ -11,7 +11,6 @@ const api = axios.create({
 api.interceptors.request.use(config => {
   const token = localStorage.getItem('jwt_token')
   if (token) {
-    // 修复：使用模板字符串正确拼接 Token
     config.headers.Authorization = `Bearer ${token}`
   }
   return config
@@ -21,7 +20,6 @@ api.interceptors.response.use(
   res => res.data,
   err => {
     if (err.response && err.response.status === 401) {
-      // 防止无限循环跳转，只有当前不在登录页时才跳转
       if (!window.location.pathname.includes('/login')) {
         localStorage.removeItem('jwt_token')
         window.location.href = '/login'
