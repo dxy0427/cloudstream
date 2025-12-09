@@ -20,13 +20,16 @@ const (
 	UserAgent  = "CloudStream/1.0.0"
 )
 
+// Token 缓存结构
+type tokenCacheItem struct {
+	sync.RWMutex
+	Token        string
+	ExpiresAt    time.Time
+}
+
 var (
-	tokenCaches = make(map[uint]*struct {
-		sync.RWMutex
-		Token     string
-		ExpiresAt time.Time
-	})
-	mapMutex sync.Mutex
+	tokenCaches = make(map[uint]*tokenCacheItem)
+	mapMutex    sync.Mutex
 )
 
 type Client struct {
@@ -46,14 +49,11 @@ func NewClient(account models.Account) *Client {
 	return client
 }
 
+// 核心优化：双重检查锁获取 Token
 func (c *Client) getAccessToken() (string, error) {
 	mapMutex.Lock()
 	if _, ok := tokenCaches[c.Account.ID]; !ok {
-		tokenCaches[c.Account.ID] = &struct {
-			sync.RWMutex
-			Token     string
-			ExpiresAt time.Time
-		}{}
+		tokenCaches[c.Account.ID] = &tokenCacheItem{}
 	}
 	cache := tokenCaches[c.Account.ID]
 	mapMutex.Unlock()
@@ -114,7 +114,8 @@ func (c *Client) getAccessToken() (string, error) {
 
 	cache.Token = tokenResp.Data.AccessToken
 	cache.ExpiresAt = expires
-	log.Info().Str("account", c.Account.Name).Msg("AccessToken 已成功刷新并缓存")
+	log.Info().Str("account", c.Account.Name).Msg("AccessToken 已成功刷新")
+
 	return cache.Token, nil
 }
 
@@ -175,6 +176,8 @@ func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, pare
 			"parentFileId": parentFileId,
 			"limit":        limit,
 			"trashed":      0,
+			"orderBy":      "fileId",
+			"orderDirection": "asc",
 		}
 		if lastFileId > 0 {
 			params["lastFileId"] = lastFileId
@@ -221,7 +224,6 @@ func (c *Client) ListOpenListDirectory(parentPath string) ([]FileInfo, error) {
 }
 
 func (c *Client) GetDownloadURL(identifier interface{}) (string, error) {
-	// === OpenList ===
 	if c.Account.Type == models.AccountTypeOpenList {
 		if c.OpenListClient == nil {
 			return "", fmt.Errorf("OpenList 客户端未初始化")
@@ -239,10 +241,8 @@ func (c *Client) GetDownloadURL(identifier interface{}) (string, error) {
 		return c.OpenListClient.GetRawURL(pathStr)
 	}
 
-	// === 123云盘 ===
 	var fileID int64
 	var err error
-
 	switch v := identifier.(type) {
 	case int64:
 		fileID = v
@@ -250,7 +250,7 @@ func (c *Client) GetDownloadURL(identifier interface{}) (string, error) {
 		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
 			fileID = id
 		} else {
-			return "", fmt.Errorf("123云盘非签名模式必须提供 FileID，暂不支持纯路径反查: %s", v)
+			return "", fmt.Errorf("123云盘非签名模式必须提供 FileID: %s", v)
 		}
 	default:
 		return "", fmt.Errorf("不支持的参数类型")
@@ -278,32 +278,5 @@ func (c *Client) GetDownloadURL(identifier interface{}) (string, error) {
 }
 
 func (c *Client) GetAccessTokenForTest() (string, error) {
-	apiURL := ApiBaseURL + "/api/v1/access_token"
-	bodyData, _ := json.Marshal(map[string]string{
-		"client_id":     c.Account.ClientID,
-		"client_secret": c.Account.ClientSecret,
-	})
-	req, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewBuffer(bodyData))
-	if err != nil {
-		return "", fmt.Errorf("创建 AccessToken 请求失败: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("platform", "open_platform")
-	req.Header.Set("User-Agent", UserAgent)
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("请求 AccessToken 失败: %w", err)
-	}
-	defer resp.Body.Close()
-	var tokenResp AccessTokenResp
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return "", fmt.Errorf("解析 AccessToken 响应失败: %w", err)
-	}
-	if tokenResp.Code != 0 {
-		return "", fmt.Errorf("API 错误 (code: %d): %s", tokenResp.Code, tokenResp.Message)
-	}
-	if tokenResp.Data.AccessToken == "" {
-		return "", fmt.Errorf("API 未返回有效的 AccessToken")
-	}
-	return tokenResp.Data.AccessToken, nil
+	return c.getAccessToken()
 }

@@ -101,8 +101,8 @@ const columns = [
  { title: '类型', key: 'Type', width: 100, render(row) { return h(NTag, { type: row.Type === '123pan' ? 'info' : 'success', size: 'small' }, { default: () => row.Type }) } },
  { title: '操作', key: 'actions', width: 140, render(row) {
    return h(NSpace, { size: 'small' }, { default: () => [
-     h(NButton, { size: 'tiny', onClick: () => openModal(row) }, { default: () => '编' }),
-     h(NButton, { size: 'tiny', type: 'error', onClick: () => handleDelete(row) }, { default: () => '删' })
+     h(NButton, { size: 'tiny', onClick: () => openModal(row) }, { default: () => '编辑' }),
+     h(NButton, { size: 'tiny', type: 'error', onClick: () => handleDelete(row) }, { default: () => '删除' })
    ]})
   }
  }

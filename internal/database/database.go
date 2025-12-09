@@ -21,14 +21,32 @@ func ConnectDatabase(dbPath string) error {
 		return fmt.Errorf("创建数据目录失败: %w", err)
 	}
 
-	DB, err = gorm.Open(sqlite.Open(dbPath), &gorm.Config{
+	// 开启 WAL 模式的关键配置
+	dbConfig := &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
-	})
+	}
+
+	DB, err = gorm.Open(sqlite.Open(dbPath), dbConfig)
 	if err != nil {
 		return fmt.Errorf("连接数据库失败: %w", err)
 	}
 
-	// 自动迁移结构，加入 TaskFile
+	// 获取底层 SQL DB 对象进行配置
+	sqlDB, err := DB.DB()
+	if err != nil {
+		return err
+	}
+
+	// 核心优化：开启 WAL 模式，大幅提升并发性能
+	if _, err := sqlDB.Exec("PRAGMA journal_mode=WAL;"); err != nil {
+		log.Warn().Err(err).Msg("开启 SQLite WAL 模式失败，性能可能受限")
+	}
+	// 稍微调高繁忙超时时间
+	if _, err := sqlDB.Exec("PRAGMA busy_timeout=5000;"); err != nil {
+		log.Warn().Err(err).Msg("设置 busy_timeout 失败")
+	}
+
+	// 自动迁移结构
 	err = DB.AutoMigrate(
 		&models.User{},
 		&models.Task{},
@@ -57,6 +75,6 @@ func ConnectDatabase(dbPath string) error {
 		}
 	}
 
-	log.Info().Msg("数据库连接和迁移成功")
+	log.Info().Msg("数据库连接和迁移成功 (WAL模式已启用)")
 	return nil
 }

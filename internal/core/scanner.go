@@ -59,17 +59,30 @@ func (t *FileTracker) Keys() []string {
 	return keys
 }
 
+func (t *FileTracker) Count() int {
+	t.RLock()
+	defer t.RUnlock()
+	return len(t.files)
+}
+
 func RunScanTask(ctx context.Context, task models.Task) {
+	// 更新状态为运行中
+	database.DB.Model(&models.Task{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
+		"last_run_status": "扫描中...",
+		"processed_count": 0,
+	})
+
 	defer func() {
 		taskMutex.Lock()
 		delete(runningTasks, task.ID)
 		taskMutex.Unlock()
-		log.Info().Str("task", task.Name).Msg("任务控制权已释放")
+		log.Info().Str("任务", task.Name).Msg("任务控制权已释放")
 	}()
 
 	var account models.Account
 	if err := database.DB.First(&account, task.AccountID).Error; err != nil {
-		log.Error().Err(err).Str("task", task.Name).Uint("accountID", task.AccountID).Msg("任务启动失败：找不到关联的云账户")
+		log.Error().Err(err).Str("任务", task.Name).Uint("accountID", task.AccountID).Msg("任务启动失败：找不到关联的云账户")
+		updateTaskStatus(task.ID, "失败: 账户丢失", 0)
 		return
 	}
 
@@ -77,14 +90,12 @@ func RunScanTask(ctx context.Context, task models.Task) {
 	if threads < 1 { threads = 1 }
 	if threads > 16 { threads = 16 }
 
-	log.Info().Str("task", task.Name).Str("account", account.Name).Int("threads", threads).Msg("开始执行任务")
+	log.Info().Str("任务", task.Name).Str("账户", account.Name).Int("线程数", threads).Msg("开始执行任务")
 	client := pan123.NewClient(account)
 	strmExtMap := parseExtensions(task.StrmExtensions)
 	metaExtMap := parseExtensions(task.MetaExtensions)
-	
+
 	tracker := NewFileTracker()
-	
-	// 核心修复：增加错误标志位 (atomic)
 	var hasError atomic.Bool
 	hasError.Store(false)
 
@@ -93,41 +104,68 @@ func RunScanTask(ctx context.Context, task models.Task) {
 	rateLimiter := time.NewTicker(time.Second / time.Duration(threads))
 	defer rateLimiter.Stop()
 
+	// --- 进度自动更新协程 ---
+	progressTicker := time.NewTicker(2 * time.Second)
+	progressCtx, cancelProgress := context.WithCancel(context.Background())
+	defer cancelProgress()
+	go func() {
+		for {
+			select {
+			case <-progressTicker.C:
+				count := tracker.Count()
+				database.DB.Model(&models.Task{}).Where("id = ?", task.ID).Update("processed_count", count)
+			case <-progressCtx.Done():
+				return
+			}
+		}
+	}()
+	// ---------------------
+
 	startFolderID := task.SourceFolderID
 	if account.Type == models.AccountTypeOpenList && (startFolderID == "0" || startFolderID == "") {
 		startFolderID = "/"
 	}
 
-	// 执行扫描，传入 hasError 指针
 	scanDirectoryRecursive(ctx, client, task, account.Type, startFolderID, "", task.LocalPath, strmExtMap, metaExtMap, &wg, workerPool, rateLimiter, tracker, &hasError)
 
 	wg.Wait()
+	progressTicker.Stop() // 停止进度更新
 
 	select {
 	case <-ctx.Done():
-		log.Warn().Str("task", task.Name).Msg("任务已被手动停止")
+		log.Warn().Str("任务", task.Name).Msg("任务已被手动停止")
+		updateTaskStatus(task.ID, "用户手动停止", tracker.Count())
 		SendNotification("任务停止", fmt.Sprintf("任务 '%s' 已被手动停止", task.Name))
 	default:
-		// 核心修复：检查是否有错误发生
 		if hasError.Load() {
 			msg := fmt.Sprintf("任务 '%s' 执行过程中出现错误，为防止误删，已跳过数据库更新和本地清理。", task.Name)
 			log.Error().Msg(msg)
+			updateTaskStatus(task.ID, "异常中止", tracker.Count())
 			SendNotification("任务异常", msg)
-			return // 直接退出，不执行清理
+			return
 		}
 
 		// 只有完全无错时才更新 DB
 		if err := updateFileRecordsOptimized(task.ID, tracker); err != nil {
 			log.Error().Err(err).Msg("更新数据库文件记录失败")
+			updateTaskStatus(task.ID, "更新DB失败", tracker.Count())
+		} else {
+			if task.SyncDelete {
+				performSafeSyncDeleteOptimized(task.ID, tracker)
+				cleanEmptyDirs(task.LocalPath)
+			}
+			log.Info().Str("任务", task.Name).Int("总文件", tracker.Count()).Msg("任务执行完毕")
+			updateTaskStatus(task.ID, "已完成", tracker.Count())
+			SendNotification("任务完成", fmt.Sprintf("任务 '%s' 已执行完毕，共处理 %d 个文件", task.Name, tracker.Count()))
 		}
-
-		if task.SyncDelete {
-			performSafeSyncDeleteOptimized(task.ID, tracker)
-			cleanEmptyDirs(task.LocalPath)
-		}
-		log.Info().Str("task", task.Name).Msg("任务执行完毕")
-		SendNotification("任务完成", fmt.Sprintf("任务 '%s' 已执行完毕", task.Name))
 	}
+}
+
+func updateTaskStatus(id uint, status string, count int) {
+	database.DB.Model(&models.Task{}).Where("id = ?", id).Updates(map[string]interface{}{
+		"last_run_status": status,
+		"processed_count": count,
+	})
 }
 
 func cleanEmptyDirs(root string) {
@@ -154,7 +192,7 @@ func cleanEmptyDirs(root string) {
 		}
 	}
 	if removedCount > 0 {
-		log.Info().Int("count", removedCount).Msg("已清理空目录")
+		log.Info().Int("数量", removedCount).Msg("已清理空目录")
 	}
 }
 
@@ -190,7 +228,7 @@ func updateFileRecordsOptimized(taskID uint, tracker *FileTracker) error {
 
 func performSafeSyncDeleteOptimized(taskID uint, currentScanTracker *FileTracker) {
 	log.Info().Uint("taskID", taskID).Msg("开始执行安全清理...")
-	
+
 	deletedCount := 0
 	dbDeletedCount := 0
 	var lastID uint = 0
@@ -215,7 +253,7 @@ func performSafeSyncDeleteOptimized(taskID uint, currentScanTracker *FileTracker
 
 			if !currentScanTracker.Has(record.FilePath) {
 				if err := os.Remove(record.FilePath); err == nil || os.IsNotExist(err) {
-					log.Info().Str("file", record.FilePath).Msg("同步删除本地失效文件")
+					log.Info().Str("文件", record.FilePath).Msg("同步删除本地失效文件")
 					deletedCount++
 				}
 				idsToDelete = append(idsToDelete, record.ID)
@@ -230,16 +268,15 @@ func performSafeSyncDeleteOptimized(taskID uint, currentScanTracker *FileTracker
 	}
 
 	if deletedCount > 0 {
-		log.Info().Int("deleted_files", deletedCount).Int("db_records_removed", dbDeletedCount).Msg("清理完成")
+		log.Info().Int("删除文件数", deletedCount).Int("删除记录数", dbDeletedCount).Msg("清理完成")
 	}
 }
 
 func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task models.Task, accountType, folderID, currentCloudPath, localBasePath string, strmExtMap, metaExtMap map[string]bool, wg *sync.WaitGroup, pool chan struct{}, limiter *time.Ticker, tracker *FileTracker, hasError *atomic.Bool) {
-	// 如果全局已有错误，停止后续递归
 	if hasError.Load() {
 		return
 	}
-	
+
 	select {
 	case <-ctx.Done():
 		return
@@ -248,22 +285,22 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 
 	var (
 		folderIDInt int64
-		err         error
-		allFiles    []pan123.FileInfo
+		err     error
+		allFiles  []pan123.FileInfo
 	)
 
 	if accountType == models.AccountType123Pan {
 		folderIDInt, err = strconv.ParseInt(folderID, 10, 64)
 		if err != nil {
-			log.Error().Err(err).Str("task", task.Name).Str("folderID", folderID).Msg("无效的目录ID")
-			hasError.Store(true) // 标记错误
+			log.Error().Err(err).Str("任务", task.Name).Str("目录ID", folderID).Msg("无效的目录ID")
+			hasError.Store(true) 
 			return
 		}
 	}
 
 	var lastFileId int64 = 0
 	for {
-		if hasError.Load() { return } // 再次检查
+		if hasError.Load() { return } 
 		select {
 		case <-ctx.Done():
 			return
@@ -279,8 +316,8 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 					files, nextLastFileId, err = client.ListFiles(folderIDInt, 100, lastFileId, "")
 				}
 				if err != nil {
-					log.Error().Err(err).Str("task", task.Name).Msg("扫描目录失败（123云盘）")
-					hasError.Store(true) // 核心修复：标记错误
+					log.Error().Err(err).Str("任务", task.Name).Msg("扫描目录失败（123云盘）")
+					hasError.Store(true) 
 					return
 				}
 			}
@@ -296,8 +333,8 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 		} else if accountType == models.AccountTypeOpenList {
 			files, err := client.ListOpenListDirectory(folderID)
 			if err != nil {
-				log.Error().Err(err).Str("task", task.Name).Str("path", folderID).Msg("扫描目录失败（OpenList）")
-				hasError.Store(true) // 核心修复：标记错误
+				log.Error().Err(err).Str("任务", task.Name).Str("路径", folderID).Msg("扫描目录失败（OpenList）")
+				hasError.Store(true) 
 				return
 			}
 			allFiles = append(allFiles, files...)
@@ -306,7 +343,7 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 	}
 
 	for _, item := range allFiles {
-		if hasError.Load() { return } // 尽早退出
+		if hasError.Load() { return }
 
 		currentItem := item
 		itemCloudPath := path.Join(currentCloudPath, currentItem.FileName)
@@ -335,7 +372,6 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 			wg.Add(1)
 			go func(fileToProcess pan123.FileInfo, cloudRelPath string) {
 				defer wg.Done()
-				// 如果已有错误，跳过处理
 				if hasError.Load() { return }
 
 				select {
@@ -442,15 +478,15 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 	if err := os.MkdirAll(filepath.Dir(localFilePath), 0755); err != nil {
 		return
 	}
-	
+
 	if err := os.WriteFile(localFilePath, []byte(streamURL), 0644); err == nil {
-		log.Info().Str("file", strmFileName).Msg("已生成 STRM 文件")
+		log.Info().Str("文件", strmFileName).Msg("已生成 STRM 文件")
 	}
 }
 
 func downloadAndSaveMetaFile(client *pan123.Client, task models.Task, identity interface{}, fileName string, localBasePath string, tracker *FileTracker) {
 	localFilePath := filepath.Join(localBasePath, fileName)
-	
+
 	tracker.Add(localFilePath)
 
 	if !task.Overwrite {
@@ -460,7 +496,7 @@ func downloadAndSaveMetaFile(client *pan123.Client, task models.Task, identity i
 	}
 	downloadURL, err := client.GetDownloadURL(identity)
 	if err != nil {
-		log.Error().Err(err).Str("file", fileName).Msg("获取元数据链接失败")
+		log.Error().Err(err).Str("文件", fileName).Msg("获取元数据链接失败")
 		return
 	}
 	resp, err := http.Get(downloadURL)
@@ -480,7 +516,7 @@ func downloadAndSaveMetaFile(client *pan123.Client, task models.Task, identity i
 	}
 	defer outFile.Close()
 	if _, err := io.Copy(outFile, resp.Body); err == nil {
-		log.Info().Str("file", fileName).Msg("已下载元数据文件")
+		log.Info().Str("文件", fileName).Msg("已下载元数据文件")
 	}
 }
 

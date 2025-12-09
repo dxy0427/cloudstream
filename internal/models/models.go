@@ -5,9 +5,9 @@ import (
 )
 
 const (
-	AccountType123Pan   = "123pan"
+	AccountType123Pan  = "123pan"
 	AccountTypeOpenList = "openlist"
-	
+
 	NotifyTypeWebhook  = "webhook"
 	NotifyTypeTelegram = "telegram"
 )
@@ -17,12 +17,11 @@ type User struct {
 	Username     string `gorm:"unique;not null"`
 	PasswordHash string `gorm:"not null"`
 	TokenVersion int    `gorm:"default:1"`
-	
-	// 通知配置
-	NotifyType      string `gorm:"default:'webhook'" json:"NotifyType"` // webhook 或 telegram
-	WebhookURL      string `json:"WebhookURL"`
-	TelegramToken   string `json:"TelegramToken"`
-	TelegramChatID  string `json:"TelegramChatID"`
+
+	NotifyType     string `gorm:"default:'webhook'" json:"NotifyType"`
+	WebhookURL     string `json:"WebhookURL"`
+	TelegramToken  string `json:"TelegramToken"`
+	TelegramChatID string `json:"TelegramChatID"`
 }
 
 type Account struct {
@@ -50,10 +49,14 @@ type Task struct {
 	StrmExtensions string `gorm:"default:'mp4,mkv,ts,iso'" json:"StrmExtensions"`
 	MetaExtensions string `gorm:"default:'jpg,jpeg,png,webp,srt,ass,sub'" json:"MetaExtensions"`
 	Threads        int    `gorm:"default:4" json:"Threads"`
+
+	// 新增：进度追踪字段
+	ProcessedCount int    `gorm:"default:0" json:"ProcessedCount"` // 本次扫描已处理文件数
+	LastRunStatus  string `gorm:"default:''" json:"LastRunStatus"` // 例如: "运行中", "已完成", "错误"
 }
 
 type TaskFile struct {
-	ID        uint   `gorm:"primarykey"`
-	TaskID    uint   `gorm:"index;uniqueIndex:idx_task_file;not null"` 
-	FilePath  string `gorm:"index;uniqueIndex:idx_task_file;not null"` 
+	ID       uint   `gorm:"primarykey"`
+	TaskID   uint   `gorm:"index;uniqueIndex:idx_task_file;not null"` 
+	FilePath string `gorm:"index;uniqueIndex:idx_task_file;not null"` 
 }

@@ -1,72 +1,118 @@
 <template>
- <n-layout has-sider position="absolute">
-  <n-layout-sider
-   bordered
-   collapse-mode="width"
-   :collapsed-width="64"
-   :width="240"
-   :native-scrollbar="false"
-   show-trigger
-   v-model:collapsed="collapsed"
-  >
-   <div style="padding: 16px; font-weight: bold; font-size: 1.2em; display:flex; align-items:center; justify-content: center; overflow: hidden; white-space: nowrap;">
-    <span>🚀</span>
-    <!-- 修复：增加 mobile-hide 类 -->
-    <span v-if="!collapsed" class="mobile-hide" style="margin-left: 10px">{{ store.siteTitle }}</span>
-   </div>
-   <n-menu
-    :options="menuOptions"
-    :value="activeKey"
-    @update:value="handleUpdateValue"
-   />
-  </n-layout-sider>
-  <n-layout>
-   <n-layout-header bordered style="padding: 10px 20px; display: flex; justify-content: space-between; align-items: center;">
-     <div></div>
-     <n-space align="center">
-       <n-switch :value="store.isDark" @update:value="store.toggleTheme">
-         <template #checked-icon>🌙</template>
-         <template #unchecked-icon>☀️</template>
-       </n-switch>
-       <n-button strong secondary type="error" size="small" @click="logout">退出</n-button>
-     </n-space>
-   </n-layout-header>
-   <n-layout-content content-style="padding: 16px;">
-    <router-view />
-   </n-layout-content>
-  </n-layout>
- </n-layout>
+  <div class="login-container" :class="store.isDark ? 'dark-bg' : 'light-bg'">
+    <div class="theme-switch">
+      <n-switch :value="store.isDark" @update:value="store.toggleTheme">
+        <template #checked-icon>🌙</template>
+        <template #unchecked-icon>☀️</template>
+      </n-switch>
+    </div>
+    <div class="login-box">
+      <n-card class="login-card" size="huge" :bordered="false">
+        <div class="header">
+          <div class="logo">🚀</div>
+          <h1>{{ store.siteTitle }}</h1>
+        </div>
+        <n-form ref="formRef" :model="form" :rules="rules" size="large">
+          <n-form-item path="username" label="用户名">
+            <n-input 
+              v-model:value="form.username" 
+              placeholder="请输入用户名" 
+              @keydown.enter="handleLogin"
+            >
+              <template #prefix>
+                <n-icon><UserOutlined /></n-icon>
+              </template>
+            </n-input>
+          </n-form-item>
+          <n-form-item path="password" label="密码">
+            <n-input
+              type="password"
+              show-password-on="click"
+              v-model:value="form.password"
+              placeholder="请输入密码"
+              @keydown.enter="handleLogin"
+            >
+              <template #prefix>
+                <n-icon><LockOutlined /></n-icon>
+              </template>
+            </n-input>
+          </n-form-item>
+          <div style="margin-top: 20px;">
+            <n-button type="primary" block size="large" :loading="loading" @click="handleLogin">
+              登 录
+            </n-button>
+          </div>
+        </n-form>
+      </n-card>
+      <div class="footer" :style="{ color: store.isDark ? '#666' : '#999' }">
+        CloudStream Media Server
+      </div>
+    </div>
+  </div>
 </template>
 
 <script setup>
-import { h, ref, computed } from 'vue'
-import { NIcon } from 'naive-ui'
-import { useRoute, useRouter } from 'vue-router'
+import { reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { useMessage, NIcon } from 'naive-ui'
+import { UserOutlined, LockOutlined } from '@vicons/antd'
 import { useGlobalStore } from '../store/global'
-import { DashboardOutlined, CloudOutlined, SyncOutlined, BellOutlined, SettingOutlined } from '@vicons/antd'
+import api from '../api'
 
-const store = useGlobalStore()
 const router = useRouter()
-const route = useRoute()
-const collapsed = ref(false)
+const store = useGlobalStore()
+const message = useMessage()
+const form = reactive({ username: '', password: '' })
+const loading = ref(false)
 
-function renderIcon(icon) { return () => h(NIcon, null, { default: () => h(icon) }) }
+const rules = {
+  username: { required: true, message: '请输入用户名', trigger: 'blur' },
+  password: { required: true, message: '请输入密码', trigger: 'blur' }
+}
 
-const menuOptions = [
- { label: '仪表盘', key: 'dashboard', icon: renderIcon(DashboardOutlined) },
- { label: '云账户', key: 'accounts', icon: renderIcon(CloudOutlined) },
- { label: '任务管理', key: 'tasks', icon: renderIcon(SyncOutlined) },
- { label: '通知管理', key: 'notifications', icon: renderIcon(BellOutlined) },
- { label: '安全设置', key: 'settings', icon: renderIcon(SettingOutlined) },
-]
-
-const activeKey = computed(() => route.path.substring(1))
-function handleUpdateValue(key) { router.push('/' + key) }
-function logout() { localStorage.removeItem('jwt_token'); router.push('/login') }
+const handleLogin = async () => {
+  if (!form.username || !form.password) {
+    message.warning('请输入完整信息')
+    return
+  }
+  loading.value = true
+  try {
+    const res = await api.post('/login', form)
+    localStorage.setItem('jwt_token', res.token)
+    message.success('登录成功')
+    router.push('/dashboard')
+  } catch (error) {
+  } finally {
+    loading.value = false
+  }
+}
 </script>
 
 <style scoped>
-@media (max-width: 600px) {
-  .mobile-hide { display: none; }
+.login-container {
+  min-height: 100vh;
+  width: 100vw;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  transition: background-color 0.3s ease;
+  position: relative;
 }
+.light-bg {
+  background-color: #f0f2f5;
+  background-image: radial-gradient(#e1e4e8 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+.dark-bg {
+  background-color: #101014;
+  background-image: radial-gradient(#2d2d2d 1px, transparent 1px);
+  background-size: 20px 20px;
+}
+.theme-switch { position: absolute; top: 20px; right: 20px; }
+.login-box { width: 100%; max-width: 420px; padding: 20px; }
+.login-card { border-radius: 16px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); }
+.header { text-align: center; margin-bottom: 30px; }
+.logo { font-size: 60px; margin-bottom: 10px; }
+h1 { margin: 0; font-size: 24px; font-weight: 700; }
+.footer { text-align: center; margin-top: 20px; font-size: 12px; transition: color 0.3s; }
 </style>
