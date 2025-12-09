@@ -20,13 +20,16 @@ const (
 	UserAgent  = "CloudStream/1.0.0"
 )
 
+// Token 缓存结构
+type tokenCacheItem struct {
+	sync.RWMutex // 读写锁
+	Token        string
+	ExpiresAt    time.Time
+}
+
 var (
-	tokenCaches = make(map[uint]*struct {
-		sync.RWMutex
-		Token     string
-		ExpiresAt time.Time
-	})
-	mapMutex sync.Mutex
+	tokenCaches = make(map[uint]*tokenCacheItem)
+	mapMutex    sync.Mutex // 保护 map 本身的并发安全
 )
 
 type Client struct {
@@ -46,19 +49,19 @@ func NewClient(account models.Account) *Client {
 	return client
 }
 
+// 核心优化：双重检查锁获取 Token
 func (c *Client) getAccessToken() (string, error) {
+	// 1. 获取该账户的缓存对象（如果不存在则创建）
 	mapMutex.Lock()
 	if _, ok := tokenCaches[c.Account.ID]; !ok {
-		tokenCaches[c.Account.ID] = &struct {
-			sync.RWMutex
-			Token     string
-			ExpiresAt time.Time
-		}{}
+		tokenCaches[c.Account.ID] = &tokenCacheItem{}
 	}
 	cache := tokenCaches[c.Account.ID]
 	mapMutex.Unlock()
 
+	// 2. 第一重检查：读锁判断是否过期
 	cache.RLock()
+	// 提前 5 分钟刷新，防止临界点失效
 	if cache.Token != "" && time.Now().Before(cache.ExpiresAt.Add(-5*time.Minute)) {
 		token := cache.Token
 		cache.RUnlock()
@@ -66,13 +69,17 @@ func (c *Client) getAccessToken() (string, error) {
 	}
 	cache.RUnlock()
 
+	// 3. 加写锁，准备刷新
 	cache.Lock()
 	defer cache.Unlock()
 
+	// 4. 第二重检查：再次判断是否过期
+	// 防止多个线程排队等锁，第一个线程刷新完释放锁后，第二个线程进来又刷新一次
 	if cache.Token != "" && time.Now().Before(cache.ExpiresAt.Add(-5*time.Minute)) {
 		return cache.Token, nil
 	}
 
+	// 5. 确实过期了，执行 API 请求
 	apiURL := ApiBaseURL + "/api/v1/access_token"
 	bodyData, _ := json.Marshal(map[string]string{
 		"client_id":     c.Account.ClientID,
@@ -104,6 +111,7 @@ func (c *Client) getAccessToken() (string, error) {
 		return "", fmt.Errorf("API 未返回有效的 AccessToken")
 	}
 
+	// 6. 解析时间并更新缓存
 	expires, err := time.Parse(time.RFC3339, tokenResp.Data.ExpiredAt)
 	if err != nil {
 		expires, err = time.Parse("2006-01-02 15:04:05", tokenResp.Data.ExpiredAt)
@@ -114,7 +122,8 @@ func (c *Client) getAccessToken() (string, error) {
 
 	cache.Token = tokenResp.Data.AccessToken
 	cache.ExpiresAt = expires
-	log.Info().Str("account", c.Account.Name).Msg("AccessToken 已成功刷新并缓存")
+	log.Info().Str("account", c.Account.Name).Msg("AccessToken 已成功刷新")
+
 	return cache.Token, nil
 }
 
@@ -175,6 +184,8 @@ func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, pare
 			"parentFileId": parentFileId,
 			"limit":        limit,
 			"trashed":      0,
+			"orderBy":      "fileId", // 确保分页稳定
+			"orderDirection": "asc",
 		}
 		if lastFileId > 0 {
 			params["lastFileId"] = lastFileId
@@ -278,32 +289,5 @@ func (c *Client) GetDownloadURL(identifier interface{}) (string, error) {
 }
 
 func (c *Client) GetAccessTokenForTest() (string, error) {
-	apiURL := ApiBaseURL + "/api/v1/access_token"
-	bodyData, _ := json.Marshal(map[string]string{
-		"client_id":     c.Account.ClientID,
-		"client_secret": c.Account.ClientSecret,
-	})
-	req, err := http.NewRequest(http.MethodPost, apiURL, bytes.NewBuffer(bodyData))
-	if err != nil {
-		return "", fmt.Errorf("创建 AccessToken 请求失败: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("platform", "open_platform")
-	req.Header.Set("User-Agent", UserAgent)
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("请求 AccessToken 失败: %w", err)
-	}
-	defer resp.Body.Close()
-	var tokenResp AccessTokenResp
-	if err := json.NewDecoder(resp.Body).Decode(&tokenResp); err != nil {
-		return "", fmt.Errorf("解析 AccessToken 响应失败: %w", err)
-	}
-	if tokenResp.Code != 0 {
-		return "", fmt.Errorf("API 错误 (code: %d): %s", tokenResp.Code, tokenResp.Message)
-	}
-	if tokenResp.Data.AccessToken == "" {
-		return "", fmt.Errorf("API 未返回有效的 AccessToken")
-	}
-	return tokenResp.Data.AccessToken, nil
+	return c.getAccessToken()
 }
