@@ -22,14 +22,14 @@ const (
 
 // Token 缓存结构
 type tokenCacheItem struct {
-	sync.RWMutex // 读写锁
+	sync.RWMutex
 	Token        string
 	ExpiresAt    time.Time
 }
 
 var (
 	tokenCaches = make(map[uint]*tokenCacheItem)
-	mapMutex    sync.Mutex // 保护 map 本身的并发安全
+	mapMutex    sync.Mutex
 )
 
 type Client struct {
@@ -51,7 +51,6 @@ func NewClient(account models.Account) *Client {
 
 // 核心优化：双重检查锁获取 Token
 func (c *Client) getAccessToken() (string, error) {
-	// 1. 获取该账户的缓存对象（如果不存在则创建）
 	mapMutex.Lock()
 	if _, ok := tokenCaches[c.Account.ID]; !ok {
 		tokenCaches[c.Account.ID] = &tokenCacheItem{}
@@ -59,9 +58,7 @@ func (c *Client) getAccessToken() (string, error) {
 	cache := tokenCaches[c.Account.ID]
 	mapMutex.Unlock()
 
-	// 2. 第一重检查：读锁判断是否过期
 	cache.RLock()
-	// 提前 5 分钟刷新，防止临界点失效
 	if cache.Token != "" && time.Now().Before(cache.ExpiresAt.Add(-5*time.Minute)) {
 		token := cache.Token
 		cache.RUnlock()
@@ -69,17 +66,13 @@ func (c *Client) getAccessToken() (string, error) {
 	}
 	cache.RUnlock()
 
-	// 3. 加写锁，准备刷新
 	cache.Lock()
 	defer cache.Unlock()
 
-	// 4. 第二重检查：再次判断是否过期
-	// 防止多个线程排队等锁，第一个线程刷新完释放锁后，第二个线程进来又刷新一次
 	if cache.Token != "" && time.Now().Before(cache.ExpiresAt.Add(-5*time.Minute)) {
 		return cache.Token, nil
 	}
 
-	// 5. 确实过期了，执行 API 请求
 	apiURL := ApiBaseURL + "/api/v1/access_token"
 	bodyData, _ := json.Marshal(map[string]string{
 		"client_id":     c.Account.ClientID,
@@ -111,7 +104,6 @@ func (c *Client) getAccessToken() (string, error) {
 		return "", fmt.Errorf("API 未返回有效的 AccessToken")
 	}
 
-	// 6. 解析时间并更新缓存
 	expires, err := time.Parse(time.RFC3339, tokenResp.Data.ExpiredAt)
 	if err != nil {
 		expires, err = time.Parse("2006-01-02 15:04:05", tokenResp.Data.ExpiredAt)
@@ -184,7 +176,7 @@ func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, pare
 			"parentFileId": parentFileId,
 			"limit":        limit,
 			"trashed":      0,
-			"orderBy":      "fileId", // 确保分页稳定
+			"orderBy":      "fileId",
 			"orderDirection": "asc",
 		}
 		if lastFileId > 0 {
@@ -232,7 +224,6 @@ func (c *Client) ListOpenListDirectory(parentPath string) ([]FileInfo, error) {
 }
 
 func (c *Client) GetDownloadURL(identifier interface{}) (string, error) {
-	// === OpenList ===
 	if c.Account.Type == models.AccountTypeOpenList {
 		if c.OpenListClient == nil {
 			return "", fmt.Errorf("OpenList 客户端未初始化")
@@ -250,10 +241,8 @@ func (c *Client) GetDownloadURL(identifier interface{}) (string, error) {
 		return c.OpenListClient.GetRawURL(pathStr)
 	}
 
-	// === 123云盘 ===
 	var fileID int64
 	var err error
-
 	switch v := identifier.(type) {
 	case int64:
 		fileID = v
@@ -261,7 +250,7 @@ func (c *Client) GetDownloadURL(identifier interface{}) (string, error) {
 		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
 			fileID = id
 		} else {
-			return "", fmt.Errorf("123云盘非签名模式必须提供 FileID，暂不支持纯路径反查: %s", v)
+			return "", fmt.Errorf("123云盘非签名模式必须提供 FileID: %s", v)
 		}
 	default:
 		return "", fmt.Errorf("不支持的参数类型")
