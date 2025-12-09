@@ -1,6 +1,5 @@
 name: 手动构建 YSTRM 镜像到 GHCR
 
-# 仅支持手动触发
 on:
   workflow_dispatch:
     inputs:
@@ -17,10 +16,9 @@ jobs:
   build-and-push-ghcr:
     runs-on: ubuntu-latest
     permissions:
-      packages: write          # 核心：GHCR 镜像推送权限
-      contents: read           # 读取仓库代码（必须）
-      id-token: write          # 优化：支持镜像签名/验证（兼容原 --attest 参数）
-      attestations: write      # 优化：适配构建 attestation 需求
+      contents: read
+      packages: write
+      id-token: write
     steps:
       - name: 检查代码
         uses: actions/checkout@v4
@@ -28,25 +26,24 @@ jobs:
       - name: 设置 Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          install: true  # 确保 Buildx 完整安装，避免平台多架构构建问题
+          install: true
 
       - name: 登录 GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}  # 内置令牌，无需手动创建
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 提取镜像元数据（标签/标签）
+      - name: 提取镜像元数据
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ghcr.io/${{ github.actor }}/cloudstream  # 固定镜像名格式
+          images: ghcr.io/${{ github.actor }}/cloudstream
           tags: |
-            ${{ github.event.inputs.image-tag }}  # 手动输入标签
-            ${{ github.sha }}                     # Commit 哈希标签（唯一版本标识）
-          flavor: |
-            latest=true  # 当手动输入标签为 latest 时，确保正确标记为最新
+            ${{ github.event.inputs.image-tag }}
+            ${{ github.sha }}
+          flavor: latest=true
 
       - name: 构建并推送镜像
         uses: docker/build-push-action@v5
@@ -57,6 +54,5 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           platforms: ${{ github.event.inputs.platform }}
-          cache-from: type=gha  # 复用历史缓存，加速构建
-          cache-to: type=gha,mode=max  # 最大化缓存，包含所有层
-          attest: type=provenance,mode=max  # 保留原 attest 配置，提升镜像可信度
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
