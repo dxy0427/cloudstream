@@ -1,39 +1,43 @@
 <template>
- <n-layout has-sider position="absolute">
-  <n-layout-sider
-   bordered
-   collapse-mode="width"
-   :collapsed-width="64"
-   :width="240"
-   :native-scrollbar="false"
-   show-trigger
-  >
-   <div style="padding: 16px; font-weight: bold; font-size: 1.2em; display:flex; align-items:center; gap:10px; overflow: hidden;">
-    <span>🚀</span>
-    <span v-if="!collapsed" style="white-space: nowrap;">{{ store.siteTitle }}</span>
-   </div>
-   <n-menu
-    :options="menuOptions"
-    :value="activeKey"
-    @update:value="handleUpdateValue"
-   />
-  </n-layout-sider>
-  <n-layout>
-   <n-layout-header bordered style="padding: 10px 20px; display: flex; justify-content: space-between; align-items: center;">
-     <div></div>
-     <n-space align="center">
-       <n-switch :value="store.isDark" @update:value="store.toggleTheme">
-         <template #checked-icon>🌙</template>
-         <template #unchecked-icon>☀️</template>
-       </n-switch>
-       <n-button strong secondary type="error" size="small" @click="logout">退出登录</n-button>
-     </n-space>
-   </n-layout-header>
-   <n-layout-content content-style="padding: 24px;">
-    <router-view />
-   </n-layout-content>
+  <n-layout has-sider position="absolute">
+    <n-layout-sider
+      bordered
+      collapse-mode="width"
+      :collapsed-width="64"
+      :width="240"
+      :native-scrollbar="false"
+      show-trigger
+      v-model:collapsed="collapsed"
+    >
+      <div class="logo-area">
+        <span>🚀</span>
+        <span v-if="!collapsed" class="site-title">{{ store.siteTitle }}</span>
+      </div>
+      <n-menu
+        :collapsed="collapsed"
+        :collapsed-width="64"
+        :collapsed-icon-size="22"
+        :options="menuOptions"
+        :value="activeKey"
+        @update:value="handleUpdateValue"
+      />
+    </n-layout-sider>
+    <n-layout>
+      <n-layout-header bordered class="nav-header">
+        <div class="header-left"></div>
+        <n-space align="center">
+          <n-switch :value="store.isDark" @update:value="store.toggleTheme">
+            <template #checked-icon>🌙</template>
+            <template #unchecked-icon>☀️</template>
+          </n-switch>
+          <n-button strong secondary type="error" size="small" @click="logout">退出</n-button>
+        </n-space>
+      </n-layout-header>
+      <n-layout-content content-style="padding: 24px; min-height: calc(100vh - 60px);">
+        <router-view />
+      </n-layout-content>
+    </n-layout>
   </n-layout>
- </n-layout>
 </template>
 
 <script setup>
@@ -42,11 +46,11 @@ import { NIcon } from 'naive-ui'
 import { useRoute, useRouter } from 'vue-router'
 import { useGlobalStore } from '../store/global'
 import {
- DashboardOutlined,
- CloudOutlined,
- SyncOutlined,
- BellOutlined,
- SettingOutlined
+  DashboardOutlined,
+  CloudOutlined,
+  SyncOutlined,
+  BellOutlined,
+  SettingOutlined
 } from '@vicons/antd'
 
 const store = useGlobalStore()
@@ -55,25 +59,54 @@ const route = useRoute()
 const collapsed = ref(false)
 
 function renderIcon(icon) {
- return () => h(NIcon, null, { default: () => h(icon) })
+  return () => h(NIcon, null, { default: () => h(icon) })
 }
 
 const menuOptions = [
- { label: '仪表盘', key: 'dashboard', icon: renderIcon(DashboardOutlined) },
- { label: '云账户', key: 'accounts', icon: renderIcon(CloudOutlined) },
- { label: '任务管理', key: 'tasks', icon: renderIcon(SyncOutlined) },
- { label: '通知管理', key: 'notifications', icon: renderIcon(BellOutlined) },
- { label: '安全设置', key: 'settings', icon: renderIcon(SettingOutlined) },
+  { label: '仪表盘', key: 'dashboard', icon: renderIcon(DashboardOutlined) },
+  { label: '云账户', key: 'accounts', icon: renderIcon(CloudOutlined) },
+  { label: '任务管理', key: 'tasks', icon: renderIcon(SyncOutlined) },
+  { label: '通知管理', key: 'notifications', icon: renderIcon(BellOutlined) },
+  { label: '安全设置', key: 'settings', icon: renderIcon(SettingOutlined) },
 ]
 
-const activeKey = computed(() => route.path.substring(1))
+// 修复：确保路由匹配正确
+const activeKey = computed(() => {
+  const path = route.path.split('/')[1]
+  return path || 'dashboard'
+})
 
 function handleUpdateValue(key) {
- router.push('/' + key)
+  router.push('/' + key)
 }
 
 function logout() {
- localStorage.removeItem('jwt_token')
- router.push('/login')
+  localStorage.removeItem('jwt_token')
+  router.push('/login')
 }
 </script>
+
+<style scoped>
+.logo-area {
+  padding: 16px;
+  font-weight: bold;
+  font-size: 1.2em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  white-space: nowrap;
+  height: 64px;
+  box-sizing: border-box;
+}
+.site-title {
+  margin-left: 10px;
+}
+.nav-header {
+  padding: 0 20px;
+  height: 64px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+</style>
