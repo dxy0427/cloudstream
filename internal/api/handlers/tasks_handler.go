@@ -16,7 +16,6 @@ func validateCron(spec string) error {
 	parser := cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 	_, err := parser.Parse(spec)
 	if err != nil {
-		// 尝试标准 Linux Cron (5位)
 		parserStandard := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 		if _, err2 := parserStandard.Parse(spec); err2 != nil {
 			return fmt.Errorf("Cron 表达式格式错误")
@@ -45,19 +44,18 @@ func ListTasksHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": tasksWithStatus})
 }
 
+// ... Create/Update/Delete handlers 保持不变 (它们会自动处理模型变化) ...
+
 func CreateTaskHandler(c *gin.Context) {
 	var task models.Task
 	if err := c.ShouldBindJSON(&task); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": fmt.Sprintf("参数错误: %s", err.Error())})
 		return
 	}
-	
-	// 校验 Cron
 	if err := validateCron(task.Cron); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": err.Error()})
 		return
 	}
-
 	if err := database.DB.Create(&task).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "创建任务失败: " + err.Error()})
 		return
@@ -73,28 +71,23 @@ func UpdateTaskHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "无效的任务ID"})
 		return
 	}
-
 	var task models.Task
 	if err := database.DB.First(&task, uint(id)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "找不到指定的任务"})
 		return
 	}
-
 	if err := c.ShouldBindJSON(&task); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": fmt.Sprintf("参数错误: %s", err.Error())})
 		return
 	}
-
 	if err := validateCron(task.Cron); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": err.Error()})
 		return
 	}
-
 	if err := database.DB.Save(&task).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "更新任务失败: " + err.Error()})
 		return
 	}
-
 	core.RefreshScheduler()
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "任务更新成功", "data": task})
 }
@@ -107,19 +100,12 @@ func DeleteTaskHandler(c *gin.Context) {
 		return
 	}
 	taskID := uint(id)
-
-	// 1. 停止正在运行的任务
 	core.StopTask(taskID)
-
-	// 2. 删除任务本身
 	if err := database.DB.Unscoped().Delete(&models.Task{}, taskID).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": fmt.Sprintf("删除任务失败: %s", err.Error())})
 		return
 	}
-
-	// 3. 核心优化：清理该任务关联的所有文件记录 (防膨胀)
 	database.DB.Unscoped().Where("task_id = ?", taskID).Delete(&models.TaskFile{})
-
 	core.RefreshScheduler()
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "任务及关联记录已删除"})
 }
