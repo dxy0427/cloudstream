@@ -107,7 +107,7 @@ const menuOptions = [
   { label: '云账户', key: 'accounts', icon: renderIcon(CloudOutlined) },
   { label: '任务管理', key: 'tasks', icon: renderIcon(SyncOutlined) },
   { label: '通知管理', key: 'notifications', icon: renderIcon(BellOutlined) },
-  { label: '安全设置', key: 'settings', icon: renderIcon(SettingOutlined) },
+  { label: '设置管理', key: 'settings', icon: renderIcon(SettingOutlined) },
 ]
 
 const activeKey = computed(() => {
