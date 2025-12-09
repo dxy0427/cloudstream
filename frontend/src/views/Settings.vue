@@ -15,7 +15,7 @@
       <n-input :value="username" disabled />
     </n-form-item>
     
-    <n-divider>修改凭证</n-divider>
+    <n-divider>修改账号密码</n-divider>
     <n-form-item label="当前密码" path="currentPassword" required>
       <n-input type="password" show-password-on="click" v-model:value="form.currentPassword" />
     </n-form-item>
@@ -28,7 +28,7 @@
     <n-form-item label="确认新密码" path="confirmPassword">
       <n-input type="password" show-password-on="click" v-model:value="form.confirmPassword" />
     </n-form-item>
-    <n-button type="primary" block @click="submit">更新凭证</n-button>
+    <n-button type="primary" block @click="submit">确认修改</n-button>
    </n-form>
   </n-card>
  </n-space>
