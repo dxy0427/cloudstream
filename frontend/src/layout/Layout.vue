@@ -1,6 +1,6 @@
 <template>
   <n-layout position="absolute">
-    <!-- 顶部导航栏 (Header) -->
+    <!-- 顶部导航栏 -->
     <n-layout-header bordered style="height: 64px; padding: 0 15px; display: flex; align-items: center; justify-content: space-between; z-index: 2000;">
       <div style="display: flex; align-items: center; gap: 15px;">
         <!-- 左上角菜单按钮 -->
@@ -11,10 +11,11 @@
           </n-icon>
         </n-button>
         
-        <!-- 网站标题 (全端可见) -->
+        <!-- 网站标题 -->
         <div style="font-weight: bold; font-size: 1.2rem; display: flex; align-items: center; gap: 8px; cursor: pointer;" @click="$router.push('/')">
           <span style="font-size: 1.4rem;">🚀</span>
-          <span>{{ store.siteTitle }}</span>
+          <!-- 使用 n-text 让文字颜色自动适配黑白模式 -->
+          <n-text tag="span" strong>{{ store.siteTitle }}</n-text>
         </div>
       </div>
 
@@ -48,12 +49,12 @@
         />
       </n-layout-sider>
 
-      <!-- 内容区域 (Content) -->
+      <!-- 内容区域 -->
       <n-layout-content 
         content-style="padding: 16px; min-height: 100%; transition: all 0.3s;"
         :native-scrollbar="false"
       >
-        <!-- 遮罩层：仅在移动端且菜单展开时显示，点击关闭菜单 -->
+        <!-- 遮罩层：仅在移动端且菜单展开时显示 -->
         <div v-if="!collapsed && isMobile" class="mobile-mask" @click="collapsed = true"></div>
         <router-view />
       </n-layout-content>
@@ -63,7 +64,7 @@
 
 <script setup>
 import { h, ref, computed, onMounted } from 'vue'
-import { NIcon, useMessage } from 'naive-ui'
+import { NIcon, NText } from 'naive-ui'
 import { useRoute, useRouter } from 'vue-router'
 import { useGlobalStore } from '../store/global'
 import {
@@ -79,16 +80,16 @@ import {
 const store = useGlobalStore()
 const router = useRouter()
 const route = useRoute()
-const collapsed = ref(true) // 默认收起
+const collapsed = ref(true)
 const isMobile = ref(false)
 
-// 检测屏幕宽度
 const checkMobile = () => {
   isMobile.value = window.innerWidth <= 768
+  // 桌面端默认展开，移动端默认收起
   if (isMobile.value) {
     collapsed.value = true
   } else {
-    collapsed.value = false // 桌面端默认展开，或者你可以改为 true 让它统一
+    collapsed.value = false 
   }
 }
 
@@ -120,7 +121,6 @@ function toggleSidebar() {
 
 function handleMenuClick(key) {
   router.push('/' + key)
-  // 移动端点击菜单后自动收起
   if (isMobile.value) {
     collapsed.value = true
   }
@@ -133,7 +133,6 @@ function logout() {
 </script>
 
 <style scoped>
-/* 移动端遮罩层 */
 .mobile-mask {
   position: absolute;
   top: 0;
