@@ -1,81 +1,46 @@
 <template>
- <div style="height: 400px; display: flex; flex-direction: column;">
-  <n-breadcrumb>
-   <n-breadcrumb-item @click="loadFiles('0', '根目录')">
-    <n-icon><HomeOutlined /></n-icon> 根目录
-   </n-breadcrumb-item>
-   <n-breadcrumb-item v-for="(item, idx) in pathStack" :key="idx" @click="jumpTo(idx)">
-    {{ item.name }}
-   </n-breadcrumb-item>
-  </n-breadcrumb>
+  <div style="height: 400px; display: flex; flex-direction: column;">
+    <!-- 面包屑保持不变 -->
+    <n-breadcrumb>...</n-breadcrumb>
 
-  <div style="flex: 1; overflow-y: auto; margin-top: 10px; border: 1px solid #333; padding: 5px;">
-   <n-spin :show="loading">
-    <n-list hoverable clickable>
-     <n-list-item v-if="files.length === 0">
-      <n-empty description="空目录" />
-     </n-list-item>
-     <n-list-item v-for="file in files" :key="file.fileId" @click="handleClick(file)">
-       <template #prefix>
-        <n-icon v-if="file.type === 1" color="#f0a020"><FolderOutlined /></n-icon>
-        <n-icon v-else><FileOutlined /></n-icon>
-       </template>
-       {{ file.filename }}
-       <template #suffix v-if="file.type === 1">
-        <n-button size="tiny" secondary @click.stop="$emit('select', file.fileId)">选择</n-button>
-       </template>
-     </n-list-item>
-    </n-list>
-   </n-spin>
+    <div style="flex: 1; margin-top: 10px; border: 1px solid #333; height: 0;"> <!-- height:0 是为了让 flex 生效 -->
+      <n-spin :show="loading" style="height: 100%">
+        <n-empty v-if="files.length === 0 && !loading" description="空目录" style="padding-top: 50px" />
+        
+        <!-- 核心修改：使用虚拟列表 -->
+        <n-virtual-list
+          v-else
+          :item-size="42" 
+          :items="files"
+          item-resizable
+          style="height: 100%"
+        >
+          <template #default="{ item }">
+            <div 
+              class="file-item" 
+              @click="handleClick(item)"
+              style="height: 42px; display: flex; align-items: center; padding: 0 10px; cursor: pointer; border-bottom: 1px solid #333;"
+            >
+              <n-icon v-if="item.type === 1" color="#f0a020" style="margin-right: 8px"><FolderOutlined /></n-icon>
+              <n-icon v-else style="margin-right: 8px"><FileOutlined /></n-icon>
+              
+              <span style="flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">
+                {{ item.filename }}
+              </span>
+
+              <n-button v-if="item.type === 1" size="tiny" secondary @click.stop="$emit('select', item.fileId)">
+                选择
+              </n-button>
+            </div>
+          </template>
+        </n-virtual-list>
+      </n-spin>
+    </div>
   </div>
- </div>
 </template>
 
-<script setup>
-import { ref, watch } from 'vue'
-import { FolderOutlined, FileOutlined, HomeOutlined } from '@vicons/antd'
-import { NIcon } from 'naive-ui'
-import api from '../api'
-
-const props = defineProps(['accountId'])
-const emit = defineEmits(['select'])
-
-const loading = ref(false)
-const files = ref([])
-const pathStack = ref([]) // {id, name}
-
-const loadFiles = async (parentId, name) => {
- if (!props.accountId) return
- loading.value = true
- try {
-  // 修复：对 parentId 进行 URL 编码，支持 OpenList 路径包含 / 等字符
-  const res = await api.get(`/cloud/files?accountId=${props.accountId}&parentFileId=${encodeURIComponent(parentId)}`)
-  files.value = res.data.fileList || []
-  if(parentId === '0' || parentId === '/' || parentId === '') {
-    pathStack.value = []
-  }
- } finally {
-  loading.value = false
- }
+<style scoped>
+.file-item:hover {
+  background-color: rgba(255, 255, 255, 0.1); /* 简单的 Hover 效果 */
 }
-
-watch(() => props.accountId, (val) => {
- if(val) {
-  pathStack.value = []
-  loadFiles('0')
- }
-}, { immediate: true })
-
-const handleClick = (file) => {
- if (file.type === 1) { // Directory
-  pathStack.value.push({ id: file.fileId, name: file.filename })
-  loadFiles(file.fileId)
- }
-}
-
-const jumpTo = (idx) => {
- const target = pathStack.value[idx]
- pathStack.value = pathStack.value.slice(0, idx + 1)
- loadFiles(target.id)
-}
-</script>
+</style>
