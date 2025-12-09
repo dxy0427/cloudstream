@@ -1,50 +1,52 @@
 <template>
-  <div style="height: 450px; display: flex; flex-direction: column;">
+  <!-- 1. 外层容器：固定高度 500px，确保模态框内有足够空间 -->
+  <div class="browser-container">
     <!-- 面包屑导航 -->
-    <n-breadcrumb>
-      <n-breadcrumb-item @click="loadFiles('0')">
-        <n-icon><HomeOutlined /></n-icon> 根目录
-      </n-breadcrumb-item>
-      <n-breadcrumb-item v-for="(item, idx) in pathStack" :key="idx" @click="jumpTo(idx)">
-        {{ item.name }}
-      </n-breadcrumb-item>
-    </n-breadcrumb>
+    <div class="breadcrumb-area">
+      <n-breadcrumb>
+        <n-breadcrumb-item @click="loadFiles('0')">
+          <n-icon><HomeOutlined /></n-icon> 根目录
+        </n-breadcrumb-item>
+        <n-breadcrumb-item v-for="(item, idx) in pathStack" :key="idx" @click="jumpTo(idx)">
+          {{ item.name }}
+        </n-breadcrumb-item>
+      </n-breadcrumb>
+    </div>
 
-    <!-- 文件列表容器 -->
-    <div style="flex: 1; margin-top: 10px; border: 1px solid #333; border-radius: 4px; overflow: hidden; position: relative;">
+    <!-- 2. 列表区域：占据剩余空间，且必须有 hidden 防止溢出 -->
+    <div class="list-area">
       <n-spin :show="loading" style="height: 100%">
         <!-- 空状态 -->
         <n-empty 
           v-if="files.length === 0 && !loading" 
-          description="空目录" 
-          style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);" 
+          description="此目录为空" 
+          style="padding-top: 60px;" 
         />
         
-        <!-- 虚拟滚动列表 -->
+        <!-- 3. 虚拟列表：核心修复 -->
+        <!-- item-size: 每一行的高度，必须与下方 css .file-row 高度一致 -->
+        <!-- style="height: 100%": 必须填满父容器，滚动条才会出现 -->
         <n-virtual-list
           v-else
-          style="height: 100%"
+          style="height: 100%; max-height: 100%;"
           :item-size="46"
           :items="files"
           item-resizable
         >
           <template #default="{ item }">
             <div class="file-row" @click="handleClick(item)">
-              <!-- 图标 -->
               <div class="icon-wrapper">
-                <n-icon v-if="item.type === 1" color="#f0a020" size="18"><FolderOutlined /></n-icon>
-                <n-icon v-else color="#888" size="18"><FileOutlined /></n-icon>
+                <n-icon v-if="item.type === 1" color="#f0a020" size="20"><FolderOutlined /></n-icon>
+                <n-icon v-else color="#888" size="20"><FileOutlined /></n-icon>
               </div>
 
-              <!-- 文件名 -->
-              <div class="name-wrapper">
+              <div class="name-wrapper" :title="item.filename">
                 {{ item.filename }}
               </div>
 
-              <!-- 操作按钮 (仅文件夹显示选择) -->
               <div class="action-wrapper" v-if="item.type === 1">
                 <n-button size="tiny" secondary type="primary" @click.stop="$emit('select', item.fileId)">
-                  选择此目录
+                  选择
                 </n-button>
               </div>
             </div>
@@ -66,18 +68,14 @@ const emit = defineEmits(['select'])
 
 const loading = ref(false)
 const files = ref([])
-const pathStack = ref([]) // 存储路径栈 {id, name}
+const pathStack = ref([])
 
-// 加载文件列表
 const loadFiles = async (parentId) => {
   if (!props.accountId) return
   loading.value = true
   try {
-    // 关键修复：对 parentId 进行 URL 编码，防止 OpenList 路径包含特殊字符导致 400 错误
     const res = await api.get(`/cloud/files?accountId=${props.accountId}&parentFileId=${encodeURIComponent(parentId)}`)
     files.value = res.data.fileList || []
-    
-    // 如果回到根目录，清空栈
     if(parentId === '0' || parentId === '/' || parentId === '') {
       pathStack.value = []
     }
@@ -86,7 +84,6 @@ const loadFiles = async (parentId) => {
   }
 }
 
-// 监听账户ID变化，自动加载根目录
 watch(() => props.accountId, (val) => {
   if(val) {
     pathStack.value = []
@@ -94,15 +91,13 @@ watch(() => props.accountId, (val) => {
   }
 }, { immediate: true })
 
-// 点击行逻辑
 const handleClick = (file) => {
-  if (file.type === 1) { // 如果是文件夹，进入下一级
+  if (file.type === 1) { 
     pathStack.value.push({ id: file.fileId, name: file.filename })
     loadFiles(file.fileId)
   }
 }
 
-// 面包屑跳转
 const jumpTo = (idx) => {
   const target = pathStack.value[idx]
   pathStack.value = pathStack.value.slice(0, idx + 1)
@@ -111,21 +106,36 @@ const jumpTo = (idx) => {
 </script>
 
 <style scoped>
+/* 使用 Flex 布局强制撑开高度 */
+.browser-container {
+  height: 500px; /* 总高度固定 */
+  display: flex;
+  flex-direction: column;
+}
+
+.breadcrumb-area {
+  padding-bottom: 10px;
+  flex-shrink: 0; /* 防止面包屑被压缩 */
+}
+
+.list-area {
+  flex: 1; /* 自动占满剩余空间 */
+  border: 1px solid rgba(128, 128, 128, 0.2);
+  border-radius: 4px;
+  overflow: hidden; /* 关键：防止内容溢出父容器 */
+  position: relative;
+  background-color: rgba(0, 0, 0, 0.02);
+}
+
 /* 列表行样式 */
 .file-row {
-  height: 46px;
+  height: 46px; /* 必须与 item-size 一致 */
   display: flex;
   align-items: center;
   padding: 0 12px;
   cursor: pointer;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
-  transition: background-color 0.2s;
+  border-bottom: 1px solid rgba(128, 128, 128, 0.1);
   box-sizing: border-box;
-}
-
-/* 适配亮色模式的边框颜色 */
-:root:not(.dark) .file-row {
-  border-bottom: 1px solid #eee;
 }
 
 .file-row:hover {
@@ -144,6 +154,7 @@ const jumpTo = (idx) => {
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 14px;
+  user-select: none; /* 防止拖动滚动条时意外选中文字 */
 }
 
 .action-wrapper {
