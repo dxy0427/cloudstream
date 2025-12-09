@@ -1,7 +1,6 @@
 <template>
-  <!-- 1. 外层容器：固定高度 500px，确保模态框内有足够空间 -->
   <div class="browser-container">
-    <!-- 面包屑导航 -->
+    <!-- 顶部面包屑 -->
     <div class="breadcrumb-area">
       <n-breadcrumb>
         <n-breadcrumb-item @click="loadFiles('0')">
@@ -13,45 +12,42 @@
       </n-breadcrumb>
     </div>
 
-    <!-- 2. 列表区域：占据剩余空间，且必须有 hidden 防止溢出 -->
-    <div class="list-area">
+    <!-- 列表区域容器 -->
+    <div class="list-wrapper">
       <n-spin :show="loading" style="height: 100%">
         <!-- 空状态 -->
-        <n-empty 
-          v-if="files.length === 0 && !loading" 
-          description="此目录为空" 
-          style="padding-top: 60px;" 
-        />
-        
-        <!-- 3. 虚拟列表：核心修复 -->
-        <!-- item-size: 每一行的高度，必须与下方 css .file-row 高度一致 -->
-        <!-- style="height: 100%": 必须填满父容器，滚动条才会出现 -->
-        <n-virtual-list
-          v-else
-          style="height: 100%; max-height: 100%;"
-          :item-size="46"
-          :items="files"
-          item-resizable
-        >
-          <template #default="{ item }">
-            <div class="file-row" @click="handleClick(item)">
-              <div class="icon-wrapper">
-                <n-icon v-if="item.type === 1" color="#f0a020" size="20"><FolderOutlined /></n-icon>
-                <n-icon v-else color="#888" size="20"><FileOutlined /></n-icon>
-              </div>
+        <div v-if="files.length === 0 && !loading" class="empty-state">
+          <n-empty description="此目录为空" />
+        </div>
 
-              <div class="name-wrapper" :title="item.filename">
-                {{ item.filename }}
-              </div>
-
-              <div class="action-wrapper" v-if="item.type === 1">
-                <n-button size="tiny" secondary type="primary" @click.stop="$emit('select', item.fileId)">
-                  选择
-                </n-button>
-              </div>
+        <!-- 核心修复：原生滚动容器 -->
+        <!-- 这种写法兼容性最强，手机电脑都能滚 -->
+        <div v-else class="scroll-container">
+          <div 
+            v-for="item in files" 
+            :key="item.fileId" 
+            class="file-row" 
+            @click="handleClick(item)"
+          >
+            <!-- 图标 -->
+            <div class="icon-wrapper">
+              <n-icon v-if="item.type === 1" color="#f0a020" size="22"><FolderOutlined /></n-icon>
+              <n-icon v-else color="#888" size="22"><FileOutlined /></n-icon>
             </div>
-          </template>
-        </n-virtual-list>
+
+            <!-- 文件名 -->
+            <div class="name-wrapper">
+              {{ item.filename }}
+            </div>
+
+            <!-- 操作按钮 -->
+            <div class="action-wrapper" v-if="item.type === 1">
+              <n-button size="tiny" secondary type="primary" @click.stop="$emit('select', item.fileId)">
+                选择
+              </n-button>
+            </div>
+          </div>
+        </div>
       </n-spin>
     </div>
   </div>
@@ -60,7 +56,7 @@
 <script setup>
 import { ref, watch } from 'vue'
 import { FolderOutlined, FileOutlined, HomeOutlined } from '@vicons/antd'
-import { NIcon, NButton, NBreadcrumb, NBreadcrumbItem, NSpin, NVirtualList, NEmpty } from 'naive-ui'
+import { NIcon, NButton, NBreadcrumb, NBreadcrumbItem, NSpin, NEmpty } from 'naive-ui'
 import api from '../api'
 
 const props = defineProps(['accountId'])
@@ -74,6 +70,7 @@ const loadFiles = async (parentId) => {
   if (!props.accountId) return
   loading.value = true
   try {
+    // 增加 encodeURIComponent 防止路径特殊字符报错
     const res = await api.get(`/cloud/files?accountId=${props.accountId}&parentFileId=${encodeURIComponent(parentId)}`)
     files.value = res.data.fileList || []
     if(parentId === '0' || parentId === '/' || parentId === '') {
@@ -104,60 +101,3 @@ const jumpTo = (idx) => {
   loadFiles(target.id)
 }
 </script>
-
-<style scoped>
-/* 使用 Flex 布局强制撑开高度 */
-.browser-container {
-  height: 500px; /* 总高度固定 */
-  display: flex;
-  flex-direction: column;
-}
-
-.breadcrumb-area {
-  padding-bottom: 10px;
-  flex-shrink: 0; /* 防止面包屑被压缩 */
-}
-
-.list-area {
-  flex: 1; /* 自动占满剩余空间 */
-  border: 1px solid rgba(128, 128, 128, 0.2);
-  border-radius: 4px;
-  overflow: hidden; /* 关键：防止内容溢出父容器 */
-  position: relative;
-  background-color: rgba(0, 0, 0, 0.02);
-}
-
-/* 列表行样式 */
-.file-row {
-  height: 46px; /* 必须与 item-size 一致 */
-  display: flex;
-  align-items: center;
-  padding: 0 12px;
-  cursor: pointer;
-  border-bottom: 1px solid rgba(128, 128, 128, 0.1);
-  box-sizing: border-box;
-}
-
-.file-row:hover {
-  background-color: rgba(128, 128, 128, 0.1);
-}
-
-.icon-wrapper {
-  display: flex;
-  align-items: center;
-  margin-right: 12px;
-}
-
-.name-wrapper {
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  font-size: 14px;
-  user-select: none; /* 防止拖动滚动条时意外选中文字 */
-}
-
-.action-wrapper {
-  margin-left: 10px;
-}
-</style>
