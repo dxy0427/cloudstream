@@ -38,7 +38,6 @@ func ConnectDatabase(dbPath string) error {
 	}
 
 	// 核心优化：开启 WAL 模式，大幅提升并发性能
-	// WAL (Write-Ahead Logging) 允许同时进行读写操作
 	if _, err := sqlDB.Exec("PRAGMA journal_mode=WAL;"); err != nil {
 		log.Warn().Err(err).Msg("开启 SQLite WAL 模式失败，性能可能受限")
 	}
