@@ -1,10 +1,9 @@
 name: 手动构建 YSTRM 镜像到 GHCR
 
-# 仅支持手动触发，删除自动触发条件（push/pull_request）
+# 仅支持手动触发
 on:
-  workflow_dispatch:  # 手动触发关键字，支持在GitHub页面手动启动
+  workflow_dispatch:
     inputs:
-      # 可选：添加自定义输入参数（比如指定镜像标签、构建平台）
       image-tag:
         description: '镜像标签（默认：latest）'
         required: false
@@ -18,42 +17,46 @@ jobs:
   build-and-push-ghcr:
     runs-on: ubuntu-latest
     permissions:
-      packages: write  # 允许推送镜像到GHCR
-      contents: read   # 允许读取仓库代码
+      packages: write          # 核心：GHCR 镜像推送权限
+      contents: read           # 读取仓库代码（必须）
+      id-token: write          # 优化：支持镜像签名/验证（兼容原 --attest 参数）
+      attestations: write      # 优化：适配构建 attestation 需求
     steps:
       - name: 检查代码
         uses: actions/checkout@v4
 
       - name: 设置 Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          install: true  # 确保 Buildx 完整安装，避免平台多架构构建问题
 
       - name: 登录 GHCR
         uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}  # GitHub自动生成的令牌，无需手动配置
+          password: ${{ secrets.GITHUB_TOKEN }}  # 内置令牌，无需手动创建
 
-      - name: 提取镜像标签
+      - name: 提取镜像元数据（标签/标签）
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            ghcr.io/${{ github.actor }}/cloudstream  # 你的GHCR镜像名（格式：ghcr.io/用户名/镜像名）
+          images: ghcr.io/${{ github.actor }}/cloudstream  # 固定镜像名格式
           tags: |
-            ${{ github.event.inputs.image-tag }}  # 手动输入的标签
-            ${{ github.sha }}  # commit哈希标签（唯一标识版本）
+            ${{ github.event.inputs.image-tag }}  # 手动输入标签
+            ${{ github.sha }}                     # Commit 哈希标签（唯一版本标识）
           flavor: |
-            latest=true
+            latest=true  # 当手动输入标签为 latest 时，确保正确标记为最新
 
       - name: 构建并推送镜像
         uses: docker/build-push-action@v5
         with:
-          context: .  # 构建上下文：项目根目录
-          file: ./Dockerfile  # Dockerfile路径（确保与项目中一致）
-          push: true  # 始终推送镜像（仅手动触发，无需判断）
-          tags: ${{ steps.meta.outputs.tags }}  # 镜像标签（手动输入+commit哈希）
-          labels: ${{ steps.meta.outputs.labels }}  # 自动生成的镜像标签
-          platforms: ${{ github.event.inputs.platform }}  # 手动选择的构建平台
-          cache-from: type=gha  # 利用GitHub Actions缓存加速构建
-          cache-to: type=gha,mode=max  # 最大化缓存，下次构建更快
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: ${{ github.event.inputs.platform }}
+          cache-from: type=gha  # 复用历史缓存，加速构建
+          cache-to: type=gha,mode=max  # 最大化缓存，包含所有层
+          attest: type=provenance,mode=max  # 保留原 attest 配置，提升镜像可信度
