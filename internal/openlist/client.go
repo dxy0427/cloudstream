@@ -5,6 +5,7 @@ import (
 	"cloudstream/internal/models"
 	"encoding/json"
 	"fmt"
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/rs/zerolog/log"
 	"net/http"
 	"strings"
@@ -52,7 +53,7 @@ func NewClient(account models.Account) *Client {
 	}
 }
 
-// 获取有效 Token (带自动登录和缓存)
+// 获取有效 Token (带自动登录、JWT解析和缓存)
 func (c *Client) getToken() (string, error) {
 	// 1. 优先使用手动填写的静态 Token
 	if c.StaticToken != "" {
@@ -66,7 +67,7 @@ func (c *Client) getToken() (string, error) {
 	// 2. 检查全局缓存
 	cacheMutex.RLock()
 	if item, exists := globalTokenCache[c.AccountID]; exists {
-		// 提前 5 分钟认为过期
+		// 提前 5 分钟认为过期，触发刷新
 		if time.Now().Before(item.ExpiresAt.Add(-5 * time.Minute)) {
 			token := item.Token
 			cacheMutex.RUnlock()
@@ -86,15 +87,38 @@ func (c *Client) getToken() (string, error) {
 		}
 	}
 
+	// 执行登录
 	token, err := c.login()
 	if err != nil {
 		return "", err
 	}
 
-	// 更新缓存，默认假设 Token 有效期 24 小时
+	// --- 核心优化：解析 JWT 获取真实过期时间 ---
+	expiration := time.Now().Add(24 * time.Hour) // 默认兜底：24小时
+
+	// 使用 ParseUnverified 解析，因为我们要读取 payload，且信任服务端返回的 Token
+	parsedToken, _, err := jwt.NewParser().ParseUnverified(token, jwt.MapClaims{})
+	if err == nil {
+		if claims, ok := parsedToken.Claims.(jwt.MapClaims); ok {
+			// 获取 exp 字段 (Unix 时间戳)
+			if exp, ok := claims["exp"].(float64); ok {
+				realExp := time.Unix(int64(exp), 0)
+				// 只有当解析出的时间是未来的时间才采纳
+				if realExp.After(time.Now()) {
+					expiration = realExp
+					log.Info().Uint("accountID", c.AccountID).Time("expireAt", expiration).Msg("OpenList Token 有效期已自动同步")
+				}
+			}
+		}
+	} else {
+		log.Warn().Err(err).Msg("解析 OpenList JWT 失败，将使用默认过期时间")
+	}
+	// ------------------------------------------
+
+	// 更新缓存
 	globalTokenCache[c.AccountID] = &tokenCacheItem{
 		Token:     token,
-		ExpiresAt: time.Now().Add(24 * time.Hour),
+		ExpiresAt: expiration,
 	}
 
 	return token, nil
@@ -141,7 +165,6 @@ func (c *Client) login() (string, error) {
 		return "", fmt.Errorf("登录失败(code=%d): %s", res.Code, res.Message)
 	}
 
-	log.Info().Uint("accountID", c.AccountID).Msg("OpenList 登录成功，Token 已更新")
 	return res.Data.Token, nil
 }
 
