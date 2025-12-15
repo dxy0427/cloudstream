@@ -5,7 +5,7 @@ import (
 )
 
 const (
-	AccountType123Pan  = "123pan"
+	AccountType123Pan   = "123pan"
 	AccountTypeOpenList = "openlist"
 
 	NotifyTypeWebhook  = "webhook"
@@ -26,13 +26,20 @@ type User struct {
 
 type Account struct {
 	gorm.Model
-	Name          string `gorm:"unique;not null" json:"Name"`
-	Type          string `gorm:"not null;default:'123pan'" json:"Type"`
-	ClientID      string `json:"ClientID"`
-	ClientSecret  string `json:"ClientSecret"`
-	OpenListURL   string `json:"OpenListURL"`
-	OpenListToken string `json:"OpenListToken"`
-	StrmBaseURL   string `json:"StrmBaseURL"`
+	Name             string `gorm:"unique;not null" json:"Name"`
+	Type             string `gorm:"not null;default:'123pan'" json:"Type"`
+	ClientID         string `json:"ClientID"`
+	ClientSecret     string `json:"ClientSecret"`
+	
+	// OpenList 配置
+	OpenListURL      string `json:"OpenListURL"`
+	OpenListToken    string `json:"OpenListToken"`    // 静态 Token
+	OpenListUsername string `json:"OpenListUsername"` // 动态登录用户名
+	OpenListPassword string `json:"OpenListPassword"` // 动态登录密码
+
+	// 通用配置
+	StrmBaseURL string `json:"StrmBaseURL"`
+	CacheTTL    int    `gorm:"default:1" json:"CacheTTL"` // 目录缓存时间(分钟)，0为不缓存
 }
 
 type Task struct {
@@ -50,13 +57,12 @@ type Task struct {
 	MetaExtensions string `gorm:"default:'jpg,jpeg,png,webp,srt,ass,sub'" json:"MetaExtensions"`
 	Threads        int    `gorm:"default:4" json:"Threads"`
 
-	// 新增：进度追踪字段
-	ProcessedCount int    `gorm:"default:0" json:"ProcessedCount"` // 本次扫描已处理文件数
-	LastRunStatus  string `gorm:"default:''" json:"LastRunStatus"` // 例如: "运行中", "已完成", "错误"
+	ProcessedCount int    `gorm:"default:0" json:"ProcessedCount"`
+	LastRunStatus  string `gorm:"default:''" json:"LastRunStatus"`
 }
 
 type TaskFile struct {
 	ID       uint   `gorm:"primarykey"`
-	TaskID   uint   `gorm:"index;uniqueIndex:idx_task_file;not null"` 
-	FilePath string `gorm:"index;uniqueIndex:idx_task_file;not null"` 
+	TaskID   uint   `gorm:"index;uniqueIndex:idx_task_file;not null"`
+	FilePath string `gorm:"index;uniqueIndex:idx_task_file;not null"`
 }
