@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/rs/zerolog/log"
+	"io"
 	"net/http"
 	"strings"
 	"sync"
@@ -67,7 +68,6 @@ func (c *Client) getToken() (string, error) {
 	// 2. 检查全局缓存
 	cacheMutex.RLock()
 	if item, exists := globalTokenCache[c.AccountID]; exists {
-		// 提前 5 分钟认为过期，触发刷新
 		if time.Now().Before(item.ExpiresAt.Add(-5 * time.Minute)) {
 			token := item.Token
 			cacheMutex.RUnlock()
@@ -80,30 +80,23 @@ func (c *Client) getToken() (string, error) {
 	cacheMutex.Lock()
 	defer cacheMutex.Unlock()
 
-	// 双重检查防止并发穿透
 	if item, exists := globalTokenCache[c.AccountID]; exists {
 		if time.Now().Before(item.ExpiresAt.Add(-5 * time.Minute)) {
 			return item.Token, nil
 		}
 	}
 
-	// 执行登录
 	token, err := c.login()
 	if err != nil {
 		return "", err
 	}
 
-	// --- 核心优化：解析 JWT 获取真实过期时间 ---
-	expiration := time.Now().Add(24 * time.Hour) // 默认兜底：24小时
-
-	// 使用 ParseUnverified 解析，因为我们要读取 payload，且信任服务端返回的 Token
+	expiration := time.Now().Add(24 * time.Hour)
 	parsedToken, _, err := jwt.NewParser().ParseUnverified(token, jwt.MapClaims{})
 	if err == nil {
 		if claims, ok := parsedToken.Claims.(jwt.MapClaims); ok {
-			// 获取 exp 字段 (Unix 时间戳)
 			if exp, ok := claims["exp"].(float64); ok {
 				realExp := time.Unix(int64(exp), 0)
-				// 只有当解析出的时间是未来的时间才采纳
 				if realExp.After(time.Now()) {
 					expiration = realExp
 					log.Info().Uint("accountID", c.AccountID).Time("expireAt", expiration).Msg("OpenList Token 有效期已自动同步")
@@ -113,9 +106,7 @@ func (c *Client) getToken() (string, error) {
 	} else {
 		log.Warn().Err(err).Msg("解析 OpenList JWT 失败，将使用默认过期时间")
 	}
-	// ------------------------------------------
 
-	// 更新缓存
 	globalTokenCache[c.AccountID] = &tokenCacheItem{
 		Token:     token,
 		ExpiresAt: expiration,
@@ -124,7 +115,6 @@ func (c *Client) getToken() (string, error) {
 	return token, nil
 }
 
-// 调用 Alist 登录接口
 func (c *Client) login() (string, error) {
 	apiPath := "/api/auth/login"
 	body := map[string]string{
@@ -137,6 +127,7 @@ func (c *Client) login() (string, error) {
 		return "", err
 	}
 
+	// 登录接口通常不需要重试，因为如果密码错就是错了
 	req, err := http.NewRequest(http.MethodPost, c.BaseURL+apiPath, bytes.NewReader(data))
 	if err != nil {
 		return "", err
@@ -168,41 +159,67 @@ func (c *Client) login() (string, error) {
 	return res.Data.Token, nil
 }
 
+// 核心优化：带重试机制的请求发送
 func (c *Client) doPostJSON(apiPath string, body any, out any) error {
 	if c.BaseURL == "" {
 		return fmt.Errorf("OpenList 地址未配置")
 	}
 
-	// 自动获取 Token
 	token, err := c.getToken()
 	if err != nil {
 		return err
 	}
 
-	data, err := json.Marshal(body)
+	jsonData, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("编码 OpenList 请求失败: %w", err)
+		return fmt.Errorf("编码请求失败: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.BaseURL+apiPath, bytes.NewReader(data))
-	if err != nil {
-		return fmt.Errorf("创建 OpenList 请求失败: %w", err)
+	// 重试配置
+	maxRetries := 3
+	var lastErr error
+
+	for i := 0; i < maxRetries; i++ {
+		// 如果不是第一次尝试，等待后重试 (指数退避: 1s, 2s, 4s)
+		if i > 0 {
+			time.Sleep(time.Duration(1<<uint(i-1)) * time.Second)
+			log.Warn().Str("url", apiPath).Int("retry", i).Msg("OpenList 请求重试中...")
+		}
+
+		req, err := http.NewRequest(http.MethodPost, c.BaseURL+apiPath, bytes.NewReader(jsonData))
+		if err != nil {
+			return err
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", token)
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			lastErr = err
+			continue // 网络错误，重试
+		}
+
+		// 读取 body，方便多次解码（如果需要）
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		// 解析响应
+		if err := json.Unmarshal(respBody, out); err != nil {
+			// 如果 JSON 解析失败，可能是网关错误 (502/504)，重试
+			lastErr = fmt.Errorf("解析响应失败: %w, status: %d", err, resp.StatusCode)
+			continue
+		}
+
+		return nil // 成功
 	}
 
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", token)
-
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("请求 OpenList 失败: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
-		return fmt.Errorf("解析 OpenList 响应失败: %w", err)
-	}
-
-	return nil
+	return fmt.Errorf("请求 OpenList 失败(重试%d次): %w", maxRetries, lastErr)
 }
 
 func (c *Client) ListDirectory(pathStr string, refresh bool) ([]FileInfo, error) {
@@ -259,7 +276,6 @@ func (c *Client) GetRawURL(pathStr string) (string, error) {
 }
 
 func (c *Client) TestConnection() error {
-	// 强制清理一次缓存以测试真实连接
 	cacheMutex.Lock()
 	delete(globalTokenCache, c.AccountID)
 	cacheMutex.Unlock()
