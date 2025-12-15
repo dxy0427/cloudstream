@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/rs/zerolog/log"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -17,19 +18,17 @@ import (
 const (
 	ApiBaseURL = "https://open-api.123pan.com"
 	Timeout    = 60 * time.Second
-	UserAgent  = "CloudStream/1.0.0"
+	// 优化：伪装成浏览器 UA
+	UserAgent  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
 // --- 缓存结构 ---
-
-// 123Pan AccessToken 缓存 (这个必须有)
 type tokenCacheItem struct {
 	sync.RWMutex
 	Token     string
 	ExpiresAt time.Time
 }
 
-// 目录列表缓存 (TTL 可配置)
 type listCacheItem struct {
 	Data       []FileInfo
 	NextFileId int64
@@ -54,7 +53,6 @@ func cleanupCache() {
 				delete(listCache, k)
 			}
 		}
-		// 如果清理后还是很满，强制重置
 		if len(listCache) > 3000 {
 			listCache = make(map[string]*listCacheItem)
 		}
@@ -76,16 +74,12 @@ func NewClient(account models.Account) *Client {
 	if account.Type == models.AccountTypeOpenList {
 		client.OpenListClient = openlist.NewClient(account)
 	}
-	
-	// 触发一次非阻塞清理
 	if len(listCache) > 3000 {
 		go cleanupCache()
 	}
-	
 	return client
 }
 
-// 获取 123Pan AccessToken (带缓存)
 func (c *Client) getAccessToken() (string, error) {
 	mapMutex.Lock()
 	if _, ok := tokenCaches[c.Account.ID]; !ok {
@@ -164,6 +158,7 @@ func ClearTokenCache(accountID uint) {
 	}
 }
 
+// 核心优化：带重试机制的 123Pan API 请求
 func (c *Client) sendAuthorizedRequest(method, endpoint, accessToken string, queryParams map[string]interface{}) (json.RawMessage, error) {
 	fullURL, _ := url.Parse(ApiBaseURL)
 	fullURL.Path = endpoint
@@ -175,39 +170,67 @@ func (c *Client) sendAuthorizedRequest(method, endpoint, accessToken string, que
 	}
 	fullURL.RawQuery = q.Encode()
 
-	req, err := http.NewRequest(method, fullURL.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("创建授权请求失败: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("platform", "open_platform")
-	req.Header.Set("User-Agent", UserAgent)
+	maxRetries := 3
+	var lastErr error
 
-	resp, err := c.HTTPClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("发送授权请求失败: %w", err)
-	}
-	defer resp.Body.Close()
+	for i := 0; i < maxRetries; i++ {
+		if i > 0 {
+			time.Sleep(time.Duration(1<<uint(i-1)) * time.Second)
+			log.Warn().Str("endpoint", endpoint).Int("retry", i).Msg("123Pan 请求重试中...")
+		}
 
-	var result struct {
-		BaseResp
-		Data json.RawMessage `json:"data"`
+		req, err := http.NewRequest(method, fullURL.String(), nil)
+		if err != nil {
+			return nil, fmt.Errorf("创建请求失败: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		req.Header.Set("platform", "open_platform")
+		req.Header.Set("User-Agent", UserAgent)
+
+		resp, err := c.HTTPClient.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		bodyBytes, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+
+		var result struct {
+			BaseResp
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(bodyBytes, &result); err != nil {
+			lastErr = fmt.Errorf("解析 JSON 失败: %w", err)
+			continue
+		}
+
+		// 429 频率限制处理：多等一会儿再重试
+		if result.Code == 429 {
+			time.Sleep(3 * time.Second)
+			lastErr = fmt.Errorf("API 频率限制 (429)")
+			continue
+		}
+
+		if result.Code != 0 {
+			// 业务错误（如文件不存在）通常不需要重试，直接返回
+			return nil, fmt.Errorf("123Pan API 错误 (code: %d): %s", result.Code, result.Message)
+		}
+
+		return result.Data, nil
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil, fmt.Errorf("解析授权响应 JSON 失败: %w", err)
-	}
-	if result.Code != 0 {
-		return nil, fmt.Errorf("123Pan API 错误 (code: %d): %s", result.Code, result.Message)
-	}
-	return result.Data, nil
+
+	return nil, fmt.Errorf("请求 123Pan 失败(重试%d次): %w", maxRetries, lastErr)
 }
 
-// ListFiles 获取文件列表 (根据 Account.CacheTTL 决定是否缓存)
 func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, parentPath string) ([]FileInfo, int64, error) {
 	if c.Account.Type == models.AccountType123Pan {
 		cacheKey := fmt.Sprintf("list:%d:%d:%d", c.Account.ID, parentFileId, lastFileId)
 		
-		// 1. 如果配置了 TTL，检查缓存
 		if c.Account.CacheTTL > 0 {
 			listCacheMutex.RLock()
 			if item, ok := listCache[cacheKey]; ok {
@@ -219,7 +242,6 @@ func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, pare
 			listCacheMutex.RUnlock()
 		}
 
-		// 2. 调用 API
 		accessToken, err := c.getAccessToken()
 		if err != nil {
 			return nil, 0, fmt.Errorf("获取 AccessToken 失败: %w", err)
@@ -246,7 +268,6 @@ func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, pare
 			return nil, 0, fmt.Errorf("解析文件列表数据失败: %w", err)
 		}
 
-		// 3. 如果配置了 TTL，写入缓存
 		if c.Account.CacheTTL > 0 {
 			listCacheMutex.Lock()
 			listCache[cacheKey] = &listCacheItem{
@@ -262,7 +283,6 @@ func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, pare
 	return []FileInfo{}, -1, nil
 }
 
-// ListOpenListDirectory 获取 OpenList 列表 (根据 Account.CacheTTL 决定是否缓存)
 func (c *Client) ListOpenListDirectory(parentPath string) ([]FileInfo, error) {
 	if c.OpenListClient == nil {
 		return nil, fmt.Errorf("OpenList 客户端未初始化")
@@ -270,7 +290,6 @@ func (c *Client) ListOpenListDirectory(parentPath string) ([]FileInfo, error) {
 
 	cacheKey := fmt.Sprintf("list:%d:%s", c.Account.ID, parentPath)
 
-	// 1. 如果配置了 TTL，检查缓存
 	if c.Account.CacheTTL > 0 {
 		listCacheMutex.RLock()
 		if item, ok := listCache[cacheKey]; ok {
@@ -282,7 +301,6 @@ func (c *Client) ListOpenListDirectory(parentPath string) ([]FileInfo, error) {
 		listCacheMutex.RUnlock()
 	}
 
-	// 2. 调用 API
 	openListFiles, err := c.OpenListClient.ListDirectory(parentPath, false)
 	if err != nil {
 		return nil, fmt.Errorf("OpenList 列表失败: %w", err)
@@ -303,7 +321,6 @@ func (c *Client) ListOpenListDirectory(parentPath string) ([]FileInfo, error) {
 		})
 	}
 
-	// 3. 如果配置了 TTL，写入缓存
 	if c.Account.CacheTTL > 0 {
 		listCacheMutex.Lock()
 		listCache[cacheKey] = &listCacheItem{
