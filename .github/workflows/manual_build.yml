@@ -1,59 +1,106 @@
+# 手动构建并推送测试Docker镜像到GHCR
 name: Manual Build & Push Test Docker Image
 
+# 手动触发，支持自定义镜像标签
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: '测试镜像标签'
+        description: '测试镜像标签（如test-v1、beta、latest）'
         required: true
         default: 'test'
+        type: string # 显式指定输入类型，提升兼容性
 
+# 环境变量配置
 env:
+  # 容器仓库地址（GHCR）
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }} 
+  # 镜像名（与仓库名一致，自动转小写）
+  IMAGE_NAME: ${{ github.repository }}
+  # Docker构建并行数（按需调整，避免资源耗尽）
+  BUILD_PARALLEL: 4
 
+# 构建推送任务
 jobs:
   build-and-push-test:
     runs-on: ubuntu-latest
-
+    # 必要权限：读代码、写包、读仓库元数据
     permissions:
       contents: read
       packages: write
-
+      id-token: write
+    # 任务超时时间（按需调整）
+    timeout-minutes: 30
     steps:
-      - name: Checkout repository
+      - name: 检出代码仓库
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1 # 仅拉取最新提交，提升速度
 
-      - name: Set up Docker Buildx
+      - name: 配置Docker Buildx构建工具
         uses: docker/setup-buildx-action@v3
+        with:
+          install: true # 强制安装最新版Buildx
+          driver-opts: network=host # 提升网络构建速度
 
-      - name: Log in to the Container registry
+      - name: 登录GHCR容器仓库
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          username: ${{ github.actor }} # GitHub动作执行者用户名
+          password: ${{ secrets.GITHUB_TOKEN }} # 仓库自动生成的TOKEN，无需手动配置
 
-      - name: Extract metadata (tags, labels)
+      - name: 提取Docker镜像元数据（标签/标签）
         id: meta
         uses: docker/metadata-action@v5
         with:
+          # 镜像完整地址
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          flavor: |
-            lowercase=true     
+          # 强制镜像名转小写（GHCR要求）
+          flavor: lowercase=true
+          # 镜像标签：自定义版本 + 短SHA（便于追溯构建提交）
           tags: |
             type=raw,value=${{ inputs.version }}
-            type=raw,value=test           
-            type=sha,format=short          
+            type=sha,format=short,prefix=sha-
+          # 标准化镜像标签（作者、描述、构建时间、仓库地址等）
+          labels: |
+            org.opencontainers.image.authors=${{ github.actor }}<${{ github.actor }}@users.noreply.github.com>
+            org.opencontainers.image.description=Test Build Image for ${{ github.repository }}
+            org.opencontainers.image.source=${{ github.repositoryUrl }}
+            org.opencontainers.image.url=${{ github.repositoryUrl }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ github.event.repository.updated_at }}
 
-      - name: Build and push Docker image (Test - amd64 only)
+      - name: 构建并推送Docker镜像（仅amd64架构，测试版）
         uses: docker/build-push-action@v5
         with:
-          context: .
-          file: ./Dockerfile
-          push: true
-          platforms: linux/amd64            
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          context: . # 构建上下文为项目根目录
+          file: ./Dockerfile # 指定Dockerfile路径
+          push: true # 推送到仓库（测试环境可临时改为false，仅构建不推送）
+          platforms: linux/amd64 # 仅构建amd64，如需多架构可添加linux/arm64等
+          tags: ${{ steps.meta.outputs.tags }} # 引用元数据步骤的标签
+          labels: ${{ steps.meta.outputs.labels }} # 引用元数据步骤的标签
+          # 构建优化
+          build-args: |
+            BUILD_PARALLEL=${{ env.BUILD_PARALLEL }}
+          no-cache: false # 开启缓存（提升二次构建速度）
+          cache-from: type=gha # 从GitHub Action缓存拉取
+          cache-to: type=gha,mode=max # 推送到GitHub Action缓存，保存所有层
+          pull: true # 拉取基础镜像的最新版本
+          quiet: false # 显示构建日志，方便排查
+          sbom: true # 生成镜像SBOM清单（提升可追溯性）
+
+      - name: 校验推送的镜像标签
+        run: |
+          # 打印推送的所有镜像标签，确认推送成功
+          echo "✅ 构建推送的镜像标签："
+          echo ${{ steps.meta.outputs.tags }} | tr ',' '\n'
+          # 打印镜像元数据标签
+          echo -e "\n✅ 镜像标准化标签："
+          echo ${{ steps.meta.outputs.labels }} | tr ',' '\n'
+
+      - name: 完成提示
+        run: |
+          echo "🎉 测试镜像构建推送完成！"
+          echo "🔗 镜像地址：${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ inputs.version }}"
+          echo "📌 提交SHA追溯：${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha | substr(0,7) }}"
