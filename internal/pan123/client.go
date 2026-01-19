@@ -18,7 +18,6 @@ import (
 const (
 	ApiBaseURL = "https://open-api.123pan.com"
 	Timeout    = 60 * time.Second
-	// 优化：伪装成浏览器 UA
 	UserAgent  = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
@@ -99,6 +98,7 @@ func (c *Client) getAccessToken() (string, error) {
 	cache.Lock()
 	defer cache.Unlock()
 
+	// 双重检查
 	if cache.Token != "" && time.Now().Before(cache.ExpiresAt.Add(-5*time.Minute)) {
 		return cache.Token, nil
 	}
@@ -149,6 +149,14 @@ func (c *Client) getAccessToken() (string, error) {
 	return cache.Token, nil
 }
 
+// 强制清除 Token 缓存
+func (c *Client) invalidateToken() {
+	mapMutex.Lock()
+	delete(tokenCaches, c.Account.ID)
+	mapMutex.Unlock()
+	log.Warn().Str("account", c.Account.Name).Msg("123Pan Token 被标记失效，准备重新获取")
+}
+
 func ClearTokenCache(accountID uint) {
 	mapMutex.Lock()
 	defer mapMutex.Unlock()
@@ -158,8 +166,8 @@ func ClearTokenCache(accountID uint) {
 	}
 }
 
-// 核心优化：带重试机制的 123Pan API 请求
-func (c *Client) sendAuthorizedRequest(method, endpoint, accessToken string, queryParams map[string]interface{}) (json.RawMessage, error) {
+// 核心优化：带鉴权重试机制的请求发送 (Robust Version)
+func (c *Client) sendAuthorizedRequest(method, endpoint, _ string, queryParams map[string]interface{}) (json.RawMessage, error) {
 	fullURL, _ := url.Parse(ApiBaseURL)
 	fullURL.Path = endpoint
 	q := fullURL.Query()
@@ -170,34 +178,61 @@ func (c *Client) sendAuthorizedRequest(method, endpoint, accessToken string, que
 	}
 	fullURL.RawQuery = q.Encode()
 
-	maxRetries := 3
-	var lastErr error
-
-	for i := 0; i < maxRetries; i++ {
-		if i > 0 {
-			time.Sleep(time.Duration(1<<uint(i-1)) * time.Second)
-			log.Warn().Str("endpoint", endpoint).Int("retry", i).Msg("123Pan 请求重试中...")
+	// 鉴权重试循环：最多尝试2次（第一次用缓存/新Token，失败则清除缓存重试）
+	maxAuthRetries := 2
+	for authAttempt := 0; authAttempt < maxAuthRetries; authAttempt++ {
+		// 每次循环都重新获取 Token (可能是缓存的，也可能是新的)
+		accessToken, err := c.getAccessToken()
+		if err != nil {
+			return nil, err
 		}
 
-		req, err := http.NewRequest(method, fullURL.String(), nil)
-		if err != nil {
-			return nil, fmt.Errorf("创建请求失败: %w", err)
-		}
-		req.Header.Set("Authorization", "Bearer "+accessToken)
-		req.Header.Set("platform", "open_platform")
-		req.Header.Set("User-Agent", UserAgent)
+		// 网络重试循环
+		maxNetRetries := 3
+		var lastNetErr error
+		var resp *http.Response
+		var bodyBytes []byte
 
-		resp, err := c.HTTPClient.Do(req)
-		if err != nil {
-			lastErr = err
-			continue
+		for i := 0; i < maxNetRetries; i++ {
+			if i > 0 {
+				time.Sleep(time.Duration(1<<uint(i-1)) * time.Second)
+			}
+
+			req, err := http.NewRequest(method, fullURL.String(), nil)
+			if err != nil {
+				return nil, fmt.Errorf("创建请求失败: %w", err)
+			}
+			req.Header.Set("Authorization", "Bearer "+accessToken)
+			req.Header.Set("platform", "open_platform")
+			req.Header.Set("User-Agent", UserAgent)
+
+			resp, err = c.HTTPClient.Do(req)
+			if err != nil {
+				lastNetErr = err
+				continue
+			}
+
+			bodyBytes, err = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				lastNetErr = err
+				continue
+			}
+			lastNetErr = nil
+			break
 		}
 
-		bodyBytes, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			lastErr = err
-			continue
+		if lastNetErr != nil {
+			return nil, fmt.Errorf("请求 123Pan 失败(重试%d次): %w", maxNetRetries, lastNetErr)
+		}
+
+		// 检查 HTTP 401 Unauthorized
+		if resp.StatusCode == 401 {
+			if authAttempt == 0 {
+				c.invalidateToken()
+				continue // 触发重试
+			}
+			return nil, fmt.Errorf("123Pan 鉴权失败 (HTTP 401)")
 		}
 
 		var result struct {
@@ -205,32 +240,40 @@ func (c *Client) sendAuthorizedRequest(method, endpoint, accessToken string, que
 			Data json.RawMessage `json:"data"`
 		}
 		if err := json.Unmarshal(bodyBytes, &result); err != nil {
-			lastErr = fmt.Errorf("解析 JSON 失败: %w", err)
+			return nil, fmt.Errorf("解析 JSON 失败: %w", err)
+		}
+
+		// 处理业务逻辑错误
+		if result.Code == 429 {
+			// 频率限制，等待后重试，但不消耗 authAttempt
+			time.Sleep(3 * time.Second)
+			authAttempt-- // 保持鉴权重试次数
 			continue
 		}
 
-		// 429 频率限制处理：多等一会儿再重试
-		if result.Code == 429 {
-			time.Sleep(3 * time.Second)
-			lastErr = fmt.Errorf("API 频率限制 (429)")
-			continue
+		// 有些 API 可能会返回业务上的 401 (虽然 123pan 通常用 HTTP status)
+		if result.Code == 401 {
+			if authAttempt == 0 {
+				c.invalidateToken()
+				continue
+			}
+			return nil, fmt.Errorf("123Pan Token 失效 (Code 401)")
 		}
 
 		if result.Code != 0 {
-			// 业务错误（如文件不存在）通常不需要重试，直接返回
 			return nil, fmt.Errorf("123Pan API 错误 (code: %d): %s", result.Code, result.Message)
 		}
 
 		return result.Data, nil
 	}
 
-	return nil, fmt.Errorf("请求 123Pan 失败(重试%d次): %w", maxRetries, lastErr)
+	return nil, fmt.Errorf("123Pan 请求失败：鉴权重试次数耗尽")
 }
 
 func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, parentPath string) ([]FileInfo, int64, error) {
 	if c.Account.Type == models.AccountType123Pan {
 		cacheKey := fmt.Sprintf("list:%d:%d:%d", c.Account.ID, parentFileId, lastFileId)
-		
+ 
 		if c.Account.CacheTTL > 0 {
 			listCacheMutex.RLock()
 			if item, ok := listCache[cacheKey]; ok {
@@ -242,10 +285,7 @@ func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, pare
 			listCacheMutex.RUnlock()
 		}
 
-		accessToken, err := c.getAccessToken()
-		if err != nil {
-			return nil, 0, fmt.Errorf("获取 AccessToken 失败: %w", err)
-		}
+		// 注意：这里的调用不再手动传 accessToken，因为 sendAuthorizedRequest 内部会处理
 		params := map[string]interface{}{
 			"parentFileId": parentFileId,
 			"limit":        limit,
@@ -256,12 +296,14 @@ func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, pare
 		if lastFileId > 0 {
 			params["lastFileId"] = lastFileId
 		}
-		rawData, err := c.sendAuthorizedRequest(http.MethodGet, "/api/v2/file/list", accessToken, params)
+		
+		// 传递空字符串作为 token，sendAuthorizedRequest 内部会获取
+		rawData, err := c.sendAuthorizedRequest(http.MethodGet, "/api/v2/file/list", "", params)
 		if err != nil {
 			return nil, 0, err
 		}
 		var listData struct {
-			FileList   []FileInfo `json:"fileList"`
+			FileList    []FileInfo `json:"fileList"`
 			LastFileId int64      `json:"lastFileId"`
 		}
 		if err := json.Unmarshal(rawData, &listData); err != nil {
@@ -363,12 +405,9 @@ func (c *Client) GetDownloadURL(identifier interface{}) (string, error) {
 			return "", fmt.Errorf("123Pan ID 类型错误")
 		}
 
-		accessToken, err := c.getAccessToken()
-		if err != nil {
-			return "", fmt.Errorf("获取 AccessToken 失败: %w", err)
-		}
 		params := map[string]interface{}{"fileId": strconv.FormatInt(fileID, 10)}
-		rawData, err := c.sendAuthorizedRequest(http.MethodGet, "/api/v1/file/download_info", accessToken, params)
+		// sendAuthorizedRequest 内部会自动获取 Token
+		rawData, err := c.sendAuthorizedRequest(http.MethodGet, "/api/v1/file/download_info", "", params)
 		if err != nil {
 			return "", err
 		}
