@@ -27,13 +27,13 @@ var (
 )
 
 type Client struct {
-	AccountID   uint
-	BaseURL     string
-	StaticToken string
-	Username    string
-	Password    string
-	CacheTTL    int // 目录缓存时间(分钟)
-	HTTPClient  *http.Client
+	AccountID      uint
+	BaseURL        string
+	StaticToken    string
+	Username       string
+	Password       string
+	CacheTTL       int // 目录缓存时间(分钟)
+	HTTPClient     *http.Client
 }
 
 func NewClient(account models.Account) *Client {
@@ -44,13 +44,13 @@ func NewClient(account models.Account) *Client {
 	base = strings.TrimRight(base, "/")
 
 	return &Client{
-		AccountID:   account.ID,
-		BaseURL:     base,
-		StaticToken: strings.TrimSpace(account.OpenListToken),
-		Username:    strings.TrimSpace(account.OpenListUsername),
-		Password:    strings.TrimSpace(account.OpenListPassword),
-		CacheTTL:    account.CacheTTL,
-		HTTPClient:  &http.Client{Timeout: 30 * time.Second},
+		AccountID:      account.ID,
+		BaseURL:        base,
+		StaticToken:    strings.TrimSpace(account.OpenListToken),
+		Username:       strings.TrimSpace(account.OpenListUsername),
+		Password:       strings.TrimSpace(account.OpenListPassword),
+		CacheTTL:       account.CacheTTL,
+		HTTPClient:     &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -68,6 +68,7 @@ func (c *Client) getToken() (string, error) {
 	// 2. 检查全局缓存
 	cacheMutex.RLock()
 	if item, exists := globalTokenCache[c.AccountID]; exists {
+		// 提前 5 分钟认为过期，防止临界点问题
 		if time.Now().Before(item.ExpiresAt.Add(-5 * time.Minute)) {
 			token := item.Token
 			cacheMutex.RUnlock()
@@ -80,6 +81,7 @@ func (c *Client) getToken() (string, error) {
 	cacheMutex.Lock()
 	defer cacheMutex.Unlock()
 
+	// 双重检查，防止并发穿透
 	if item, exists := globalTokenCache[c.AccountID]; exists {
 		if time.Now().Before(item.ExpiresAt.Add(-5 * time.Minute)) {
 			return item.Token, nil
@@ -91,12 +93,14 @@ func (c *Client) getToken() (string, error) {
 		return "", err
 	}
 
-	expiration := time.Now().Add(24 * time.Hour)
+	// 解析 Token 有效期
+	expiration := time.Now().Add(24 * time.Hour) // 默认 24 小时
 	parsedToken, _, err := jwt.NewParser().ParseUnverified(token, jwt.MapClaims{})
 	if err == nil {
 		if claims, ok := parsedToken.Claims.(jwt.MapClaims); ok {
 			if exp, ok := claims["exp"].(float64); ok {
 				realExp := time.Unix(int64(exp), 0)
+				// 只有当解析出的时间比当前时间晚，才采纳
 				if realExp.After(time.Now()) {
 					expiration = realExp
 					log.Info().Uint("accountID", c.AccountID).Time("expireAt", expiration).Msg("OpenList Token 有效期已自动同步")
@@ -115,6 +119,14 @@ func (c *Client) getToken() (string, error) {
 	return token, nil
 }
 
+// 强制清除缓存
+func (c *Client) invalidateCache() {
+	cacheMutex.Lock()
+	delete(globalTokenCache, c.AccountID)
+	cacheMutex.Unlock()
+	log.Warn().Uint("accountID", c.AccountID).Msg("OpenList Token 已被标记为失效，下次请求将重新登录")
+}
+
 func (c *Client) login() (string, error) {
 	apiPath := "/api/auth/login"
 	body := map[string]string{
@@ -127,7 +139,6 @@ func (c *Client) login() (string, error) {
 		return "", err
 	}
 
-	// 登录接口通常不需要重试，因为如果密码错就是错了
 	req, err := http.NewRequest(http.MethodPost, c.BaseURL+apiPath, bytes.NewReader(data))
 	if err != nil {
 		return "", err
@@ -159,15 +170,10 @@ func (c *Client) login() (string, error) {
 	return res.Data.Token, nil
 }
 
-// 核心优化：带重试机制的请求发送
+// 核心优化：带重试机制 + 自动 Token 刷新
 func (c *Client) doPostJSON(apiPath string, body any, out any) error {
 	if c.BaseURL == "" {
 		return fmt.Errorf("OpenList 地址未配置")
-	}
-
-	token, err := c.getToken()
-	if err != nil {
-		return err
 	}
 
 	jsonData, err := json.Marshal(body)
@@ -175,51 +181,93 @@ func (c *Client) doPostJSON(apiPath string, body any, out any) error {
 		return fmt.Errorf("编码请求失败: %w", err)
 	}
 
-	// 重试配置
-	maxRetries := 3
-	var lastErr error
-
-	for i := 0; i < maxRetries; i++ {
-		// 如果不是第一次尝试，等待后重试 (指数退避: 1s, 2s, 4s)
-		if i > 0 {
-			time.Sleep(time.Duration(1<<uint(i-1)) * time.Second)
-			log.Warn().Str("url", apiPath).Int("retry", i).Msg("OpenList 请求重试中...")
-		}
-
-		req, err := http.NewRequest(http.MethodPost, c.BaseURL+apiPath, bytes.NewReader(jsonData))
+	// 外层循环：控制鉴权失败重试 (最多2次：第一次失败刷新Token，第二次重试)
+	maxAuthRetries := 2
+	for authAttempt := 0; authAttempt < maxAuthRetries; authAttempt++ {
+		
+		token, err := c.getToken()
 		if err != nil {
 			return err
 		}
 
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", token)
-		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+		// 内层循环：控制网络抖动重试 (最多3次)
+		maxNetRetries := 3
+		var lastNetErr error
+		var resp *http.Response
+		var respBody []byte
 
-		resp, err := c.HTTPClient.Do(req)
-		if err != nil {
-			lastErr = err
-			continue // 网络错误，重试
+		for i := 0; i < maxNetRetries; i++ {
+			if i > 0 {
+				time.Sleep(time.Duration(1<<uint(i-1)) * time.Second)
+			}
+
+			req, err := http.NewRequest(http.MethodPost, c.BaseURL+apiPath, bytes.NewReader(jsonData))
+			if err != nil {
+				return err
+			}
+
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Authorization", token)
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+
+			resp, err = c.HTTPClient.Do(req)
+			if err != nil {
+				lastNetErr = err
+				continue 
+			}
+
+			respBody, err = io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				lastNetErr = err
+				continue
+			}
+			
+			// 网络层成功，跳出网络重试循环
+			lastNetErr = nil
+			break
 		}
 
-		// 读取 body，方便多次解码（如果需要）
-		respBody, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			lastErr = err
-			continue
+		if lastNetErr != nil {
+			return fmt.Errorf("请求 OpenList 网络失败: %w", lastNetErr)
 		}
 
-		// 解析响应
+		// --- 鉴权失败检测 ---
+		// 情况1: HTTP 状态码 401 (Unauthorized) 或 403 (Forbidden)
+		if resp.StatusCode == 401 || resp.StatusCode == 403 {
+			if authAttempt == 0 && c.StaticToken == "" { // 如果是第一次且不是静态Token，则尝试刷新
+				c.invalidateCache()
+				continue // 重新进入外层循环，getToken 会触发 login
+			}
+			return fmt.Errorf("OpenList 鉴权失败 (HTTP %d)", resp.StatusCode)
+		}
+
+		// 尝试解析 JSON
+		// 注意：OpenList 有时返回 HTTP 200 但 Body 里的 code 是错误码
+		// 这里我们先用一个临时结构体只读 code
+		var tempRes struct {
+			Code int `json:"code"`
+		}
+		if err := json.Unmarshal(respBody, &tempRes); err == nil {
+			// 情况2: 业务 Code 401
+			if tempRes.Code == 401 {
+				if authAttempt == 0 && c.StaticToken == "" {
+					c.invalidateCache()
+					continue // 重新进入外层循环
+				}
+				return fmt.Errorf("OpenList 鉴权失败 (Business Code 401)")
+			}
+		}
+
+		// 鉴权通过，正式解析数据
 		if err := json.Unmarshal(respBody, out); err != nil {
-			// 如果 JSON 解析失败，可能是网关错误 (502/504)，重试
-			lastErr = fmt.Errorf("解析响应失败: %w, status: %d", err, resp.StatusCode)
-			continue
+			return fmt.Errorf("解析响应失败: %w, status: %d", err, resp.StatusCode)
 		}
 
-		return nil // 成功
+		return nil // 成功返回
 	}
 
-	return fmt.Errorf("请求 OpenList 失败(重试%d次): %w", maxRetries, lastErr)
+	return fmt.Errorf("OpenList 请求失败：重试次数耗尽")
 }
 
 func (c *Client) ListDirectory(pathStr string, refresh bool) ([]FileInfo, error) {
@@ -276,10 +324,7 @@ func (c *Client) GetRawURL(pathStr string) (string, error) {
 }
 
 func (c *Client) TestConnection() error {
-	cacheMutex.Lock()
-	delete(globalTokenCache, c.AccountID)
-	cacheMutex.Unlock()
-	
+	c.invalidateCache() // 测试时强制清理缓存，确保账号密码最新
 	_, err := c.ListDirectory("/", false)
 	return err
 }
