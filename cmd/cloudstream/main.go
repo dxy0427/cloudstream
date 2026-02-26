@@ -36,6 +36,7 @@ func main() {
 	// 初始化路由
 	r := api.InitRouter()
 
+	// 启动主服务（12398端口）
 	listenAddr := "0.0.0.0:12398"
 	srv := &http.Server{
 		Addr:    listenAddr,
@@ -51,6 +52,22 @@ func main() {
 		}
 	}()
 
+	// 启动媒体服务器代理服务（8091端口）
+	proxyAddr := "0.0.0.0:8091"
+	proxyRouter := mediaserver.InitProxyRouter()
+	proxySrv := &http.Server{
+		Addr:    proxyAddr,
+		Handler: proxyRouter,
+	}
+
+	go func() {
+		log.Info().Str("address", proxyAddr).Msg("媒体服务器代理服务已启动")
+		fmt.Printf(" - 媒体服务器代理: http://<IP>:8091\n\n")
+		if err := proxySrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatal().Err(err).Msg("媒体服务器代理服务启动失败")
+		}
+	}()
+
 	// 优雅停机 (Graceful Shutdown)
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -60,8 +77,15 @@ func main() {
 	// 给予 5 秒时间让正在处理的请求完成
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	
+	// 停止主服务
 	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatal().Err(err).Msg("服务强制停止")
+		log.Fatal().Err(err).Msg("主服务强制停止")
+	}
+	
+	// 停止代理服务
+	if err := proxySrv.Shutdown(ctx); err != nil {
+		log.Fatal().Err(err).Msg("代理服务强制停止")
 	}
 
 	log.Info().Msg("服务已退出")
