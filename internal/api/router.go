@@ -62,8 +62,20 @@ func InitRouter() *gin.Engine {
 			{
 				cloud.GET("/files", handlers.FileBrowserHandler)
 			}
+
+			mediaservers := authorized.Group("/mediaservers")
+			{
+				mediaservers.GET("", handlers.ListMediaServersHandler)
+				mediaservers.POST("", handlers.CreateMediaServerHandler)
+				mediaservers.PUT("/:id", handlers.UpdateMediaServerHandler)
+				mediaservers.DELETE("/:id", handlers.DeleteMediaServerHandler)
+				mediaservers.POST("/test", handlers.TestMediaServerConnectionHandler)
+			}
 		}
 	}
+
+	// 媒体服务器代理路由（无需鉴权）
+	v1.Any("/ms/:id/*path", handlers.MediaServerProxyHandler)
 
 	// 静态文件服务
 	r.Static("/assets", "./public/assets")
