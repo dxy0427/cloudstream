@@ -95,6 +95,16 @@ func (m *Manager) GetServer(id uint) (*ProxyServer, bool) {
 	return server, exists
 }
 
+// GetFirstEnabledServerID 获取第一个启用的媒体服务器ID
+func (m *Manager) GetFirstEnabledServerID() uint {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for id := range m.servers {
+		return id
+	}
+	return 0
+}
+
 // modelToConfig 将数据库模型转换为配置
 func (m *Manager) modelToConfig(server *models.MediaServer) *Config {
 	pathMappings, _ := ParsePathMappings(server.PathMappings)
