@@ -22,5 +22,5 @@ ENV TZ=Asia/Shanghai
 WORKDIR /app
 COPY --from=backend-builder /cloudstream .
 COPY --from=frontend-builder /web/dist ./public
-EXPOSE 12398
+EXPOSE 12398 8091
 CMD ["./cloudstream"]
