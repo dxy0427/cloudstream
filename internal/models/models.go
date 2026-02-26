@@ -66,3 +66,34 @@ type TaskFile struct {
 	TaskID   uint   `gorm:"index;uniqueIndex:idx_task_file;not null"`
 	FilePath string `gorm:"index;uniqueIndex:idx_task_file;not null"`
 }
+
+// 媒体服务器配置
+type MediaServer struct {
+	gorm.Model
+	Name string `gorm:"unique;not null" json:"Name"`
+	
+	// 服务配置
+	ServerType string `gorm:"not null;default:'Emby'" json:"ServerType"` // Emby 或 Jellyfin
+	ServerAddr string `gorm:"not null" json:"ServerAddr"`
+	APIKey     string `gorm:"not null" json:"APIKey"`
+	
+	// 缓存配置
+	CacheEnable     bool `gorm:"default:true" json:"CacheEnable"`
+	HttpStrmTTL     int  `gorm:"default:1" json:"HttpStrmTTL"` // 分钟
+	
+	// 客户端过滤
+	ClientEnable bool     `gorm:"default:false" json:"ClientEnable"`
+	ClientMode   string   `gorm:"default:'BlackList'" json:"ClientMode"` // WhiteList 或 BlackList
+	ClientList   string   `gorm:"type:text" json:"ClientList"` // JSON数组字符串
+	
+	// HTTPStrm配置
+	HttpStrmEnable           bool   `gorm:"default:true" json:"HttpStrmEnable"`
+	DisableTranscode         bool   `gorm:"default:true" json:"DisableTranscode"`
+	ResolveStrmLinks         bool   `gorm:"default:true" json:"ResolveStrmLinks"`
+	UaPassthrough            bool   `gorm:"default:false" json:"UaPassthrough"`
+	PathMappings             string `gorm:"type:text" json:"PathMappings"` // JSON数组字符串
+	
+	// 运行状态
+	Enabled    bool `gorm:"default:true" json:"Enabled"`
+	Port       int  `gorm:"default:8091" json:"Port"`
+}
