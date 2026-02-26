@@ -5,6 +5,7 @@ import (
 	"cloudstream/internal/core"
 	"cloudstream/internal/database"
 	"cloudstream/internal/logger"
+	"cloudstream/internal/mediaserver"
 	"context"
 	"fmt"
 	"github.com/rs/zerolog/log"
@@ -26,6 +27,11 @@ func main() {
 
 	// 初始化调度器
 	core.InitScheduler()
+
+	// 初始化媒体服务器管理器
+	if err := mediaserver.GetManager().ReloadAll(); err != nil {
+		log.Warn().Err(err).Msg("加载媒体服务器配置失败")
+	}
 
 	// 初始化路由
 	r := api.InitRouter()
