@@ -35,6 +35,10 @@ func InitRouter() *gin.Engine {
 			authorized.GET("/username", handlers.GetUsernameHandler)
 			authorized.GET("/logs", handlers.GetSystemLogsHandler)
 			
+			// 用户个性化设置接口
+			authorized.GET("/user/settings", handlers.GetUserSettingsHandler)
+			authorized.POST("/user/settings", handlers.UpdateUserSettingsHandler)
+			
 			authorized.POST("/webhook/test", handlers.TestWebhookHandler)
 			authorized.POST("/notifications", handlers.UpdateNotificationHandler)
 			authorized.POST("/update_credentials", handlers.UpdateCredentialsHandler)
