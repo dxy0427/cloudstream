@@ -10,6 +10,7 @@ import (
 	"gorm.io/gorm/logger"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 var DB *gorm.DB
@@ -36,6 +37,11 @@ func ConnectDatabase(dbPath string) error {
 	if err != nil {
 		return err
 	}
+
+	// 配置连接池
+	sqlDB.SetMaxOpenConns(25)          // 最大打开连接数
+	sqlDB.SetMaxIdleConns(5)           // 最大空闲连接数
+	sqlDB.SetConnMaxLifetime(5 * time.Minute) // 连接最大生存时间
 
 	// 核心优化：开启 WAL 模式，大幅提升并发性能
 	if _, err := sqlDB.Exec("PRAGMA journal_mode=WAL;"); err != nil {
@@ -65,7 +71,10 @@ func ConnectDatabase(dbPath string) error {
 
 	if userCount == 0 {
 		log.Info().Msg("未发现用户，正在创建默认管理员 admin/admin...")
-		hashedPassword, _ := utils.HashPassword("admin")
+		hashedPassword, err := utils.HashPassword("admin")
+		if err != nil {
+			return fmt.Errorf("密码哈希失败: %w", err)
+		}
 		defaultUser := models.User{
 			Username:     "admin",
 			PasswordHash: hashedPassword,
