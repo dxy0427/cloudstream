@@ -18,6 +18,19 @@ type rateLimiter struct {
 	lastTime time.Time
 }
 
+// 清理过期的限流记录
+func cleanupExpiredEntries() {
+	mu.Lock()
+	defer mu.Unlock()
+	
+	now := time.Now()
+	for ip, limiter := range ipStore {
+		if now.Sub(limiter.lastTime) > 5*time.Minute {
+			delete(ipStore, ip)
+		}
+	}
+}
+
 // LoginRateLimiter 每分钟只允许尝试 5 次登录
 func LoginRateLimiter() gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -38,6 +51,11 @@ func LoginRateLimiter() gin.HandlerFunc {
 		}
 
 		limiter.count++
+
+		// 定期清理过期记录（每100次请求清理一次）
+		if limiter.count%100 == 0 {
+			go cleanupExpiredEntries()
+		}
 
 		if limiter.count > 5 {
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": "尝试次数过多，请 1 分钟后再试"})
