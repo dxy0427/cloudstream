@@ -157,28 +157,30 @@ func (m *Manager) HandleProxy(c *gin.Context, serverID uint) {
 	cfg := proxy.cfg
 
 	// 客户端过滤
-	if cfg.Client.Enable {
-		userAgent := c.Request.UserAgent()
-		allowed := false
-		for _, client := range cfg.Client.List {
-			if strings.Contains(userAgent, client) {
-				allowed = true
-				break
+		if cfg.Client.Enable {
+			userAgent := c.Request.UserAgent()
+			allowed := false
+			for _, client := range cfg.Client.List {
+				if strings.Contains(userAgent, client) {
+					allowed = true
+					break
+				}
 			}
-		}
 
-		if cfg.Client.Mode == "WhiteList" {
-			if !allowed {
-				c.JSON(http.StatusForbidden, gin.H{"code": 1, "message": "客户端不在白名单中"})
-				return
-			}
-		} else if cfg.Client.Mode == "BlackList" {
-			if allowed {
-				c.JSON(http.StatusForbidden, gin.H{"code": 1, "message": "客户端在黑名单中"})
-				return
+			if cfg.Client.Mode == "WhiteList" {
+				if !allowed {
+					log.Warn().Str("mode", "WhiteList").Str("client_ip", c.ClientIP()).Str("user_agent", userAgent).Msg("客户端不在白名单中，拒绝访问")
+					c.AbortWithStatus(http.StatusForbidden)
+					return
+				}
+			} else if cfg.Client.Mode == "BlackList" {
+				if allowed {
+					log.Warn().Str("mode", "BlackList").Str("client_ip", c.ClientIP()).Str("user_agent", userAgent).Msg("客户端在黑名单中，拒绝访问")
+					c.AbortWithStatus(http.StatusForbidden)
+					return
+				}
 			}
 		}
-	}
 
 	// PlaybackInfo 拦截
 	if strings.Contains(c.Request.URL.Path, "/PlaybackInfo") {
