@@ -22,6 +22,10 @@ type User struct {
 	WebhookURL     string `json:"WebhookURL"`
 	TelegramToken  string `json:"TelegramToken"`
 	TelegramChatID string `json:"TelegramChatID"`
+
+	// 用户个性化设置
+	SiteTitle string `gorm:"default:'CloudStream'" json:"SiteTitle"`
+	Theme     string `gorm:"default:'dark'" json:"Theme"` // dark 或 light
 }
 
 type Account struct {
