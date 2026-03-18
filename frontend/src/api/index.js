@@ -26,19 +26,50 @@ api.interceptors.response.use(
         localStorage.removeItem('jwt_token')
         window.location.href = '/login'
       }
+      return Promise.reject(err)
     }
     
-    // 优化错误提示
+    // 统一错误提示，按状态码分类
     let msg = '未知错误'
+    const status = err.response?.status
+    const data = err.response?.data
+    
     if (err.code === 'ECONNABORTED' && err.message.includes('timeout')) {
-      msg = '目录加载超时，请重试或检查网络'
-    } else {
-      msg = err.response?.data?.message || err.response?.data?.error || err.message
+      msg = '请求超时，请重试或检查网络'
+    } else if (status === 400) {
+      msg = data?.message || data?.error || '请求参数错误'
+    } else if (status === 401) {
+      msg = '未授权，请重新登录'
+    } else if (status === 403) {
+      msg = '无权限访问'
+    } else if (status === 404) {
+      msg = '请求的资源不存在'
+    } else if (status === 429) {
+      msg = '请求过于频繁，请稍后再试'
+    } else if (status === 500) {
+      msg = '服务器错误，请稍后重试'
+    } else if (status === 502 || status === 503 || status === 504) {
+      msg = '服务暂时不可用，请稍后重试'
+    } else if (data?.message) {
+      msg = data.message
+    } else if (data?.error) {
+      msg = data.error
+    } else if (err.message) {
+      msg = err.message
     }
     
     message.error(msg)
     return Promise.reject(err)
   }
 )
+
+// 用户个性化设置 API
+export const userSettingsApi = {
+  // 获取用户设置
+  getSettings: () => api.get('/user/settings'),
+  
+  // 更新用户设置
+  updateSettings: (data) => api.post('/user/settings', data)
+}
 
 export default api
