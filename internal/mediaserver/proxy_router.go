@@ -1,0 +1,34 @@
+package mediaserver
+
+import (
+	"fmt"
+	"github.com/gin-gonic/gin"
+)
+
+// InitProxyRouter 初始化媒体服务器代理路由
+func InitProxyRouter() *gin.Engine {
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
+
+	// 默认代理路由：/*path（直接代理到第一个启用的媒体服务器）
+	r.Any("/*path", func(c *gin.Context) {
+		// 获取第一个启用的媒体服务器
+		serverID := GetManager().GetFirstEnabledServerID()
+		if serverID == 0 {
+			c.JSON(404, gin.H{"code": 1, "message": "没有启用的媒体服务器"})
+			return
+		}
+
+		GetManager().HandleProxy(c, serverID)
+	})
+
+	return r
+}
+
+// parseUint 解析uint
+func parseUint(s string) (uint, error) {
+	var id uint64
+	_, err := fmt.Sscanf(s, "%d", &id)
+	return uint(id), err
+}

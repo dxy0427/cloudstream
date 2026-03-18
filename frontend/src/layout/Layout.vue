@@ -49,7 +49,7 @@ import { NIcon, NText } from 'naive-ui'
 import { useRoute, useRouter } from 'vue-router'
 import { useGlobalStore } from '../store/global'
 import api from '../api'
-import { DashboardOutlined, CloudOutlined, SyncOutlined, BellOutlined, SettingOutlined, MenuFoldOutlined, MenuUnfoldOutlined } from '@vicons/antd'
+import { DashboardOutlined, CloudOutlined, SyncOutlined, BellOutlined, SettingOutlined, MenuFoldOutlined, MenuUnfoldOutlined, PlayCircleOutlined } from '@vicons/antd'
 
 const store = useGlobalStore()
 const router = useRouter()
@@ -74,6 +74,7 @@ const menuOptions = [
   { label: '仪表盘', key: 'dashboard', icon: renderIcon(DashboardOutlined) },
   { label: '云账户', key: 'accounts', icon: renderIcon(CloudOutlined) },
   { label: '任务管理', key: 'tasks', icon: renderIcon(SyncOutlined) },
+  { label: '媒体服务器', key: 'mediaserver', icon: renderIcon(PlayCircleOutlined) },
   { label: '通知管理', key: 'notifications', icon: renderIcon(BellOutlined) },
   { label: '设置管理', key: 'settings', icon: renderIcon(SettingOutlined) },
 ]

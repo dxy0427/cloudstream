@@ -7,7 +7,7 @@ COPY frontend/ .
 RUN npm run build
 
 # --- Stage 2: Build Backend ---
-FROM golang:1.22-alpine AS backend-builder
+FROM golang:1.23-alpine AS backend-builder
 RUN apk add --no-cache gcc musl-dev sqlite-dev
 WORKDIR /app
 COPY go.mod go.sum* ./
@@ -22,5 +22,5 @@ ENV TZ=Asia/Shanghai
 WORKDIR /app
 COPY --from=backend-builder /cloudstream .
 COPY --from=frontend-builder /web/dist ./public
-EXPOSE 12398
+EXPOSE 12398 8091
 CMD ["./cloudstream"]

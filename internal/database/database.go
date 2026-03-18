@@ -52,6 +52,7 @@ func ConnectDatabase(dbPath string) error {
 		&models.Task{},
 		&models.Account{},
 		&models.TaskFile{},
+		&models.MediaServer{},
 	)
 	if err != nil {
 		return fmt.Errorf("数据库迁移失败: %w", err)
