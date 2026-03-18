@@ -101,15 +101,16 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("非预期的签名方法: %v", token.Header["alg"])
-			}
-			return jwtSecret, nil
-		})
-		if err != nil {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token 无效或已过期: " + err.Error()})
-			return
-		}
+						if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+							return nil, fmt.Errorf("非预期的签名方法: %v", token.Header["alg"])
+						}
+						return jwtSecret, nil
+					})
+					if err != nil {
+						log.Warn().Err(err).Msg("JWT 验证失败")
+						c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token 无效或已过期"})
+						return
+					}
 		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
 			username, _ := claims["username"].(string)
 			version, _ := claims["version"].(float64)
