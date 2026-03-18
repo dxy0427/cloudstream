@@ -30,6 +30,17 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src')
     }
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vue-vendor': ['vue', 'vue-router', 'pinia'],
+          'naive-ui': ['naive-ui'],
+          'axios': ['axios']
+        }
+      }
+    }
+  },
   server: {
     proxy: {
       '/api': {
