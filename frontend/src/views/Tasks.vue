@@ -3,10 +3,7 @@
     <n-card>
       <n-space justify="space-between" align="center">
         <h3>任务管理</h3>
-        <n-space>
-          <n-button @click="loadHistory">刷新历史</n-button>
-          <n-button type="primary" @click="openModal(null)">新建</n-button>
-        </n-space>
+        <n-button type="primary" @click="openModal(null)">新建</n-button>
       </n-space>
     </n-card>
 
@@ -40,10 +37,6 @@
         </n-list>
       </n-spin>
     </div>
-
-    <n-card title="最近运行历史">
-      <n-data-table :columns="historyColumns" :data="historyData" :pagination="{ pageSize: 10 }" />
-    </n-card>
 
     <n-modal v-model:show="showModal" preset="card" title="任务配置" style="width: 700px; max-width: 95%;">
       <n-form label-placement="top" label-width="auto">
@@ -89,7 +82,6 @@ import FileBrowser from '../components/FileBrowser.vue'
 const message = useMessage()
 const dialog = useDialog()
 const data = ref([])
-const historyData = ref([])
 const loading = ref(false)
 const showModal = ref(false)
 const showBrowser = ref(false)
@@ -110,27 +102,10 @@ const columns = [
   { title: '操作', key: 'actions', fixed: 'right', width: 180, render(row) { return h(NSpace, { size: 'small' }, { default: () => [h(NButton, { size: 'tiny', type: 'info', disabled: row.IsRunning, onClick: () => runTask(row) }, { default: () => '执行' }), h(NButton, { size: 'tiny', type: 'warning', disabled: !row.IsRunning, onClick: () => stopTask(row) }, { default: () => '停止' }), h(NButton, { size: 'tiny', onClick: () => openModal(row) }, { default: () => '编辑' }), h(NButton, { size: 'tiny', type: 'error', onClick: () => handleDelete(row) }, { default: () => '删除' })] }) } }
 ]
 
-const historyColumns = [
-  { title: '时间', key: 'CreatedAt', render(row) { return new Date(row.CreatedAt).toLocaleString() } },
-  { title: '任务', key: 'TaskName' },
-  { title: '模式', key: 'RunMode', render(row) { return row.RunMode === 'manual' ? '手动' : '定时' } },
-  { title: '状态', key: 'Status' },
-  { title: '新增STRM', key: 'NewStrmCount' },
-  { title: '新增元数据', key: 'NewMetaCount' },
-  { title: '删除', key: 'DeletedCount' },
-  { title: '总量', key: 'ProcessedCount' },
-  { title: '已通知', key: 'NotificationSent', render(row) { return row.NotificationSent ? '是' : '否' } },
-]
-
 const loadData = async () => {
   const [taskRes, accRes] = await Promise.all([api.get('/tasks'), api.get('/accounts')])
   data.value = taskRes.data || []
   accountOptions.value = (accRes.data || []).map(a => ({ label: a.Name, value: a.ID }))
-}
-
-const loadHistory = async () => {
-  const res = await api.get('/task-runs')
-  historyData.value = res.data || []
 }
 
 let timer = null
@@ -161,12 +136,12 @@ const handleVisibilityChange = () => {
   if (document.hidden) {
     stopPolling()
   } else {
-    Promise.all([loadData(), loadHistory()]).finally(() => scheduleNextPoll())
+    loadData().finally(() => scheduleNextPoll())
   }
 }
 
 onMounted(() => {
-  Promise.all([loadData(), loadHistory()]).finally(() => scheduleNextPoll())
+  loadData().finally(() => scheduleNextPoll())
   document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
@@ -203,12 +178,12 @@ const submit = async () => {
   } catch (e) {}
 }
 
-const runTask = async (row) => { await api.post(`/tasks/${row.ID}/run`); message.success('已触发'); await loadData(); loadHistory() }
-const stopTask = async (row) => { await api.post(`/tasks/${row.ID}/stop`); message.success('已发送停止信号'); await loadData(); loadHistory() }
+const runTask = async (row) => { await api.post(`/tasks/${row.ID}/run`); message.success('已触发'); await loadData() }
+const stopTask = async (row) => { await api.post(`/tasks/${row.ID}/stop`); message.success('已发送停止信号'); await loadData() }
 const handleDelete = (row) => {
   dialog.warning({
     title: '警告', content: '删除任务？', positiveText: '删除', negativeText: '取消',
-    onPositiveClick: async () => { await api.delete(`/tasks/${row.ID}`); await loadData(); loadHistory() }
+    onPositiveClick: async () => { await api.delete(`/tasks/${row.ID}`); await loadData() }
   })
 }
 </script>

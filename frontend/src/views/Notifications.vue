@@ -1,12 +1,6 @@
 <template>
   <n-space vertical>
     <n-card title="通知管理">
-      <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">
-        会通知：任务完成、任务异常、手动停止。<br>
-        定时运行时如果本次无新增/删除，不发送完成通知。<br>
-        完成通知会包含：新增 STRM、新增元数据、删除文件、STRM 总量、元数据总量。
-      </n-alert>
-
       <n-form label-placement="top">
         <n-form-item label="通知类型">
           <n-radio-group v-model:value="form.notifyType">
@@ -32,11 +26,12 @@
           </n-form-item>
         </template>
 
-        <n-divider>通知事件</n-divider>
+        <n-divider>通知开关</n-divider>
         <n-space vertical>
-          <n-checkbox v-model:checked="form.notifyOnComplete">任务完成时通知</n-checkbox>
-          <n-checkbox v-model:checked="form.notifyOnError">任务异常时通知</n-checkbox>
-          <n-checkbox v-model:checked="form.notifyOnStop">手动停止任务时通知</n-checkbox>
+          <n-checkbox v-model:checked="form.notifyOnComplete">任务完成通知</n-checkbox>
+          <n-checkbox v-model:checked="form.notifyOnError">任务异常通知</n-checkbox>
+          <n-checkbox v-model:checked="form.notifyOnStop">手动停止通知</n-checkbox>
+          <n-checkbox v-model:checked="form.notifyOnManual">手动运行通知</n-checkbox>
         </n-space>
 
         <n-space style="margin-top: 20px;">
@@ -62,6 +57,7 @@ const form = reactive({
   notifyOnComplete: true,
   notifyOnError: true,
   notifyOnStop: true,
+  notifyOnManual: true,
 })
 
 const load = async () => {
@@ -74,6 +70,7 @@ const load = async () => {
     notifyOnComplete: res.data.notifyOnComplete !== false,
     notifyOnError: res.data.notifyOnError !== false,
     notifyOnStop: res.data.notifyOnStop !== false,
+    notifyOnManual: res.data.notifyOnManual !== false,
   })
 }
 

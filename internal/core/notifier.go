@@ -14,6 +14,7 @@ const (
 	NotifyEventComplete NotifyEvent = "complete"
 	NotifyEventError    NotifyEvent = "error"
 	NotifyEventStop     NotifyEvent = "stop"
+	NotifyEventManual   NotifyEvent = "manual"
 )
 
 func SendNotification(title, message string) {
@@ -44,13 +45,17 @@ func sendNotificationWithEvent(title, message string, event NotifyEvent) {
 		if !user.NotifyOnStop {
 			return
 		}
+	case NotifyEventManual:
+		if !user.NotifyOnManual {
+			return
+		}
 	}
 
 	switch user.NotifyType {
 	case models.NotifyTypeWebhook:
-		sendWebhookNotification(user.WebhookURL, title, message)
+		_ = sendWebhookNotification(user.WebhookURL, title, message)
 	case models.NotifyTypeTelegram:
-		sendTelegramNotification(user.TelegramToken, user.TelegramChatID, title, message)
+		_ = sendTelegramNotification(user.TelegramToken, user.TelegramChatID, title, message)
 	default:
 		log.Warn().Str("type", user.NotifyType).Msg("未知的通知类型")
 	}
@@ -68,22 +73,17 @@ func SendTestNotification(req map[string]string) error {
 		if webhookURL == "" {
 			return fmt.Errorf("Webhook URL 不能为空")
 		}
-		if err := sendWebhookNotification(webhookURL, "CloudStream 测试通知", "这是一条测试通知，说明你的 Webhook 配置可用。"); err != nil {
-			return err
-		}
+		return sendWebhookNotification(webhookURL, "CloudStream 测试通知", "这是一条测试通知，说明你的 Webhook 配置可用。")
 	case models.NotifyTypeTelegram:
 		token := req["telegramToken"]
 		chatID := req["telegramChatId"]
 		if token == "" || chatID == "" {
 			return fmt.Errorf("Telegram Token 和 Chat ID 不能为空")
 		}
-		if err := sendTelegramNotification(token, chatID, "CloudStream 测试通知", "这是一条测试通知，说明你的 Telegram 配置可用。"); err != nil {
-			return err
-		}
+		return sendTelegramNotification(token, chatID, "CloudStream 测试通知", "这是一条测试通知，说明你的 Telegram 配置可用。")
 	default:
 		return fmt.Errorf("未知的通知类型")
 	}
-	return nil
 }
 
 func sendWebhookNotification(webhookURL, title, message string) error {
