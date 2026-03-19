@@ -24,16 +24,13 @@ import (
 	"time"
 )
 
-// 高性能 FileTracker
 type FileTracker struct {
 	sync.RWMutex
 	files map[string]struct{}
 }
 
 func NewFileTracker() *FileTracker {
-	return &FileTracker{
-		files: make(map[string]struct{}),
-	}
+	return &FileTracker{files: make(map[string]struct{})}
 }
 
 func (t *FileTracker) Add(path string) {
@@ -101,6 +98,26 @@ func (s ScanSummary) NotificationBody(taskName string) string {
 	return fmt.Sprintf("任务：%s\n%s\nSTRM 总量：%d\n元数据总量：%d", taskName, changeText, s.TotalStrmCount, s.TotalMetaCount)
 }
 
+func saveTaskRunHistory(task models.Task, mode RunMode, status string, processedCount int, summary ScanSummary, notificationSent bool, message string) {
+	history := models.TaskRunHistory{
+		TaskID:           task.ID,
+		TaskName:         task.Name,
+		RunMode:          string(mode),
+		Status:           status,
+		NewStrmCount:     summary.NewStrmCount,
+		NewMetaCount:     summary.NewMetaCount,
+		DeletedCount:     summary.DeletedCount,
+		TotalStrmCount:   summary.TotalStrmCount,
+		TotalMetaCount:   summary.TotalMetaCount,
+		ProcessedCount:   processedCount,
+		NotificationSent: notificationSent,
+		Message:          message,
+	}
+	if err := database.DB.Create(&history).Error; err != nil {
+		log.Error().Err(err).Str("任务", task.Name).Msg("保存任务运行历史失败")
+	}
+}
+
 func RunScanTask(ctx context.Context, task models.Task, mode RunMode) {
 	database.DB.Model(&models.Task{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
 		"last_run_status": "扫描中...",
@@ -118,6 +135,7 @@ func RunScanTask(ctx context.Context, task models.Task, mode RunMode) {
 	if err := database.DB.First(&account, task.AccountID).Error; err != nil {
 		log.Error().Err(err).Str("任务", task.Name).Uint("accountID", task.AccountID).Msg("任务启动失败：找不到关联的云账户")
 		updateTaskStatus(task.ID, "失败: 账户丢失", 0)
+		saveTaskRunHistory(task, mode, "failed", 0, ScanSummary{}, false, "任务启动失败：找不到关联的云账户")
 		return
 	}
 
@@ -171,21 +189,26 @@ func RunScanTask(ctx context.Context, task models.Task, mode RunMode) {
 
 	select {
 	case <-ctx.Done():
+		message := fmt.Sprintf("任务 '%s' 已被手动停止", task.Name)
 		log.Warn().Str("任务", task.Name).Msg("任务已被手动停止")
 		updateTaskStatus(task.ID, "用户手动停止", tracker.Count())
-		SendNotification("任务停止", fmt.Sprintf("任务 '%s' 已被手动停止", task.Name))
+		SendNotificationByEvent("任务停止", message, NotifyEventStop)
+		saveTaskRunHistory(task, mode, "stopped", tracker.Count(), ScanSummary{}, true, message)
 	default:
 		if hasError.Load() {
-			msg := fmt.Sprintf("任务 '%s' 执行过程中出现错误，为防止误删，已跳过数据库更新和本地清理。", task.Name)
-			log.Error().Msg(msg)
+			message := fmt.Sprintf("任务 '%s' 执行过程中出现错误，为防止误删，已跳过数据库更新和本地清理。", task.Name)
+			log.Error().Msg(message)
 			updateTaskStatus(task.ID, "异常中止", tracker.Count())
-			SendNotification("任务异常", msg)
+			SendNotificationByEvent("任务异常", message, NotifyEventError)
+			saveTaskRunHistory(task, mode, "error", tracker.Count(), ScanSummary{}, true, message)
 			return
 		}
 
 		if err := updateFileRecordsOptimized(task.ID, tracker); err != nil {
-			log.Error().Err(err).Msg("更新数据库文件记录失败")
+			message := "更新数据库文件记录失败"
+			log.Error().Err(err).Msg(message)
 			updateTaskStatus(task.ID, "更新DB失败", tracker.Count())
+			saveTaskRunHistory(task, mode, "error", tracker.Count(), ScanSummary{}, false, message+": "+err.Error())
 		} else {
 			deletedCount := 0
 			if task.SyncDelete {
@@ -205,11 +228,15 @@ func RunScanTask(ctx context.Context, task models.Task, mode RunMode) {
 			log.Info().Str("任务", task.Name).Int("总文件", summary.TotalCount()).Int("新增STRM", summary.NewStrmCount).Int("新增元数据", summary.NewMetaCount).Int("删除文件", summary.DeletedCount).Msg("任务执行完毕")
 			updateTaskStatus(task.ID, "已完成", tracker.Count())
 
+			notificationSent := false
+			message := summary.NotificationBody(task.Name)
 			if mode == RunModeManual || summary.HasChanges() {
-				SendNotification("任务完成", summary.NotificationBody(task.Name))
+				SendNotificationByEvent("任务完成", message, NotifyEventComplete)
+				notificationSent = true
 			} else {
 				log.Info().Str("任务", task.Name).Msg("定时任务本次无变化，跳过发送完成通知")
 			}
+			saveTaskRunHistory(task, mode, "success", tracker.Count(), summary, notificationSent, message)
 		}
 	}
 }
@@ -236,9 +263,7 @@ func cleanEmptyDirs(root string) {
 		return
 	}
 
-	sort.Slice(dirs, func(i, j int) bool {
-		return len(dirs[i]) > len(dirs[j])
-	})
+	sort.Slice(dirs, func(i, j int) bool { return len(dirs[i]) > len(dirs[j]) })
 
 	removedCount := 0
 	for _, d := range dirs {
@@ -328,7 +353,6 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 	if hasError.Load() {
 		return
 	}
-
 	select {
 	case <-ctx.Done():
 		return
@@ -400,7 +424,6 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 		if hasError.Load() {
 			return
 		}
-
 		currentItem := item
 		itemCloudPath := path.Join(currentCloudPath, currentItem.FileName)
 		nextLocalPath := filepath.Join(localBasePath, currentItem.FileName)
@@ -431,7 +454,6 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 				if hasError.Load() {
 					return
 				}
-
 				select {
 				case <-ctx.Done():
 					return
@@ -467,7 +489,6 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 	localFilePath := filepath.Join(localBasePath, strmFileName)
 
 	tracker.Add(localFilePath)
-
 	_, statErr := os.Stat(localFilePath)
 	existedBefore := statErr == nil
 	if !task.Overwrite && existedBefore {
@@ -535,7 +556,6 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 	if err := os.MkdirAll(filepath.Dir(localFilePath), 0755); err != nil {
 		return
 	}
-
 	if err := os.WriteFile(localFilePath, []byte(streamURL), 0644); err == nil {
 		if !existedBefore {
 			stats.newStrmCount.Add(1)
@@ -547,7 +567,6 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 func downloadAndSaveMetaFile(client *pan123.Client, task models.Task, identity interface{}, fileName string, localBasePath string, tracker *FileTracker, stats *ScanStats) {
 	localFilePath := filepath.Join(localBasePath, fileName)
 	tracker.Add(localFilePath)
-
 	_, statErr := os.Stat(localFilePath)
 	existedBefore := statErr == nil
 	if !task.Overwrite && existedBefore {

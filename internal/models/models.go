@@ -23,6 +23,10 @@ type User struct {
 	TelegramToken  string `json:"TelegramToken"`
 	TelegramChatID string `json:"TelegramChatID"`
 
+	NotifyOnComplete bool `gorm:"default:true" json:"NotifyOnComplete"`
+	NotifyOnError    bool `gorm:"default:true" json:"NotifyOnError"`
+	NotifyOnStop     bool `gorm:"default:true" json:"NotifyOnStop"`
+
 	SiteTitle string `gorm:"default:'CloudStream'" json:"SiteTitle"`
 	Theme     string `gorm:"default:'light'" json:"Theme"`
 
@@ -71,6 +75,22 @@ type TaskFile struct {
 	FilePath string `gorm:"index;uniqueIndex:idx_task_file;not null"`
 }
 
+type TaskRunHistory struct {
+	gorm.Model
+	TaskID          uint   `gorm:"index;not null" json:"TaskID"`
+	TaskName        string `gorm:"not null" json:"TaskName"`
+	RunMode         string `gorm:"not null" json:"RunMode"`
+	Status          string `gorm:"not null" json:"Status"`
+	NewStrmCount    int    `gorm:"default:0" json:"NewStrmCount"`
+	NewMetaCount    int    `gorm:"default:0" json:"NewMetaCount"`
+	DeletedCount    int    `gorm:"default:0" json:"DeletedCount"`
+	TotalStrmCount  int    `gorm:"default:0" json:"TotalStrmCount"`
+	TotalMetaCount  int    `gorm:"default:0" json:"TotalMetaCount"`
+	ProcessedCount  int    `gorm:"default:0" json:"ProcessedCount"`
+	NotificationSent bool  `gorm:"default:false" json:"NotificationSent"`
+	Message         string `gorm:"type:text" json:"Message"`
+}
+
 type MediaServer struct {
 	gorm.Model
 	Name string `gorm:"unique;not null" json:"Name"`
@@ -94,10 +114,4 @@ type MediaServer struct {
 
 	Enabled bool `gorm:"default:true" json:"Enabled"`
 	Port    int  `gorm:"default:8091" json:"Port"`
-}
-
-type StreamTokenPayload struct {
-	AccountID    uint   `json:"accountId"`
-	TaskID       uint   `json:"taskId"`
-	RealIdentity string `json:"realIdentity"`
 }

@@ -20,13 +20,16 @@ func GetUsernameHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
-		"username":               username,
-		"notifyType":             notifyType,
-		"webhookUrl":             user.WebhookURL,
-		"telegramToken":          user.TelegramToken,
-		"telegramChatId":         user.TelegramChatID,
-		"needsPasswordReminder":  user.NeedsPasswordReminder,
-		"passwordReminderShown":  user.PasswordReminderShown,
+		"username":          username,
+		"notifyType":        notifyType,
+		"webhookUrl":        user.WebhookURL,
+		"telegramToken":     user.TelegramToken,
+		"telegramChatId":    user.TelegramChatID,
+		"notifyOnComplete":  user.NotifyOnComplete,
+		"notifyOnError":     user.NotifyOnError,
+		"notifyOnStop":      user.NotifyOnStop,
+		"needsPasswordReminder": user.NeedsPasswordReminder,
+		"passwordReminderShown": user.PasswordReminderShown,
 	}})
 }
 
@@ -56,10 +59,13 @@ func TestWebhookHandler(c *gin.Context) {
 
 func UpdateNotificationHandler(c *gin.Context) {
 	var req struct {
-		NotifyType     string `json:"notifyType"`
-		WebhookURL     string `json:"webhookUrl"`
-		TelegramToken  string `json:"telegramToken"`
-		TelegramChatID string `json:"telegramChatId"`
+		NotifyType        string `json:"notifyType"`
+		WebhookURL        string `json:"webhookUrl"`
+		TelegramToken     string `json:"telegramToken"`
+		TelegramChatID    string `json:"telegramChatId"`
+		NotifyOnComplete  *bool  `json:"notifyOnComplete"`
+		NotifyOnError     *bool  `json:"notifyOnError"`
+		NotifyOnStop      *bool  `json:"notifyOnStop"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "参数错误"})
@@ -77,6 +83,15 @@ func UpdateNotificationHandler(c *gin.Context) {
 	user.WebhookURL = req.WebhookURL
 	user.TelegramToken = req.TelegramToken
 	user.TelegramChatID = req.TelegramChatID
+	if req.NotifyOnComplete != nil {
+		user.NotifyOnComplete = *req.NotifyOnComplete
+	}
+	if req.NotifyOnError != nil {
+		user.NotifyOnError = *req.NotifyOnError
+	}
+	if req.NotifyOnStop != nil {
+		user.NotifyOnStop = *req.NotifyOnStop
+	}
 
 	if err := database.DB.Save(&user).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "保存失败: " + err.Error()})
@@ -84,6 +99,15 @@ func UpdateNotificationHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "通知设置已保存"})
+}
+
+func GetTaskRunHistoryHandler(c *gin.Context) {
+	var histories []models.TaskRunHistory
+	if err := database.DB.Order("id desc").Limit(100).Find(&histories).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "获取运行历史失败: " + err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": histories})
 }
 
 func UpdateCredentialsHandler(c *gin.Context) {

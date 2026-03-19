@@ -1,71 +1,94 @@
 <template>
-  <n-card title="通知管理" style="max-width: 600px">
-    <template #header-extra>
-      <n-tag type="info">任务消息推送</n-tag>
-    </template>
-    
-    <!-- 修复：使用 Tabs 替代 Radio Group，手机显示更友好 -->
-    <n-tabs type="segment" v-model:value="form.notifyType" animated>
-      <n-tab-pane name="webhook" tab="Webhook">
-        <n-form label-placement="top" label-width="auto">
-          <n-form-item label="URL 地址">
-            <n-input v-model:value="form.webhookUrl" placeholder="http://api.example.com/notify" />
-          </n-form-item>
-        </n-form>
-      </n-tab-pane>
-      
-      <n-tab-pane name="telegram" tab="Telegram">
-        <n-form label-placement="top" label-width="auto">
-          <n-form-item label="Bot Token">
-            <n-input type="password" show-password-on="click" v-model:value="form.telegramToken" placeholder="123456:ABC-DEF..." />
-          </n-form-item>
-          <n-form-item label="Chat ID">
-            <n-input v-model:value="form.telegramChatId" placeholder="-100xxxx 或 用户ID" />
-          </n-form-item>
-        </n-form>
-      </n-tab-pane>
-    </n-tabs>
+  <n-space vertical>
+    <n-card title="通知管理">
+      <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">
+        会通知：任务完成、任务异常、手动停止。<br>
+        定时运行时如果本次无新增/删除，不发送完成通知。<br>
+        完成通知会包含：新增 STRM、新增元数据、删除文件、STRM 总量、元数据总量。
+      </n-alert>
 
-    <n-divider />
+      <n-form label-placement="top">
+        <n-form-item label="通知类型">
+          <n-radio-group v-model:value="form.notifyType">
+            <n-space>
+              <n-radio value="webhook">Webhook</n-radio>
+              <n-radio value="telegram">Telegram</n-radio>
+            </n-space>
+          </n-radio-group>
+        </n-form-item>
 
-    <n-space justify="end">
-      <n-button @click="testNotify">发送测试</n-button>
-      <n-button type="primary" @click="saveNotify">保存配置</n-button>
-    </n-space>
-  </n-card>
+        <template v-if="form.notifyType === 'webhook'">
+          <n-form-item label="Webhook URL">
+            <n-input v-model:value="form.webhookUrl" placeholder="请输入机器人 Webhook 地址" />
+          </n-form-item>
+        </template>
+
+        <template v-else>
+          <n-form-item label="Telegram Bot Token">
+            <n-input v-model:value="form.telegramToken" placeholder="请输入 Bot Token" />
+          </n-form-item>
+          <n-form-item label="Telegram Chat ID">
+            <n-input v-model:value="form.telegramChatId" placeholder="请输入 Chat ID" />
+          </n-form-item>
+        </template>
+
+        <n-divider>通知事件</n-divider>
+        <n-space vertical>
+          <n-checkbox v-model:checked="form.notifyOnComplete">任务完成时通知</n-checkbox>
+          <n-checkbox v-model:checked="form.notifyOnError">任务异常时通知</n-checkbox>
+          <n-checkbox v-model:checked="form.notifyOnStop">手动停止任务时通知</n-checkbox>
+        </n-space>
+
+        <n-space style="margin-top: 20px;">
+          <n-button type="primary" @click="save">保存设置</n-button>
+          <n-button @click="testSend">测试通知</n-button>
+        </n-space>
+      </n-form>
+    </n-card>
+  </n-space>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { reactive, onMounted } from 'vue'
 import { useMessage } from 'naive-ui'
 import api from '../api'
 
 const message = useMessage()
-const form = reactive({ notifyType: 'webhook', webhookUrl: '', telegramToken: '', telegramChatId: '' })
-
-onMounted(async () => {
- const res = await api.get('/username')
- form.notifyType = res.data.notifyType || 'webhook'
- form.webhookUrl = res.data.webhookUrl
- form.telegramToken = res.data.telegramToken
- form.telegramChatId = res.data.telegramChatId
+const form = reactive({
+  notifyType: 'webhook',
+  webhookUrl: '',
+  telegramToken: '',
+  telegramChatId: '',
+  notifyOnComplete: true,
+  notifyOnError: true,
+  notifyOnStop: true,
 })
 
-const testNotify = async () => {
-  const payload = { type: form.notifyType }
-  if (form.notifyType === 'telegram') {
-      if (!form.telegramToken || !form.telegramChatId) return message.warning('请填写 Token 和 Chat ID')
-      payload.token = form.telegramToken
-      payload.chatId = form.telegramChatId
-  } else {
-      if (!form.webhookUrl) return message.warning('请填写 Webhook URL')
-      if (!/^https?:\/\//.test(form.webhookUrl)) return message.error('URL 必须以 http 开头')
-      payload.url = form.webhookUrl
-  }
-  try { const res = await api.post('/webhook/test', payload); message.success(res.message) } catch (e) {}
+const load = async () => {
+  const res = await api.get('/username')
+  Object.assign(form, {
+    notifyType: res.data.notifyType || 'webhook',
+    webhookUrl: res.data.webhookUrl || '',
+    telegramToken: res.data.telegramToken || '',
+    telegramChatId: res.data.telegramChatId || '',
+    notifyOnComplete: res.data.notifyOnComplete !== false,
+    notifyOnError: res.data.notifyOnError !== false,
+    notifyOnStop: res.data.notifyOnStop !== false,
+  })
 }
 
-const saveNotify = async () => {
-  try { await api.post('/notifications', form); message.success('已保存') } catch (e) {}
+const save = async () => {
+  await api.post('/notifications', form)
+  message.success('通知设置已保存')
 }
+
+const testSend = async () => {
+  const payload = form.notifyType === 'webhook'
+    ? { webhookUrl: form.webhookUrl, notifyType: form.notifyType }
+    : { telegramToken: form.telegramToken, telegramChatId: form.telegramChatId, notifyType: form.notifyType }
+  await api.post('/webhook/test', payload)
+  message.success('测试通知已发送')
+}
+
+onMounted(load)
 </script>

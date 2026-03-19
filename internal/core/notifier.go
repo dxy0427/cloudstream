@@ -1,128 +1,150 @@
 package core
 
 import (
-	"bytes"
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
-	"encoding/json"
 	"fmt"
+	"github.com/go-resty/resty/v2"
 	"github.com/rs/zerolog/log"
-	"io"
-	"net/http"
-	"os"
-	"time"
 )
 
-// 发送通知 (生产环境)
-func SendNotification(title, content string) {
+type NotifyEvent string
+
+const (
+	NotifyEventComplete NotifyEvent = "complete"
+	NotifyEventError    NotifyEvent = "error"
+	NotifyEventStop     NotifyEvent = "stop"
+)
+
+func SendNotification(title, message string) {
+	sendNotificationWithEvent(title, message, NotifyEventComplete)
+}
+
+func SendNotificationByEvent(title, message string, event NotifyEvent) {
+	sendNotificationWithEvent(title, message, event)
+}
+
+func sendNotificationWithEvent(title, message string, event NotifyEvent) {
 	var user models.User
 	if err := database.DB.First(&user).Error; err != nil {
+		log.Error().Err(err).Msg("获取通知配置失败")
 		return
 	}
 
-	if user.NotifyType == models.NotifyTypeTelegram {
-		if user.TelegramToken != "" && user.TelegramChatID != "" {
-			go pushToTelegram(user.TelegramToken, user.TelegramChatID, fmt.Sprintf("*%s*\n%s", title, content))
+	switch event {
+	case NotifyEventComplete:
+		if !user.NotifyOnComplete {
+			return
 		}
-	} else {
-		// 默认 Webhook
-		if user.WebhookURL != "" {
-			go pushToWebhook(user.WebhookURL, title, content)
+	case NotifyEventError:
+		if !user.NotifyOnError {
+			return
 		}
+	case NotifyEventStop:
+		if !user.NotifyOnStop {
+			return
+		}
+	}
+
+	switch user.NotifyType {
+	case models.NotifyTypeWebhook:
+		sendWebhookNotification(user.WebhookURL, title, message)
+	case models.NotifyTypeTelegram:
+		sendTelegramNotification(user.TelegramToken, user.TelegramChatID, title, message)
+	default:
+		log.Warn().Str("type", user.NotifyType).Msg("未知的通知类型")
 	}
 }
 
-// 发送测试通知
 func SendTestNotification(req map[string]string) error {
-	nType := req["type"]
-	if nType == models.NotifyTypeTelegram {
-		token := req["token"]
-		chatID := req["chatId"]
-		if token == "" || chatID == "" {
-			return fmt.Errorf("Telegram Token 和 ChatID 不能为空")
-		}
-		return pushToTelegram(token, chatID, "*CloudStream 测试*\n通知服务配置成功！")
-	} else {
-		url := req["url"]
-		if url == "" {
+	notifyType := req["notifyType"]
+	if notifyType == "" {
+		notifyType = models.NotifyTypeWebhook
+	}
+
+	switch notifyType {
+	case models.NotifyTypeWebhook:
+		webhookURL := req["webhookUrl"]
+		if webhookURL == "" {
 			return fmt.Errorf("Webhook URL 不能为空")
 		}
-		return pushToWebhook(url, "CloudStream 测试", "通知服务配置成功！")
+		if err := sendWebhookNotification(webhookURL, "CloudStream 测试通知", "这是一条测试通知，说明你的 Webhook 配置可用。"); err != nil {
+			return err
+		}
+	case models.NotifyTypeTelegram:
+		token := req["telegramToken"]
+		chatID := req["telegramChatId"]
+		if token == "" || chatID == "" {
+			return fmt.Errorf("Telegram Token 和 Chat ID 不能为空")
+		}
+		if err := sendTelegramNotification(token, chatID, "CloudStream 测试通知", "这是一条测试通知，说明你的 Telegram 配置可用。"); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("未知的通知类型")
 	}
-}
-
-// 通用 Webhook 推送
-func pushToWebhook(url, title, content string) error {
-	payload := map[string]string{
-		"title":   title,
-		"body":    content,
-		"content": content,
-		"msg":     content,
-	}
-	data, _ := json.Marshal(payload)
-
-	client := http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Post(url, "application/json", bytes.NewBuffer(data))
-	if err != nil {
-		log.Error().Err(err).Str("url", url).Msg("Webhook 发送失败")
-		return err
-	}
-	defer resp.Body.Close()
 	return nil
 }
 
-// Telegram 推送
-func pushToTelegram(token, chatID, text string) error {
-	apiURL := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
+func sendWebhookNotification(webhookURL, title, message string) error {
+	if webhookURL == "" {
+		return nil
+	}
+	client := resty.New()
+	payload := map[string]interface{}{
+		"msg_type": "post",
+		"content": map[string]interface{}{
+			"post": map[string]interface{}{
+				"zh_cn": map[string]interface{}{
+					"title": title,
+					"content": [][]map[string]string{{
+						{"tag": "text", "text": message},
+					}},
+				},
+			},
+		},
+	}
+	resp, err := client.R().SetHeader("Content-Type", "application/json").SetBody(payload).Post(webhookURL)
+	if err != nil || !resp.IsSuccess() {
+		statusCode := 0
+		bodyString := ""
+		if resp != nil {
+			statusCode = resp.StatusCode()
+			bodyString = resp.String()
+		}
+		log.Error().Err(err).Int("statusCode", statusCode).Str("response", bodyString).Msg("Webhook通知发送失败")
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("webhook 返回状态异常: %d", statusCode)
+	}
+	return nil
+}
+
+func sendTelegramNotification(token, chatID, title, message string) error {
+	if token == "" || chatID == "" {
+		return nil
+	}
+	client := resty.New()
+	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
 	payload := map[string]string{
 		"chat_id":    chatID,
-		"text":       text,
+		"text":       fmt.Sprintf("*%s*\n\n%s", title, message),
 		"parse_mode": "Markdown",
 	}
-	data, _ := json.Marshal(payload)
-
-	client := http.Client{Timeout: 10 * time.Second}
-	resp, err := client.Post(apiURL, "application/json", bytes.NewBuffer(data))
-	if err != nil {
-		log.Error().Err(err).Msg("Telegram 发送失败")
-		return err
-	}
-	defer resp.Body.Close()
-	
-	if resp.StatusCode >= 400 {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("Telegram API 错误: %s", string(body))
+	resp, err := client.R().SetFormData(payload).Post(url)
+	if err != nil || !resp.IsSuccess() {
+		statusCode := 0
+		bodyString := ""
+		if resp != nil {
+			statusCode = resp.StatusCode()
+			bodyString = resp.String()
+		}
+		log.Error().Err(err).Int("statusCode", statusCode).Str("response", bodyString).Msg("Telegram通知发送失败")
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("telegram 返回状态异常: %d", statusCode)
 	}
 	return nil
-}
-
-// 读取日志
-func ReadRecentLogs() (string, error) {
-	logPath := "./data/cloudstream.log"
-	file, err := os.Open(logPath)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-
-	stat, err := file.Stat()
-	if err != nil {
-		return "", err
-	}
-
-	fileSize := stat.Size()
-	readSize := int64(50 * 1024) 
-	if fileSize < readSize {
-		readSize = fileSize
-	}
-
-	offset := fileSize - readSize
-	buffer := make([]byte, readSize)
-	
-	_, err = file.ReadAt(buffer, offset)
-	if err != nil && err != io.EOF {
-		return "", err
-	}
-
-	return string(buffer), nil
 }

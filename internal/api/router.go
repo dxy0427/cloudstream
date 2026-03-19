@@ -30,6 +30,7 @@ func InitRouter() *gin.Engine {
 
 			authorized.GET("/username", handlers.GetUsernameHandler)
 			authorized.GET("/logs", handlers.GetSystemLogsHandler)
+			authorized.GET("/task-runs", handlers.GetTaskRunHistoryHandler)
 
 			authorized.GET("/user/settings", handlers.GetUserSettingsHandler)
 			authorized.POST("/user/settings", handlers.UpdateUserSettingsHandler)

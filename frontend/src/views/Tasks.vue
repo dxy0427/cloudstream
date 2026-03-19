@@ -3,7 +3,10 @@
     <n-card>
       <n-space justify="space-between" align="center">
         <h3>任务管理</h3>
-        <n-button type="primary" @click="openModal(null)">新建</n-button>
+        <n-space>
+          <n-button @click="loadHistory">刷新历史</n-button>
+          <n-button type="primary" @click="openModal(null)">新建</n-button>
+        </n-space>
       </n-space>
     </n-card>
 
@@ -16,16 +19,12 @@
         <n-list hoverable clickable>
           <n-list-item v-for="row in data" :key="row.ID">
             <template #prefix>
-              <n-tag :type="row.IsRunning ? 'success' : 'default'" size="small">
-                {{ row.IsRunning ? '运行' : '空闲' }}
-              </n-tag>
+              <n-tag :type="row.IsRunning ? 'success' : 'default'" size="small">{{ row.IsRunning ? '运行' : '空闲' }}</n-tag>
             </template>
             <n-thing :title="row.Name">
               <template #description>
                 <div>{{ row.LocalPath }}</div>
-                <div style="color: #888; font-size: 12px; margin-top: 4px;">
-                  已处理: {{ row.ProcessedCount }} | 状态: {{ row.LastRunStatus || '无' }}
-                </div>
+                <div style="color: #888; font-size: 12px; margin-top: 4px;">已处理: {{ row.ProcessedCount }} | 状态: {{ row.LastRunStatus || '无' }}</div>
               </template>
               <template #footer>
                 <n-space size="small" style="margin-top: 5px">
@@ -42,49 +41,36 @@
       </n-spin>
     </div>
 
+    <n-card title="最近运行历史">
+      <n-data-table :columns="historyColumns" :data="historyData" :pagination="{ pageSize: 10 }" />
+    </n-card>
+
     <n-modal v-model:show="showModal" preset="card" title="任务配置" style="width: 700px; max-width: 95%;">
       <n-form label-placement="top" label-width="auto">
-      <n-form-item label="任务名称">
-        <n-input v-model:value="form.Name" />
-      </n-form-item>
-      <n-form-item label="所属账户">
-        <n-select v-model:value="form.AccountID" :options="accountOptions" />
-      </n-form-item>
-      <n-form-item label="源文件夹ID">
-        <n-input-group>
-        <n-input v-model:value="form.SourceFolderID" placeholder="123Pan为ID，OpenList为路径" />
-        <n-button @click="showBrowser = true">浏览</n-button>
-        </n-input-group>
-      </n-form-item>
-      <n-form-item label="本地路径">
-        <n-input v-model:value="form.LocalPath" placeholder="/app/strm/" />
-      </n-form-item>
-      <n-form-item label="CRON 表达式">
-        <n-input v-model:value="form.Cron" placeholder="0 */2 * * *" />
-      </n-form-item>
-
-      <n-form-item label="STRM 扩展名">
-        <n-input v-model:value="form.StrmExtensions" placeholder="mp4,mkv,ts,iso" />
-      </n-form-item>
-      <n-form-item label="元数据 扩展名">
-        <n-input v-model:value="form.MetaExtensions" placeholder="jpg,jpeg,png,nfo" />
-      </n-form-item>
-
-      <n-form-item label="选项">
-        <n-space vertical>
-        <n-checkbox v-model:checked="form.Overwrite">覆盖模式</n-checkbox>
-        <n-checkbox v-model:checked="form.SyncDelete">同步删除</n-checkbox>
-        <n-checkbox v-model:checked="form.EncodePath">使用签名路径（开启后仅允许签名访问）</n-checkbox>
+        <n-form-item label="任务名称"><n-input v-model:value="form.Name" /></n-form-item>
+        <n-form-item label="所属账户"><n-select v-model:value="form.AccountID" :options="accountOptions" /></n-form-item>
+        <n-form-item label="源文件夹ID">
+          <n-input-group>
+            <n-input v-model:value="form.SourceFolderID" placeholder="123Pan为ID，OpenList为路径" />
+            <n-button @click="showBrowser = true">浏览</n-button>
+          </n-input-group>
+        </n-form-item>
+        <n-form-item label="本地路径"><n-input v-model:value="form.LocalPath" placeholder="/app/strm/" /></n-form-item>
+        <n-form-item label="CRON 表达式"><n-input v-model:value="form.Cron" placeholder="0 */2 * * *" /></n-form-item>
+        <n-form-item label="STRM 扩展名"><n-input v-model:value="form.StrmExtensions" placeholder="mp4,mkv,ts,iso" /></n-form-item>
+        <n-form-item label="元数据 扩展名"><n-input v-model:value="form.MetaExtensions" placeholder="jpg,jpeg,png,nfo" /></n-form-item>
+        <n-form-item label="选项">
+          <n-space vertical>
+            <n-checkbox v-model:checked="form.Overwrite">覆盖模式</n-checkbox>
+            <n-checkbox v-model:checked="form.SyncDelete">同步删除</n-checkbox>
+            <n-checkbox v-model:checked="form.EncodePath">使用签名路径（开启后仅允许签名访问）</n-checkbox>
+          </n-space>
+        </n-form-item>
+        <n-form-item label="并发线程"><n-input-number v-model:value="form.Threads" :min="1" :max="8" /></n-form-item>
+        <n-space justify="end">
+          <n-button @click="showModal = false">取消</n-button>
+          <n-button type="primary" @click="submit">保存</n-button>
         </n-space>
-      </n-form-item>
-
-      <n-form-item label="并发线程">
-        <n-input-number v-model:value="form.Threads" :min="1" :max="8" />
-      </n-form-item>
-      <n-space justify="end">
-        <n-button @click="showModal = false">取消</n-button>
-        <n-button type="primary" @click="submit">保存</n-button>
-      </n-space>
       </n-form>
     </n-modal>
 
@@ -103,6 +89,7 @@ import FileBrowser from '../components/FileBrowser.vue'
 const message = useMessage()
 const dialog = useDialog()
 const data = ref([])
+const historyData = ref([])
 const loading = ref(false)
 const showModal = ref(false)
 const showBrowser = ref(false)
@@ -117,37 +104,22 @@ const form = reactive({ ...defaultForm })
 const columns = [
   { title: '名称', key: 'Name', fixed: 'left', width: 120, ellipsis: { tooltip: true } },
   { title: '路径', key: 'LocalPath', width: 150, ellipsis: { tooltip: true } },
-  {
-    title: '执行情况',
-    key: 'ProcessedCount',
-    width: 200,
-    render(row) {
-      return h('div', [
-        h('div', { style: 'font-size: 12px; color: #888' }, `状态: ${row.LastRunStatus || '未执行'}`),
-        h('div', `已处理: ${row.ProcessedCount} 个文件`)
-      ])
-    }
-  },
+  { title: '执行情况', key: 'ProcessedCount', width: 200, render(row) { return h('div', [h('div', { style: 'font-size: 12px; color: #888' }, `状态: ${row.LastRunStatus || '未执行'}`), h('div', `已处理: ${row.ProcessedCount} 个文件`)]) } },
   { title: 'CRON', key: 'Cron', width: 100 },
-  {
-    title: '状态', key: 'IsRunning', width: 80,
-    render(row) {
-      return h(NTag, { type: row.IsRunning ? 'success' : 'default', size: 'small' }, { default: () => row.IsRunning ? '运行' : '空闲' })
-    }
-  },
-  {
-    title: '操作', key: 'actions', fixed: 'right', width: 180,
-    render(row) {
-      return h(NSpace, { size: 'small' }, {
-        default: () => [
-          h(NButton, { size: 'tiny', type: 'info', disabled: row.IsRunning, onClick: () => runTask(row) }, { default: () => '执行' }),
-          h(NButton, { size: 'tiny', type: 'warning', disabled: !row.IsRunning, onClick: () => stopTask(row) }, { default: () => '停止' }),
-          h(NButton, { size: 'tiny', onClick: () => openModal(row) }, { default: () => '编辑' }),
-          h(NButton, { size: 'tiny', type: 'error', onClick: () => handleDelete(row) }, { default: () => '删除' })
-        ]
-      })
-    }
-  }
+  { title: '状态', key: 'IsRunning', width: 80, render(row) { return h(NTag, { type: row.IsRunning ? 'success' : 'default', size: 'small' }, { default: () => row.IsRunning ? '运行' : '空闲' }) } },
+  { title: '操作', key: 'actions', fixed: 'right', width: 180, render(row) { return h(NSpace, { size: 'small' }, { default: () => [h(NButton, { size: 'tiny', type: 'info', disabled: row.IsRunning, onClick: () => runTask(row) }, { default: () => '执行' }), h(NButton, { size: 'tiny', type: 'warning', disabled: !row.IsRunning, onClick: () => stopTask(row) }, { default: () => '停止' }), h(NButton, { size: 'tiny', onClick: () => openModal(row) }, { default: () => '编辑' }), h(NButton, { size: 'tiny', type: 'error', onClick: () => handleDelete(row) }, { default: () => '删除' })] }) } }
+]
+
+const historyColumns = [
+  { title: '时间', key: 'CreatedAt', render(row) { return new Date(row.CreatedAt).toLocaleString() } },
+  { title: '任务', key: 'TaskName' },
+  { title: '模式', key: 'RunMode', render(row) { return row.RunMode === 'manual' ? '手动' : '定时' } },
+  { title: '状态', key: 'Status' },
+  { title: '新增STRM', key: 'NewStrmCount' },
+  { title: '新增元数据', key: 'NewMetaCount' },
+  { title: '删除', key: 'DeletedCount' },
+  { title: '总量', key: 'ProcessedCount' },
+  { title: '已通知', key: 'NotificationSent', render(row) { return row.NotificationSent ? '是' : '否' } },
 ]
 
 const loadData = async () => {
@@ -156,18 +128,31 @@ const loadData = async () => {
   accountOptions.value = (accRes.data || []).map(a => ({ label: a.Name, value: a.ID }))
 }
 
+const loadHistory = async () => {
+  const res = await api.get('/task-runs')
+  historyData.value = res.data || []
+}
+
 let timer = null
-const startPolling = () => {
-  if (timer) return
-  timer = setInterval(() => {
+const activePollIntervalMs = 2000
+const idlePollIntervalMs = 10000
+const scheduleNextPoll = () => {
+  stopPolling()
+  if (document.hidden) return
+  const hasRunning = data.value.some(item => item.IsRunning)
+  timer = setTimeout(async () => {
     if (document.hidden) return
-    api.get('/tasks').then(res => { data.value = res.data || [] }).catch(() => {})
-  }, 2000)
+    try {
+      const res = await api.get('/tasks')
+      data.value = res.data || []
+    } catch (e) {}
+    scheduleNextPoll()
+  }, hasRunning ? activePollIntervalMs : idlePollIntervalMs)
 }
 
 const stopPolling = () => {
   if (timer) {
-    clearInterval(timer)
+    clearTimeout(timer)
     timer = null
   }
 }
@@ -176,17 +161,13 @@ const handleVisibilityChange = () => {
   if (document.hidden) {
     stopPolling()
   } else {
-    loadData()
-    startPolling()
+    Promise.all([loadData(), loadHistory()]).finally(() => scheduleNextPoll())
   }
 }
 
 onMounted(() => {
-  loadData()
+  Promise.all([loadData(), loadHistory()]).finally(() => scheduleNextPoll())
   document.addEventListener('visibilitychange', handleVisibilityChange)
-  if (!document.hidden) {
-    startPolling()
-  }
 })
 
 onUnmounted(() => {
@@ -210,20 +191,24 @@ const handleFolderSelect = (id) => {
 
 const submit = async () => {
   try {
+    if (!form.Name || !form.AccountID || !form.SourceFolderID || !form.LocalPath || !form.Cron) {
+      message.warning('请填写完整的任务信息')
+      return
+    }
     if (form.ID) await api.put(`/tasks/${form.ID}`, form)
     else await api.post('/tasks', form)
     message.success('保存成功')
     showModal.value = false
-    loadData()
+    await loadData()
   } catch (e) {}
 }
 
-const runTask = async (row) => { await api.post(`/tasks/${row.ID}/run`); message.success('已触发'); loadData() }
-const stopTask = async (row) => { await api.post(`/tasks/${row.ID}/stop`); message.success('已发送停止信号'); loadData() }
+const runTask = async (row) => { await api.post(`/tasks/${row.ID}/run`); message.success('已触发'); await loadData(); loadHistory() }
+const stopTask = async (row) => { await api.post(`/tasks/${row.ID}/stop`); message.success('已发送停止信号'); await loadData(); loadHistory() }
 const handleDelete = (row) => {
   dialog.warning({
     title: '警告', content: '删除任务？', positiveText: '删除', negativeText: '取消',
-    onPositiveClick: async () => { await api.delete(`/tasks/${row.ID}`); loadData() }
+    onPositiveClick: async () => { await api.delete(`/tasks/${row.ID}`); await loadData(); loadHistory() }
   })
 }
 </script>

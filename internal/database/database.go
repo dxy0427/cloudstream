@@ -52,6 +52,7 @@ func ConnectDatabase(dbPath string) error {
 		&models.Task{},
 		&models.Account{},
 		&models.TaskFile{},
+		&models.TaskRunHistory{},
 		&models.MediaServer{},
 	)
 	if err != nil {
