@@ -185,7 +185,6 @@ func RunScanTask(ctx context.Context, task models.Task, mode RunMode) {
 			message := "更新数据库文件记录失败"
 			log.Error().Err(err).Msg(message)
 			updateTaskStatus(task.ID, "更新DB失败", tracker.Count())
-			saveTaskRunHistory(task, mode, "error", tracker.Count(), ScanSummary{}, false, message+": "+err.Error())
 		} else {
 			deletedCount := 0
 			if task.SyncDelete {
@@ -216,7 +215,6 @@ func RunScanTask(ctx context.Context, task models.Task, mode RunMode) {
 			} else {
 				log.Info().Str("任务", task.Name).Msg("定时任务本次无变化，跳过发送完成通知")
 			}
-			saveTaskRunHistory(task, mode, "success", tracker.Count(), summary, notificationSent, message)
 		}
 	}
 }
