@@ -12,7 +12,7 @@
       <n-space justify="space-between" align="center" style="margin-bottom: 12px;">
         <n-space align="center">
           <n-select v-model:value="levelFilter" :options="levelOptions" style="width: 140px;" />
-          <n-tag :type="streamStatus === 'connected' ? 'success' : streamStatus === 'reconnecting' ? 'warning' : 'error'" size="small">
+          <n-tag :type="streamStatus === 'connected' ? 'success' : streamStatus === 'disconnected' ? 'error' : 'warning'" size="small">
             {{ streamStatusText }}
           </n-tag>
         </n-space>
@@ -24,7 +24,7 @@
       <div ref="logContainerRef" v-if="filteredLogs.length > 0" class="log-panel">
         <div v-for="(line, idx) in filteredLogs" :key="idx" :class="['log-line', levelClass(line)]">{{ line }}</div>
       </div>
-      <n-empty v-else description="暂无系统日志" style="padding: 24px 0;" />
+      <n-empty v-else :description="streamStatus === 'connecting' ? '正在连接实时日志...' : '暂无系统日志'" style="padding: 24px 0;" />
     </n-card>
   </n-space>
 </template>
@@ -45,6 +45,7 @@ const hasInitialized = ref(false)
 let eventSource = null
 let reconnectTimer = null
 let statsTimer = null
+let initialLogsTimer = null
 
 const levelOptions = [
   { label: '全部', value: 'ALL' },
@@ -56,6 +57,7 @@ const levelOptions = [
 const streamStatusText = computed(() => {
   if (streamStatus.value === 'connected') return '实时连接正常'
   if (streamStatus.value === 'reconnecting') return '断线重连中'
+  if (streamStatus.value === 'connecting') return '正在连接中'
   return '连接已断开'
 })
 
@@ -97,11 +99,13 @@ const loadStats = async () => {
 const loadInitialLogs = async () => {
   try {
     const res = await api.get('/logs')
-    logs.value = Array.isArray(res.data) ? res.data : []
-    if (logs.value.length > 200) logs.value = logs.value.slice(-200)
+    const incoming = Array.isArray(res.data) ? res.data : []
+    if (logs.value.length === 0) {
+      logs.value = incoming.slice(-100)
+    }
     scrollToBottom()
   } catch (e) {
-    logs.value = []
+    if (logs.value.length === 0) logs.value = []
   }
 }
 
@@ -156,18 +160,23 @@ const stopStatsRefresh = () => {
   }
 }
 
-onMounted(async () => {
-  if (!hasInitialized.value) {
-    await loadStats()
-    await loadInitialLogs()
-    hasInitialized.value = true
-  }
+onMounted(() => {
   connectLogStream()
   startStatsRefresh()
+
+  if (!hasInitialized.value) {
+    loadStats().catch(() => {})
+    initialLogsTimer = setTimeout(() => {
+      loadInitialLogs().catch(() => {})
+      initialLogsTimer = null
+    }, 300)
+    hasInitialized.value = true
+  }
 })
 
 onActivated(() => {
   if (!eventSource) connectLogStream()
+  loadStats().catch(() => {})
   startStatsRefresh()
   scrollToBottom()
 })
@@ -181,12 +190,17 @@ onDeactivated(() => {
     clearTimeout(reconnectTimer)
     reconnectTimer = null
   }
+  if (initialLogsTimer) {
+    clearTimeout(initialLogsTimer)
+    initialLogsTimer = null
+  }
   stopStatsRefresh()
 })
 
 onUnmounted(() => {
   if (eventSource) eventSource.close()
   if (reconnectTimer) clearTimeout(reconnectTimer)
+  if (initialLogsTimer) clearTimeout(initialLogsTimer)
   stopStatsRefresh()
 })
 </script>
