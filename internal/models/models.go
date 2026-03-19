@@ -24,7 +24,7 @@ type User struct {
 	TelegramChatID string `json:"TelegramChatID"`
 
 	SiteTitle string `gorm:"default:'CloudStream'" json:"SiteTitle"`
-	Theme     string `gorm:"default:'dark'" json:"Theme"`
+	Theme     string `gorm:"default:'light'" json:"Theme"`
 
 	NeedsPasswordReminder bool `gorm:"default:false" json:"NeedsPasswordReminder"`
 	PasswordReminderShown bool `gorm:"default:false" json:"PasswordReminderShown"`
@@ -94,4 +94,10 @@ type MediaServer struct {
 
 	Enabled bool `gorm:"default:true" json:"Enabled"`
 	Port    int  `gorm:"default:8091" json:"Port"`
+}
+
+type StreamTokenPayload struct {
+	AccountID    uint   `json:"accountId"`
+	TaskID       uint   `json:"taskId"`
+	RealIdentity string `json:"realIdentity"`
 }

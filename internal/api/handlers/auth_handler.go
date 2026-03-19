@@ -28,7 +28,7 @@ func GetUserSettingsHandler(c *gin.Context) {
 
 	theme := user.Theme
 	if theme == "" {
-		theme = "dark"
+		theme = "light"
 	}
 	siteTitle := user.SiteTitle
 	if siteTitle == "" {
@@ -70,7 +70,7 @@ func UpdateUserSettingsHandler(c *gin.Context) {
 		req.SiteTitle = "CloudStream"
 	}
 	if req.Theme == "" {
-		req.Theme = "dark"
+		req.Theme = "light"
 	}
 
 	var user models.User

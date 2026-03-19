@@ -7,7 +7,7 @@ export const useGlobalStore = defineStore('global', () => {
   const cachedTheme = localStorage.getItem('theme')
 
   const siteTitle = ref(cachedTitle || 'CloudStream')
-  const isDark = ref(cachedTheme !== 'light')
+  const isDark = ref(cachedTheme === 'dark')
 
   const applyTitle = (title) => {
     siteTitle.value = title && title.trim() ? title : 'CloudStream'
@@ -44,7 +44,7 @@ export const useGlobalStore = defineStore('global', () => {
         } else if (options.preserveTheme) {
           applyTheme(isDark.value ? 'dark' : 'light')
         } else {
-          applyTheme('dark')
+          applyTheme('light')
         }
       }
     } catch (error) {
