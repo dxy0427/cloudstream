@@ -41,6 +41,7 @@ const logContainerRef = ref(null)
 const streamStatus = ref('connecting')
 let eventSource = null
 let reconnectTimer = null
+let statsTimer = null
 
 const levelOptions = [
   { label: '全部', value: 'ALL' },
@@ -111,7 +112,12 @@ const scheduleReconnect = () => {
 const connectLogStream = () => {
   if (eventSource) eventSource.close()
   streamStatus.value = 'connecting'
-  eventSource = new EventSource('/api/v1/logs/stream', { withCredentials: true })
+  const token = localStorage.getItem('jwt_token')
+  if (!token) {
+    streamStatus.value = 'disconnected'
+    return
+  }
+  eventSource = new EventSource(`/api/v1/logs/stream?token=${encodeURIComponent(token)}`)
   eventSource.onopen = () => {
     streamStatus.value = 'connected'
   }
@@ -132,14 +138,18 @@ const connectLogStream = () => {
 }
 
 onMounted(async () => {
-  loadStats()
+  await loadStats()
   await loadInitialLogs()
   connectLogStream()
+  statsTimer = setInterval(() => {
+    loadStats().catch(() => {})
+  }, 10000)
 })
 
 onUnmounted(() => {
   if (eventSource) eventSource.close()
   if (reconnectTimer) clearTimeout(reconnectTimer)
+  if (statsTimer) clearInterval(statsTimer)
 })
 </script>
 
