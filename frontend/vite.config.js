@@ -35,20 +35,11 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks(id) {
-          if (id.includes('node_modules/vue') || id.includes('node_modules/pinia') || id.includes('node_modules/vue-router')) {
-            return 'vue-vendor'
-          }
           if (id.includes('node_modules/axios')) {
             return 'axios'
           }
-          if (id.includes('node_modules/naive-ui')) {
-            return 'naive-ui'
-          }
           if (id.includes('node_modules/@vicons')) {
             return 'icons'
-          }
-          if (id.includes('node_modules/vooks') || id.includes('node_modules/vdirs') || id.includes('node_modules/vueuc') || id.includes('node_modules/seemly')) {
-            return 'naive-ui-helpers'
           }
         }
       }
