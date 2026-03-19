@@ -1,5 +1,5 @@
 <template>
-  <div class="login-container light-bg">
+  <div class="login-container" :class="store.isDark ? 'dark-bg' : 'light-bg'">
     <div class="login-box">
       <n-card class="login-card" size="huge" :bordered="false">
         <div class="header">
@@ -38,7 +38,7 @@
           </div>
         </n-form>
       </n-card>
-      <div class="footer">CloudStream Media Server</div>
+      <div class="footer" :style="{ color: store.isDark ? '#666' : '#999' }">CloudStream Media Server</div>
     </div>
   </div>
 </template>
@@ -103,10 +103,15 @@ const handleLogin = async () => {
   background-image: radial-gradient(#e1e4e8 1px, transparent 1px);
   background-size: 20px 20px;
 }
+.dark-bg {
+  background-color: #101014;
+  background-image: radial-gradient(#2d2d2d 1px, transparent 1px);
+  background-size: 20px 20px;
+}
 .login-box { width: 100%; max-width: 420px; padding: 20px; }
 .login-card { border-radius: 16px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); }
 .header { text-align: center; margin-bottom: 30px; }
 .logo { font-size: 60px; margin-bottom: 10px; }
 h1 { margin: 0; font-size: 24px; font-weight: 700; }
-.footer { text-align: center; margin-top: 20px; font-size: 12px; color: #999; }
+.footer { text-align: center; margin-top: 20px; font-size: 12px; transition: color 0.3s; }
 </style>

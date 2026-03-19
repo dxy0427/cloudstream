@@ -11,13 +11,11 @@
 
 <script setup>
 import { computed, onMounted } from 'vue'
-import { useRoute } from 'vue-router'
 import { darkTheme } from 'naive-ui'
 import { useGlobalStore } from './store/global'
 
 const store = useGlobalStore()
-const route = useRoute()
-const theme = computed(() => route.meta?.noAuth ? null : (store.isDark ? darkTheme : null))
+const theme = computed(() => store.isDark ? darkTheme : null)
 
 onMounted(() => {
   store.loadSettings()
