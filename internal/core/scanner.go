@@ -66,7 +66,6 @@ func (t *FileTracker) Count() int {
 }
 
 func RunScanTask(ctx context.Context, task models.Task) {
-	// 更新状态为运行中
 	database.DB.Model(&models.Task{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
 		"last_run_status": "扫描中...",
 		"processed_count": 0,
@@ -87,8 +86,12 @@ func RunScanTask(ctx context.Context, task models.Task) {
 	}
 
 	threads := task.Threads
-	if threads < 1 { threads = 1 }
-	if threads > 16 { threads = 16 }
+	if threads < 1 {
+		threads = 1
+	}
+	if threads > 16 {
+		threads = 16
+	}
 
 	log.Info().Str("任务", task.Name).Str("账户", account.Name).Int("线程数", threads).Msg("开始执行任务")
 	client := pan123.NewClient(account)
@@ -104,7 +107,6 @@ func RunScanTask(ctx context.Context, task models.Task) {
 	rateLimiter := time.NewTicker(time.Second / time.Duration(threads))
 	defer rateLimiter.Stop()
 
-	// --- 进度自动更新协程 ---
 	progressTicker := time.NewTicker(2 * time.Second)
 	progressCtx, cancelProgress := context.WithCancel(context.Background())
 	defer cancelProgress()
@@ -119,7 +121,6 @@ func RunScanTask(ctx context.Context, task models.Task) {
 			}
 		}
 	}()
-	// ---------------------
 
 	startFolderID := task.SourceFolderID
 	if account.Type == models.AccountTypeOpenList && (startFolderID == "0" || startFolderID == "") {
@@ -129,7 +130,7 @@ func RunScanTask(ctx context.Context, task models.Task) {
 	scanDirectoryRecursive(ctx, client, task, account.Type, startFolderID, "", task.LocalPath, strmExtMap, metaExtMap, &wg, workerPool, rateLimiter, tracker, &hasError)
 
 	wg.Wait()
-	progressTicker.Stop() // 停止进度更新
+	progressTicker.Stop()
 
 	select {
 	case <-ctx.Done():
@@ -145,7 +146,6 @@ func RunScanTask(ctx context.Context, task models.Task) {
 			return
 		}
 
-		// 只有完全无错时才更新 DB
 		if err := updateFileRecordsOptimized(task.ID, tracker); err != nil {
 			log.Error().Err(err).Msg("更新数据库文件记录失败")
 			updateTaskStatus(task.ID, "更新DB失败", tracker.Count())
@@ -171,11 +171,17 @@ func updateTaskStatus(id uint, status string, count int) {
 func cleanEmptyDirs(root string) {
 	var dirs []string
 	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil { return nil }
-		if info.IsDir() { dirs = append(dirs, path) }
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			dirs = append(dirs, path)
+		}
 		return nil
 	})
-	if err != nil { return }
+	if err != nil {
+		return
+	}
 
 	sort.Slice(dirs, func(i, j int) bool {
 		return len(dirs[i]) > len(dirs[j])
@@ -183,7 +189,9 @@ func cleanEmptyDirs(root string) {
 
 	removedCount := 0
 	for _, d := range dirs {
-		if d == root || d == strings.TrimSuffix(root, "/") { continue }
+		if d == root || d == strings.TrimSuffix(root, "/") {
+			continue
+		}
 		entries, err := os.ReadDir(d)
 		if err == nil && len(entries) == 0 {
 			if err := os.Remove(d); err == nil {
@@ -208,15 +216,9 @@ func updateFileRecordsOptimized(taskID uint, tracker *FileTracker) error {
 
 	return database.DB.Transaction(func(tx *gorm.DB) error {
 		for i, p := range paths {
-			records = append(records, models.TaskFile{
-				TaskID:   taskID,
-				FilePath: p,
-			})
-
+			records = append(records, models.TaskFile{TaskID: taskID, FilePath: p})
 			if len(records) >= batchSize || i == len(paths)-1 {
-				if err := tx.Clauses(clause.OnConflict{
-					DoNothing: true, 
-				}).CreateInBatches(records, len(records)).Error; err != nil {
+				if err := tx.Clauses(clause.OnConflict{DoNothing: true}).CreateInBatches(records, len(records)).Error; err != nil {
 					return err
 				}
 				records = records[:0]
@@ -236,21 +238,17 @@ func performSafeSyncDeleteOptimized(taskID uint, currentScanTracker *FileTracker
 
 	for {
 		var historyFiles []models.TaskFile
-		if err := database.DB.Where("task_id = ? AND id > ?", taskID, lastID).
-			Order("id asc").Limit(batchSize).Find(&historyFiles).Error; err != nil {
+		if err := database.DB.Where("task_id = ? AND id > ?", taskID, lastID).Order("id asc").Limit(batchSize).Find(&historyFiles).Error; err != nil {
 			log.Error().Err(err).Msg("查询历史记录失败")
 			break
 		}
-
 		if len(historyFiles) == 0 {
 			break
 		}
 
 		idsToDelete := make([]uint, 0)
-
 		for _, record := range historyFiles {
 			lastID = record.ID
-
 			if !currentScanTracker.Has(record.FilePath) {
 				if err := os.Remove(record.FilePath); err == nil || os.IsNotExist(err) {
 					log.Info().Str("文件", record.FilePath).Msg("同步删除本地失效文件")
@@ -285,22 +283,24 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 
 	var (
 		folderIDInt int64
-		err     error
-		allFiles  []pan123.FileInfo
+		err         error
+		allFiles    []pan123.FileInfo
 	)
 
 	if accountType == models.AccountType123Pan {
 		folderIDInt, err = strconv.ParseInt(folderID, 10, 64)
 		if err != nil {
 			log.Error().Err(err).Str("任务", task.Name).Str("目录ID", folderID).Msg("无效的目录ID")
-			hasError.Store(true) 
+			hasError.Store(true)
 			return
 		}
 	}
 
 	var lastFileId int64 = 0
 	for {
-		if hasError.Load() { return } 
+		if hasError.Load() {
+			return
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -317,7 +317,7 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 				}
 				if err != nil {
 					log.Error().Err(err).Str("任务", task.Name).Msg("扫描目录失败（123云盘）")
-					hasError.Store(true) 
+					hasError.Store(true)
 					return
 				}
 			}
@@ -334,7 +334,7 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 			files, err := client.ListOpenListDirectory(folderID)
 			if err != nil {
 				log.Error().Err(err).Str("任务", task.Name).Str("路径", folderID).Msg("扫描目录失败（OpenList）")
-				hasError.Store(true) 
+				hasError.Store(true)
 				return
 			}
 			allFiles = append(allFiles, files...)
@@ -343,7 +343,9 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 	}
 
 	for _, item := range allFiles {
-		if hasError.Load() { return }
+		if hasError.Load() {
+			return
+		}
 
 		currentItem := item
 		itemCloudPath := path.Join(currentCloudPath, currentItem.FileName)
@@ -372,7 +374,9 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 			wg.Add(1)
 			go func(fileToProcess pan123.FileInfo, cloudRelPath string) {
 				defer wg.Done()
-				if hasError.Load() { return }
+				if hasError.Load() {
+					return
+				}
 
 				select {
 				case <-ctx.Done():
@@ -432,9 +436,8 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 	}
 
 	var streamURL string
-
 	if task.EncodePath {
-		sign, err := auth.SignStreamURL(task.AccountID, realIdentity)
+		sign, err := auth.SignStreamURL(task.ID, task.AccountID, realIdentity)
 		if err != nil {
 			log.Error().Err(err).Msg("生成签名失败")
 			return
@@ -486,7 +489,6 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 
 func downloadAndSaveMetaFile(client *pan123.Client, task models.Task, identity interface{}, fileName string, localBasePath string, tracker *FileTracker) {
 	localFilePath := filepath.Join(localBasePath, fileName)
-
 	tracker.Add(localFilePath)
 
 	if !task.Overwrite {
@@ -541,7 +543,7 @@ func joinOpenListPath(parts ...string) string {
 		}
 		if i == 0 {
 			if p == "/" {
-				cleaned = append(cleaned, "") 
+				cleaned = append(cleaned, "")
 				continue
 			}
 			p = "/" + strings.TrimLeft(p, "/")

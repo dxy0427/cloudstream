@@ -87,7 +87,7 @@ const handleLogin = async () => {
   try {
     const res = await api.post('/login', form)
     localStorage.setItem('jwt_token', res.token)
-    await store.loadSettings()
+    await store.loadSettings({ preserveTheme: true })
     if (res.needsPasswordReminder && !res.passwordReminderShown) {
       localStorage.setItem('needs_password_reminder', '1')
     } else {

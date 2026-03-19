@@ -20,20 +20,30 @@ func UnifiedStreamHandler(c *gin.Context) {
 	var identifier interface{}
 
 	if sign != "" {
-		accID, realIdentity, err := auth.VerifyStreamSign(sign)
+		taskID, accID, realIdentity, err := auth.VerifyStreamSign(sign)
 		if err != nil {
 			c.String(http.StatusForbidden, "Invalid signature: "+err.Error())
 			return
 		}
 		accountID = accID
 
+		var task models.Task
+		if err := database.DB.First(&task, taskID).Error; err != nil {
+			c.String(http.StatusNotFound, "Task not found")
+			return
+		}
+		if task.AccountID != accountID {
+			c.String(http.StatusForbidden, "Task/account mismatch")
+			return
+		}
+		if !task.Enabled || !task.EncodePath {
+			c.String(http.StatusForbidden, "Signed access is disabled for this task")
+			return
+		}
+
 		var account models.Account
 		if err := database.DB.First(&account, accountID).Error; err != nil {
 			c.String(http.StatusNotFound, "Account not found")
-			return
-		}
-		if !isTaskEncodePathEnabled(accountID) {
-			c.String(http.StatusForbidden, "Signed access is only available when encrypted path is enabled")
 			return
 		}
 
@@ -67,10 +77,6 @@ func UnifiedStreamHandler(c *gin.Context) {
 			c.String(http.StatusNotFound, "Account not found")
 			return
 		}
-		if isTaskEncodePathEnabled(accountID) {
-			c.String(http.StatusForbidden, "This stream requires a valid signature")
-			return
-		}
 
 		if account.Type == models.AccountTypeOpenList {
 			pathPart := "/" + strings.Join(parts[1:], "/")
@@ -100,12 +106,4 @@ func UnifiedStreamHandler(c *gin.Context) {
 	}
 
 	c.Redirect(http.StatusFound, downloadURL)
-}
-
-func isTaskEncodePathEnabled(accountID uint) bool {
-	var count int64
-	database.DB.Model(&models.Task{}).
-		Where("account_id = ? AND enabled = ? AND encode_path = ?", accountID, true, true).
-		Count(&count)
-	return count > 0
 }

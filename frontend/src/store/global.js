@@ -29,7 +29,7 @@ export const useGlobalStore = defineStore('global', () => {
     }
   }
 
-  const loadSettings = async () => {
+  const loadSettings = async (options = {}) => {
     if (!localStorage.getItem('jwt_token')) {
       return
     }
@@ -37,10 +37,15 @@ export const useGlobalStore = defineStore('global', () => {
     try {
       const res = await userSettingsApi.getSettings()
       if (res.code === 0 && res.data) {
-        applySettings({
-          siteTitle: res.data.siteTitle || 'CloudStream',
-          theme: res.data.theme || 'dark'
-        })
+        applyTitle(res.data.siteTitle || 'CloudStream')
+
+        if (res.data.theme === 'dark' || res.data.theme === 'light') {
+          applyTheme(res.data.theme)
+        } else if (options.preserveTheme) {
+          applyTheme(isDark.value ? 'dark' : 'light')
+        } else {
+          applyTheme('dark')
+        }
       }
     } catch (error) {
       console.error('加载用户设置失败:', error)
@@ -104,6 +109,8 @@ export const useGlobalStore = defineStore('global', () => {
     toggleTheme,
     setSiteTitle,
     loadSettings,
-    updateSettings
+    updateSettings,
+    applyTheme,
+    applyTitle
   }
 })

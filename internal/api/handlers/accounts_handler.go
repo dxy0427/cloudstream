@@ -58,6 +58,19 @@ func CreateAccountHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": account})
 }
 
+type accountUpdateRequest struct {
+	Name             *string `json:"Name"`
+	Type             *string `json:"Type"`
+	ClientID         *string `json:"ClientID"`
+	ClientSecret     *string `json:"ClientSecret"`
+	OpenListURL      *string `json:"OpenListURL"`
+	OpenListToken    *string `json:"OpenListToken"`
+	OpenListUsername *string `json:"OpenListUsername"`
+	OpenListPassword *string `json:"OpenListPassword"`
+	StrmBaseURL      *string `json:"StrmBaseURL"`
+	CacheTTL         *int    `json:"CacheTTL"`
+}
+
 func UpdateAccountHandler(c *gin.Context) {
 	id := c.Param("id")
 
@@ -67,9 +80,41 @@ func UpdateAccountHandler(c *gin.Context) {
 		return
 	}
 
-	if err := c.ShouldBindJSON(&account); err != nil {
+	var req accountUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": err.Error()})
 		return
+	}
+
+	if req.Name != nil {
+		account.Name = *req.Name
+	}
+	if req.Type != nil {
+		account.Type = *req.Type
+	}
+	if req.ClientID != nil {
+		account.ClientID = *req.ClientID
+	}
+	if req.ClientSecret != nil {
+		account.ClientSecret = *req.ClientSecret
+	}
+	if req.OpenListURL != nil {
+		account.OpenListURL = *req.OpenListURL
+	}
+	if req.OpenListToken != nil {
+		account.OpenListToken = *req.OpenListToken
+	}
+	if req.OpenListUsername != nil {
+		account.OpenListUsername = *req.OpenListUsername
+	}
+	if req.OpenListPassword != nil {
+		account.OpenListPassword = *req.OpenListPassword
+	}
+	if req.StrmBaseURL != nil {
+		account.StrmBaseURL = *req.StrmBaseURL
+	}
+	if req.CacheTTL != nil {
+		account.CacheTTL = *req.CacheTTL
 	}
 
 	if ok, msg := validateAccount(&account); !ok {
@@ -101,6 +146,10 @@ func DeleteAccountHandler(c *gin.Context) {
 
 	for _, task := range tasksUsingAccount {
 		core.StopTask(task.ID)
+		if err := database.DB.Unscoped().Where("task_id = ?", task.ID).Delete(&models.TaskFile{}).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "删除关联任务文件记录失败: " + err.Error()})
+			return
+		}
 		if err := database.DB.Unscoped().Delete(&task).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "删除关联任务失败: " + err.Error()})
 			return

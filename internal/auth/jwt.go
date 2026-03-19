@@ -135,10 +135,13 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 	}
 }
 
-func SignStreamURL(accountID uint, realIdentity string) (string, error) {
+func SignStreamURL(taskID uint, accountID uint, realIdentity string) (string, error) {
 	if len(jwtSecret) == 0 {
 		return "", fmt.Errorf("secret not initialized")
 	}
+
+	taskStr := strconv.FormatUint(uint64(taskID), 10)
+	taskB64 := base64.RawURLEncoding.EncodeToString([]byte(taskStr))
 
 	accStr := strconv.FormatUint(uint64(accountID), 10)
 	accB64 := base64.RawURLEncoding.EncodeToString([]byte(accStr))
@@ -154,53 +157,62 @@ func SignStreamURL(accountID uint, realIdentity string) (string, error) {
 	}
 	saltB64 := base64.RawURLEncoding.EncodeToString(salt)
 
-	payload := fmt.Sprintf("%d:%d:%s:%s", accountID, expiry, realIdentity, saltB64)
+	payload := fmt.Sprintf("%d:%d:%d:%s:%s", taskID, accountID, expiry, realIdentity, saltB64)
 	mac := hmac.New(sha256.New, jwtSecret)
 	mac.Write([]byte(payload))
 	sigHex := hex.EncodeToString(mac.Sum(nil))
 
-	return fmt.Sprintf("%s:%s:%s:%s:%s", accB64, expStr, sigHex, realIDB64, saltB64), nil
+	return fmt.Sprintf("%s:%s:%s:%s:%s:%s", taskB64, accB64, expStr, sigHex, realIDB64, saltB64), nil
 }
 
-func VerifyStreamSign(signStr string) (uint, string, error) {
+func VerifyStreamSign(signStr string) (uint, uint, string, error) {
 	parts := strings.Split(signStr, ":")
-	if len(parts) != 5 {
-		return 0, "", fmt.Errorf("invalid sign format")
+	if len(parts) != 6 {
+		return 0, 0, "", fmt.Errorf("invalid sign format")
 	}
 
-	accB64, expStr, sigHex, realIDB64, saltB64 := parts[0], parts[1], parts[2], parts[3], parts[4]
+	taskB64, accB64, expStr, sigHex, realIDB64, saltB64 := parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
+
+	taskBytes, err := base64.RawURLEncoding.DecodeString(taskB64)
+	if err != nil {
+		return 0, 0, "", fmt.Errorf("invalid task encoding")
+	}
+	taskID, err := strconv.ParseUint(string(taskBytes), 10, 32)
+	if err != nil {
+		return 0, 0, "", fmt.Errorf("invalid task id")
+	}
 
 	accBytes, err := base64.RawURLEncoding.DecodeString(accB64)
 	if err != nil {
-		return 0, "", fmt.Errorf("invalid account encoding")
+		return 0, 0, "", fmt.Errorf("invalid account encoding")
 	}
 	accID, err := strconv.ParseUint(string(accBytes), 10, 32)
 	if err != nil {
-		return 0, "", fmt.Errorf("invalid account id")
+		return 0, 0, "", fmt.Errorf("invalid account id")
 	}
 
 	expiry, err := strconv.ParseInt(expStr, 10, 64)
 	if err != nil {
-		return 0, "", fmt.Errorf("invalid expiry")
+		return 0, 0, "", fmt.Errorf("invalid expiry")
 	}
 	if time.Now().Unix() > expiry {
-		return 0, "", fmt.Errorf("link expired")
+		return 0, 0, "", fmt.Errorf("link expired")
 	}
 
 	realBytes, err := base64.RawURLEncoding.DecodeString(realIDB64)
 	if err != nil {
-		return 0, "", fmt.Errorf("invalid real identity encoding")
+		return 0, 0, "", fmt.Errorf("invalid real identity encoding")
 	}
 	realIdentity := string(realBytes)
 
-	payload := fmt.Sprintf("%d:%d:%s:%s", accID, expiry, realIdentity, saltB64)
+	payload := fmt.Sprintf("%d:%d:%d:%s:%s", taskID, accID, expiry, realIdentity, saltB64)
 	mac := hmac.New(sha256.New, jwtSecret)
 	mac.Write([]byte(payload))
 	expectedSig := hex.EncodeToString(mac.Sum(nil))
 
 	if !hmac.Equal([]byte(expectedSig), []byte(sigHex)) {
-		return 0, "", fmt.Errorf("signature mismatch")
+		return 0, 0, "", fmt.Errorf("signature mismatch")
 	}
 
-	return uint(accID), realIdentity, nil
+	return uint(taskID), uint(accID), realIdentity, nil
 }

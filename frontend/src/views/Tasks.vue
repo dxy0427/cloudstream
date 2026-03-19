@@ -96,7 +96,7 @@
 
 <script setup>
 import { ref, reactive, onMounted, h, onUnmounted } from 'vue'
-import { NButton, NSpace, NTag, useMessage, useDialog, NProgress } from 'naive-ui'
+import { NButton, NSpace, NTag, useMessage, useDialog } from 'naive-ui'
 import api from '../api'
 import FileBrowser from '../components/FileBrowser.vue'
 
@@ -157,11 +157,42 @@ const loadData = async () => {
 }
 
 let timer = null
+const startPolling = () => {
+  if (timer) return
+  timer = setInterval(() => {
+    if (document.hidden) return
+    api.get('/tasks').then(res => { data.value = res.data || [] }).catch(() => {})
+  }, 2000)
+}
+
+const stopPolling = () => {
+  if (timer) {
+    clearInterval(timer)
+    timer = null
+  }
+}
+
+const handleVisibilityChange = () => {
+  if (document.hidden) {
+    stopPolling()
+  } else {
+    loadData()
+    startPolling()
+  }
+}
+
 onMounted(() => {
   loadData()
-  timer = setInterval(() => api.get('/tasks').then(res => data.value = res.data || []), 2000)
+  document.addEventListener('visibilitychange', handleVisibilityChange)
+  if (!document.hidden) {
+    startPolling()
+  }
 })
-onUnmounted(() => clearInterval(timer))
+
+onUnmounted(() => {
+  stopPolling()
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
+})
 
 const openModal = (row) => {
   if (row) Object.assign(form, row)

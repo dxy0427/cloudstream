@@ -7,28 +7,9 @@ import (
 	"net/http"
 )
 
-// LogoutHandler 强制使当前用户的旧 Token 失效
+// LogoutHandler 仅退出当前设备上的本地会话，不影响其他设备
 func LogoutHandler(c *gin.Context) {
-	username, exists := c.Get("username")
-	if !exists {
-		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "未登录"})
-		return
-	}
-
-	var user models.User
-	if err := database.DB.Where("username = ?", username).First(&user).Error; err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "用户不存在"})
-		return
-	}
-
-	// 核心逻辑：版本号自增
-	user.TokenVersion++
-	if err := database.DB.Save(&user).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "退出登录失败，请重试"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "安全退出成功"})
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "退出成功"})
 }
 
 // GetUserSettingsHandler 获取用户个性化设置
@@ -45,11 +26,20 @@ func GetUserSettingsHandler(c *gin.Context) {
 		return
 	}
 
+	theme := user.Theme
+	if theme == "" {
+		theme = "dark"
+	}
+	siteTitle := user.SiteTitle
+	if siteTitle == "" {
+		siteTitle = "CloudStream"
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"code": 0,
 		"data": gin.H{
-			"siteTitle": user.SiteTitle,
-			"theme":     user.Theme,
+			"siteTitle": siteTitle,
+			"theme":     theme,
 		},
 	})
 }
@@ -71,13 +61,11 @@ func UpdateUserSettingsHandler(c *gin.Context) {
 		return
 	}
 
-	// 验证主题值
 	if req.Theme != "dark" && req.Theme != "light" {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "主题值必须是 dark 或 light"})
 		return
 	}
 
-	// 设置默认值
 	if req.SiteTitle == "" {
 		req.SiteTitle = "CloudStream"
 	}
