@@ -16,29 +16,25 @@ func InitRouter() *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 
-	// 1. 性能优化：开启 Gzip 压缩 (大幅减少 JSON 体积)
 	r.Use(gzip.Gzip(gzip.DefaultCompression))
 
 	v1 := r.Group("/api/v1")
 	{
-		// 公开接口
 		v1.Match([]string{"GET", "HEAD"}, "/stream/s/*path", handlers.UnifiedStreamHandler)
 		v1.POST("/login", auth.LoginRateLimiter(), auth.LoginHandler)
 
-		// 鉴权接口
 		authorized := v1.Group("/")
 		authorized.Use(auth.JWTAuthMiddleware())
 		{
-			// 2. 安全优化：新增主动登出接口
 			authorized.POST("/logout", handlers.LogoutHandler)
 
 			authorized.GET("/username", handlers.GetUsernameHandler)
 			authorized.GET("/logs", handlers.GetSystemLogsHandler)
-			
-			// 用户个性化设置接口
+
 			authorized.GET("/user/settings", handlers.GetUserSettingsHandler)
 			authorized.POST("/user/settings", handlers.UpdateUserSettingsHandler)
-			
+			authorized.POST("/user/password-reminder/dismiss", handlers.DismissPasswordReminderHandler)
+
 			authorized.POST("/webhook/test", handlers.TestWebhookHandler)
 			authorized.POST("/notifications", handlers.UpdateNotificationHandler)
 			authorized.POST("/update_credentials", handlers.UpdateCredentialsHandler)
@@ -78,10 +74,8 @@ func InitRouter() *gin.Engine {
 		}
 	}
 
-	// 媒体服务器代理路由（无需鉴权）
 	v1.Any("/ms/:id/*path", handlers.MediaServerProxyHandler)
 
-	// 静态文件服务
 	r.Static("/assets", "./public/assets")
 	r.StaticFile("/favicon.ico", "./public/favicon.ico")
 

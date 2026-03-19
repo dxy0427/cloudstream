@@ -22,7 +22,6 @@ func ConnectDatabase(dbPath string) error {
 		return fmt.Errorf("创建数据目录失败: %w", err)
 	}
 
-	// 开启 WAL 模式的关键配置
 	dbConfig := &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	}
@@ -32,27 +31,22 @@ func ConnectDatabase(dbPath string) error {
 		return fmt.Errorf("连接数据库失败: %w", err)
 	}
 
-	// 获取底层 SQL DB 对象进行配置
 	sqlDB, err := DB.DB()
 	if err != nil {
 		return err
 	}
 
-	// 配置连接池
-	sqlDB.SetMaxOpenConns(25)          // 最大打开连接数
-	sqlDB.SetMaxIdleConns(5)           // 最大空闲连接数
-	sqlDB.SetConnMaxLifetime(5 * time.Minute) // 连接最大生存时间
+	sqlDB.SetMaxOpenConns(25)
+	sqlDB.SetMaxIdleConns(5)
+	sqlDB.SetConnMaxLifetime(5 * time.Minute)
 
-	// 核心优化：开启 WAL 模式，大幅提升并发性能
 	if _, err := sqlDB.Exec("PRAGMA journal_mode=WAL;"); err != nil {
 		log.Warn().Err(err).Msg("开启 SQLite WAL 模式失败，性能可能受限")
 	}
-	// 稍微调高繁忙超时时间
 	if _, err := sqlDB.Exec("PRAGMA busy_timeout=5000;"); err != nil {
 		log.Warn().Err(err).Msg("设置 busy_timeout 失败")
 	}
 
-	// 自动迁移结构
 	err = DB.AutoMigrate(
 		&models.User{},
 		&models.Task{},
@@ -76,9 +70,10 @@ func ConnectDatabase(dbPath string) error {
 			return fmt.Errorf("密码哈希失败: %w", err)
 		}
 		defaultUser := models.User{
-			Username:     "admin",
-			PasswordHash: hashedPassword,
-			TokenVersion: 1,
+			Username:              "admin",
+			PasswordHash:          hashedPassword,
+			TokenVersion:          1,
+			NeedsPasswordReminder: true,
 		}
 		if err := DB.Create(&defaultUser).Error; err != nil {
 			return fmt.Errorf("创建默认管理员失败: %w", err)

@@ -88,6 +88,11 @@ const handleLogin = async () => {
     const res = await api.post('/login', form)
     localStorage.setItem('jwt_token', res.token)
     await store.loadSettings()
+    if (res.needsPasswordReminder && !res.passwordReminderShown) {
+      localStorage.setItem('needs_password_reminder', '1')
+    } else {
+      localStorage.removeItem('needs_password_reminder')
+    }
     message.success('登录成功')
     router.push('/dashboard')
   } catch (error) {

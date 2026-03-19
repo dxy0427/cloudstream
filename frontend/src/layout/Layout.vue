@@ -45,7 +45,7 @@
 
 <script setup>
 import { h, ref, computed, onMounted, onUnmounted } from 'vue'
-import { NIcon, NText } from 'naive-ui'
+import { NIcon, NText, useDialog } from 'naive-ui'
 import { useRoute, useRouter } from 'vue-router'
 import { useGlobalStore } from '../store/global'
 import api from '../api'
@@ -63,6 +63,7 @@ import {
 const store = useGlobalStore()
 const router = useRouter()
 const route = useRoute()
+const dialog = useDialog()
 const collapsed = ref(true)
 const isMobile = ref(false)
 
@@ -71,9 +72,36 @@ const checkMobile = () => {
   collapsed.value = isMobile.value
 }
 
+const showPasswordReminderIfNeeded = async () => {
+  if (localStorage.getItem('needs_password_reminder') !== '1') {
+    return
+  }
+
+  dialog.warning({
+    title: '安全提醒',
+    content: '当前账号仍在使用默认管理员密码，建议尽快到“设置管理”里修改密码。此提醒不会强制你立刻修改。',
+    positiveText: '去设置',
+    negativeText: '稍后再说',
+    onPositiveClick: async () => {
+      localStorage.removeItem('needs_password_reminder')
+      try {
+        await api.post('/user/password-reminder/dismiss')
+      } catch (e) {}
+      router.push('/settings')
+    },
+    onNegativeClick: async () => {
+      localStorage.removeItem('needs_password_reminder')
+      try {
+        await api.post('/user/password-reminder/dismiss')
+      } catch (e) {}
+    }
+  })
+}
+
 onMounted(() => {
   checkMobile()
   window.addEventListener('resize', checkMobile)
+  showPasswordReminderIfNeeded()
 })
 
 onUnmounted(() => {
@@ -106,6 +134,7 @@ function handleMenuClick(key) {
 async function logout() {
   try { await api.post('/logout') } catch (e) {}
   localStorage.removeItem('jwt_token')
+  localStorage.removeItem('needs_password_reminder')
   router.push('/login')
 }
 </script>

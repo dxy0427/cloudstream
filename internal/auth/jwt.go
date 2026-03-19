@@ -74,7 +74,11 @@ func LoginHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法生成 Token"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"token": tokenString})
+	c.JSON(http.StatusOK, gin.H{
+		"token":                 tokenString,
+		"needsPasswordReminder": user.NeedsPasswordReminder,
+		"passwordReminderShown": user.PasswordReminderShown,
+	})
 }
 
 func generateToken(username string, tokenVersion int) (string, error) {
@@ -101,16 +105,16 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 			return
 		}
 		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-						if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-							return nil, fmt.Errorf("非预期的签名方法: %v", token.Header["alg"])
-						}
-						return jwtSecret, nil
-					})
-					if err != nil {
-						log.Warn().Err(err).Msg("JWT 验证失败")
-						c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token 无效或已过期"})
-						return
-					}
+			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+				return nil, fmt.Errorf("非预期的签名方法: %v", token.Header["alg"])
+			}
+			return jwtSecret, nil
+		})
+		if err != nil {
+			log.Warn().Err(err).Msg("JWT 验证失败")
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token 无效或已过期"})
+			return
+		}
 		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
 			username, _ := claims["username"].(string)
 			version, _ := claims["version"].(float64)
@@ -131,7 +135,6 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 	}
 }
 
-// SignStreamURL 生成包含 随机盐值(Salt) 的签名
 func SignStreamURL(accountID uint, realIdentity string) (string, error) {
 	if len(jwtSecret) == 0 {
 		return "", fmt.Errorf("secret not initialized")
@@ -159,7 +162,6 @@ func SignStreamURL(accountID uint, realIdentity string) (string, error) {
 	return fmt.Sprintf("%s:%s:%s:%s:%s", accB64, expStr, sigHex, realIDB64, saltB64), nil
 }
 
-// VerifyStreamSign 验证签名
 func VerifyStreamSign(signStr string) (uint, string, error) {
 	parts := strings.Split(signStr, ":")
 	if len(parts) != 5 {

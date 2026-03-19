@@ -7,12 +7,10 @@
       </n-space>
     </n-card>
 
-    <!-- 桌面端表格 -->
     <div class="desktop-view">
       <n-data-table :columns="columns" :data="data" :loading="loading" :scroll-x="1200" />
     </div>
 
-    <!-- 移动端列表 -->
     <div class="mobile-view">
       <n-spin :show="loading">
         <n-list hoverable clickable>
@@ -44,9 +42,7 @@
       </n-spin>
     </div>
 
-    <!-- 模态框部分保持不变，引用原有代码即可 -->
     <n-modal v-model:show="showModal" preset="card" title="任务配置" style="width: 700px; max-width: 95%;">
-      <!-- ... (表单内容与之前保持一致) ... -->
       <n-form label-placement="top" label-width="auto">
       <n-form-item label="任务名称">
         <n-input v-model:value="form.Name" />
@@ -78,7 +74,7 @@
         <n-space vertical>
         <n-checkbox v-model:checked="form.Overwrite">覆盖模式</n-checkbox>
         <n-checkbox v-model:checked="form.SyncDelete">同步删除</n-checkbox>
-        <n-checkbox v-model:checked="form.EncodePath">加密路径</n-checkbox>
+        <n-checkbox v-model:checked="form.EncodePath">使用签名路径（开启后仅允许签名访问）</n-checkbox>
         </n-space>
       </n-form-item>
 
@@ -121,10 +117,9 @@ const form = reactive({ ...defaultForm })
 const columns = [
   { title: '名称', key: 'Name', fixed: 'left', width: 120, ellipsis: { tooltip: true } },
   { title: '路径', key: 'LocalPath', width: 150, ellipsis: { tooltip: true } },
-  // 新增：执行情况列
-  { 
-    title: '执行情况', 
-    key: 'ProcessedCount', 
+  {
+    title: '执行情况',
+    key: 'ProcessedCount',
     width: 200,
     render(row) {
       return h('div', [
@@ -134,7 +129,7 @@ const columns = [
     }
   },
   { title: 'CRON', key: 'Cron', width: 100 },
-  { 
+  {
     title: '状态', key: 'IsRunning', width: 80,
     render(row) {
       return h(NTag, { type: row.IsRunning ? 'success' : 'default', size: 'small' }, { default: () => row.IsRunning ? '运行' : '空闲' })
@@ -164,7 +159,7 @@ const loadData = async () => {
 let timer = null
 onMounted(() => {
   loadData()
-  timer = setInterval(() => api.get('/tasks').then(res => data.value = res.data || []), 2000) // 2秒刷新一次，为了看进度
+  timer = setInterval(() => api.get('/tasks').then(res => data.value = res.data || []), 2000)
 })
 onUnmounted(() => clearInterval(timer))
 
@@ -189,7 +184,7 @@ const submit = async () => {
     message.success('保存成功')
     showModal.value = false
     loadData()
-  } catch(e) {}
+  } catch (e) {}
 }
 
 const runTask = async (row) => { await api.post(`/tasks/${row.ID}/run`); message.success('已触发'); loadData() }

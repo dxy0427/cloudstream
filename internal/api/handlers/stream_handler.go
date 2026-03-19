@@ -20,13 +20,22 @@ func UnifiedStreamHandler(c *gin.Context) {
 	var identifier interface{}
 
 	if sign != "" {
-		// 签名模式：验证并提取 RealIdentity (包含随机Salt，验证更严格)
 		accID, realIdentity, err := auth.VerifyStreamSign(sign)
 		if err != nil {
 			c.String(http.StatusForbidden, "Invalid signature: "+err.Error())
 			return
 		}
 		accountID = accID
+
+		var account models.Account
+		if err := database.DB.First(&account, accountID).Error; err != nil {
+			c.String(http.StatusNotFound, "Account not found")
+			return
+		}
+		if !isTaskEncodePathEnabled(accountID) {
+			c.String(http.StatusForbidden, "Signed access is only available when encrypted path is enabled")
+			return
+		}
 
 		if strings.HasPrefix(realIdentity, "/") {
 			identifier = realIdentity
@@ -38,7 +47,6 @@ func UnifiedStreamHandler(c *gin.Context) {
 			}
 		}
 	} else {
-		// 非签名模式
 		trimmedPath := strings.TrimPrefix(rawPath, "/")
 		parts := strings.Split(trimmedPath, "/")
 
@@ -59,16 +67,15 @@ func UnifiedStreamHandler(c *gin.Context) {
 			c.String(http.StatusNotFound, "Account not found")
 			return
 		}
+		if isTaskEncodePathEnabled(accountID) {
+			c.String(http.StatusForbidden, "This stream requires a valid signature")
+			return
+		}
 
 		if account.Type == models.AccountTypeOpenList {
-			// OpenList: ID 后面全是路径
-			// parts[0] 是 AccountID
-			// parts[1:] 是路径部分，例如 ["Movies", "Action", "test.mp4"]
 			pathPart := "/" + strings.Join(parts[1:], "/")
-			// 去除可能的多余斜杠
 			identifier = strings.ReplaceAll(pathPart, "//", "/")
 		} else {
-			// 123Pan: 第二部分必须是 FileID
 			fileIdStr := parts[1]
 			fileId, err := strconv.ParseInt(fileIdStr, 10, 64)
 			if err != nil {
@@ -93,4 +100,12 @@ func UnifiedStreamHandler(c *gin.Context) {
 	}
 
 	c.Redirect(http.StatusFound, downloadURL)
+}
+
+func isTaskEncodePathEnabled(accountID uint) bool {
+	var count int64
+	database.DB.Model(&models.Task{}).
+		Where("account_id = ? AND enabled = ? AND encode_path = ?", accountID, true, true).
+		Count(&count)
+	return count > 0
 }
