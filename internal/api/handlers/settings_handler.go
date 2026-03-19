@@ -22,17 +22,42 @@ func GetUsernameHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
-		"username":               username,
-		"notifyType":             notifyType,
-		"webhookUrl":             user.WebhookURL,
-		"telegramToken":          user.TelegramToken,
-		"telegramChatId":         user.TelegramChatID,
-		"notifyOnComplete":       user.NotifyOnComplete,
-		"notifyOnError":          user.NotifyOnError,
-		"notifyOnStop":           user.NotifyOnStop,
-		"notifyOnManual":         user.NotifyOnManual,
-		"needsPasswordReminder":  user.NeedsPasswordReminder,
-		"passwordReminderShown":  user.PasswordReminderShown,
+		"username":              username,
+		"notifyType":            notifyType,
+		"webhookUrl":            user.WebhookURL,
+		"telegramToken":         user.TelegramToken,
+		"telegramChatId":        user.TelegramChatID,
+		"notifyOnComplete":      user.NotifyOnComplete,
+		"notifyOnError":         user.NotifyOnError,
+		"notifyOnStop":          user.NotifyOnStop,
+		"notifyOnManual":        user.NotifyOnManual,
+		"needsPasswordReminder": user.NeedsPasswordReminder,
+		"passwordReminderShown": user.PasswordReminderShown,
+	}})
+}
+
+func GetDashboardStatsHandler(c *gin.Context) {
+	var accountCount int64
+	var taskCount int64
+	var enabledTaskCount int64
+
+	if err := database.DB.Model(&models.Account{}).Count(&accountCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取账户统计失败"})
+		return
+	}
+	if err := database.DB.Model(&models.Task{}).Count(&taskCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取任务统计失败"})
+		return
+	}
+	if err := database.DB.Model(&models.Task{}).Where("enabled = ?", true).Count(&enabledTaskCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取启用任务统计失败"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
+		"accounts":     accountCount,
+		"tasks":        taskCount,
+		"enabledTasks": enabledTaskCount,
 	}})
 }
 
@@ -64,6 +89,8 @@ func StreamSystemLogsHandler(c *gin.Context) {
 		}
 		flusher.Flush()
 	}
+
+	lastHeartbeat := time.Now()
 	for {
 		select {
 		case <-c.Request.Context().Done():
@@ -75,6 +102,15 @@ func StreamSystemLogsHandler(c *gin.Context) {
 				for _, line := range lines {
 					fmt.Fprintf(c.Writer, "data: %s\n\n", line)
 				}
+				if len(lines) > 0 {
+					lastHeartbeat = time.Now()
+					flusher.Flush()
+					continue
+				}
+			}
+			if time.Since(lastHeartbeat) >= 15*time.Second {
+				fmt.Fprintf(c.Writer, ": ping\n\n")
+				lastHeartbeat = time.Now()
 				flusher.Flush()
 			}
 		}

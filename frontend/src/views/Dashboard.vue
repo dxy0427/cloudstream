@@ -30,7 +30,9 @@
 </template>
 
 <script setup>
-import { reactive, ref, onMounted, onUnmounted, computed, nextTick, watch } from 'vue'
+defineOptions({ name: 'Dashboard' })
+
+import { reactive, ref, onMounted, onUnmounted, onActivated, onDeactivated, computed, nextTick, watch } from 'vue'
 import api from '../api'
 
 const stats = reactive({ accounts: 0, tasks: 0, enabledTasks: 0 })
@@ -39,6 +41,7 @@ const autoScroll = ref(true)
 const levelFilter = ref('ALL')
 const logContainerRef = ref(null)
 const streamStatus = ref('connecting')
+const hasInitialized = ref(false)
 let eventSource = null
 let reconnectTimer = null
 let statsTimer = null
@@ -84,16 +87,18 @@ const levelClass = (line) => {
 }
 
 const loadStats = async () => {
-  const [accRes, taskRes] = await Promise.all([api.get('/accounts'), api.get('/tasks')])
-  stats.accounts = (accRes.data || []).length
-  stats.tasks = (taskRes.data || []).length
-  stats.enabledTasks = (taskRes.data || []).filter(t => t.Enabled).length
+  const res = await api.get('/dashboard/stats')
+  const data = res.data || {}
+  stats.accounts = data.accounts || 0
+  stats.tasks = data.tasks || 0
+  stats.enabledTasks = data.enabledTasks || 0
 }
 
 const loadInitialLogs = async () => {
   try {
     const res = await api.get('/logs')
     logs.value = Array.isArray(res.data) ? res.data : []
+    if (logs.value.length > 200) logs.value = logs.value.slice(-200)
     scrollToBottom()
   } catch (e) {
     logs.value = []
@@ -124,7 +129,7 @@ const connectLogStream = () => {
   eventSource.onmessage = (event) => {
     if (event.data) {
       logs.value.push(event.data)
-      if (logs.value.length > 500) logs.value = logs.value.slice(-500)
+      if (logs.value.length > 200) logs.value = logs.value.slice(-200)
       scrollToBottom()
     }
   }
@@ -137,19 +142,52 @@ const connectLogStream = () => {
   }
 }
 
-onMounted(async () => {
-  await loadStats()
-  await loadInitialLogs()
-  connectLogStream()
+const startStatsRefresh = () => {
+  if (statsTimer) return
   statsTimer = setInterval(() => {
     loadStats().catch(() => {})
   }, 10000)
+}
+
+const stopStatsRefresh = () => {
+  if (statsTimer) {
+    clearInterval(statsTimer)
+    statsTimer = null
+  }
+}
+
+onMounted(async () => {
+  if (!hasInitialized.value) {
+    await loadStats()
+    await loadInitialLogs()
+    hasInitialized.value = true
+  }
+  connectLogStream()
+  startStatsRefresh()
+})
+
+onActivated(() => {
+  if (!eventSource) connectLogStream()
+  startStatsRefresh()
+  scrollToBottom()
+})
+
+onDeactivated(() => {
+  if (eventSource) {
+    eventSource.close()
+    eventSource = null
+  }
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  stopStatsRefresh()
 })
 
 onUnmounted(() => {
   if (eventSource) eventSource.close()
   if (reconnectTimer) clearTimeout(reconnectTimer)
-  if (statsTimer) clearInterval(statsTimer)
+  stopStatsRefresh()
 })
 </script>
 

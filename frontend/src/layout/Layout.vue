@@ -37,7 +37,11 @@
       </n-layout-sider>
       <n-layout-content content-style="padding: 16px; min-height: 100%; transition: all 0.3s;" :native-scrollbar="false">
         <div v-if="!collapsed && isMobile" class="mobile-mask" @click="collapsed = true"></div>
-        <router-view />
+        <router-view v-slot="{ Component }">
+          <keep-alive include="Dashboard">
+            <component :is="Component" />
+          </keep-alive>
+        </router-view>
       </n-layout-content>
     </n-layout>
   </n-layout>

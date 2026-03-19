@@ -29,6 +29,7 @@ func InitRouter() *gin.Engine {
 			authorized.POST("/logout", handlers.LogoutHandler)
 
 			authorized.GET("/username", handlers.GetUsernameHandler)
+			authorized.GET("/dashboard/stats", handlers.GetDashboardStatsHandler)
 			authorized.GET("/logs", handlers.GetSystemLogsHandler)
 			authorized.GET("/logs/stream", handlers.StreamSystemLogsHandler)
 
