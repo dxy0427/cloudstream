@@ -230,7 +230,10 @@ func RunScanTask(ctx context.Context, task models.Task, mode RunMode) {
 
 			notificationSent := false
 			message := summary.NotificationBody(task.Name)
-			if mode == RunModeManual || summary.HasChanges() {
+			if mode == RunModeManual {
+				SendNotificationByEvent("任务完成", message, NotifyEventManual)
+				notificationSent = true
+			} else if summary.HasChanges() {
 				SendNotificationByEvent("任务完成", message, NotifyEventComplete)
 				notificationSent = true
 			} else {
