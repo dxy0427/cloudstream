@@ -98,26 +98,6 @@ func (s ScanSummary) NotificationBody(taskName string) string {
 	return fmt.Sprintf("任务：%s\n%s\nSTRM 总量：%d\n元数据总量：%d", taskName, changeText, s.TotalStrmCount, s.TotalMetaCount)
 }
 
-func saveTaskRunHistory(task models.Task, mode RunMode, status string, processedCount int, summary ScanSummary, notificationSent bool, message string) {
-	history := models.TaskRunHistory{
-		TaskID:           task.ID,
-		TaskName:         task.Name,
-		RunMode:          string(mode),
-		Status:           status,
-		NewStrmCount:     summary.NewStrmCount,
-		NewMetaCount:     summary.NewMetaCount,
-		DeletedCount:     summary.DeletedCount,
-		TotalStrmCount:   summary.TotalStrmCount,
-		TotalMetaCount:   summary.TotalMetaCount,
-		ProcessedCount:   processedCount,
-		NotificationSent: notificationSent,
-		Message:          message,
-	}
-	if err := database.DB.Create(&history).Error; err != nil {
-		log.Error().Err(err).Str("任务", task.Name).Msg("保存任务运行历史失败")
-	}
-}
-
 func RunScanTask(ctx context.Context, task models.Task, mode RunMode) {
 	database.DB.Model(&models.Task{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
 		"last_run_status": "扫描中...",
@@ -135,7 +115,6 @@ func RunScanTask(ctx context.Context, task models.Task, mode RunMode) {
 	if err := database.DB.First(&account, task.AccountID).Error; err != nil {
 		log.Error().Err(err).Str("任务", task.Name).Uint("accountID", task.AccountID).Msg("任务启动失败：找不到关联的云账户")
 		updateTaskStatus(task.ID, "失败: 账户丢失", 0)
-		saveTaskRunHistory(task, mode, "failed", 0, ScanSummary{}, false, "任务启动失败：找不到关联的云账户")
 		return
 	}
 
@@ -193,14 +172,12 @@ func RunScanTask(ctx context.Context, task models.Task, mode RunMode) {
 		log.Warn().Str("任务", task.Name).Msg("任务已被手动停止")
 		updateTaskStatus(task.ID, "用户手动停止", tracker.Count())
 		SendNotificationByEvent("任务停止", message, NotifyEventStop)
-		saveTaskRunHistory(task, mode, "stopped", tracker.Count(), ScanSummary{}, true, message)
 	default:
 		if hasError.Load() {
 			message := fmt.Sprintf("任务 '%s' 执行过程中出现错误，为防止误删，已跳过数据库更新和本地清理。", task.Name)
 			log.Error().Msg(message)
 			updateTaskStatus(task.ID, "异常中止", tracker.Count())
 			SendNotificationByEvent("任务异常", message, NotifyEventError)
-			saveTaskRunHistory(task, mode, "error", tracker.Count(), ScanSummary{}, true, message)
 			return
 		}
 

@@ -41,13 +41,13 @@ func InitLogger() {
 	})
 }
 
-func tailLines(path string, maxLines int) ([]string, error) {
+func tailLines(path string, maxLines int) ([]string, int64, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []string{}, nil
+			return []string{}, 0, nil
 		}
-		return nil, err
+		return nil, 0, err
 	}
 	defer file.Close()
 
@@ -63,12 +63,21 @@ func tailLines(path string, maxLines int) ([]string, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	return lines, nil
+	offset, err := file.Seek(0, io.SeekEnd)
+	if err != nil {
+		offset = 0
+	}
+	return lines, offset, nil
 }
 
 func ReadRecentLogs() ([]string, error) {
+	lines, _, err := tailLines(LogFilePath, 300)
+	return lines, err
+}
+
+func ReadRecentLogsWithOffset() ([]string, int64, error) {
 	return tailLines(LogFilePath, 300)
 }
 
@@ -120,6 +129,9 @@ func normalizeLogLine(line string) string {
 	line = strings.TrimSpace(line)
 	if line == "" {
 		return ""
+	}
+	if strings.HasPrefix(line, "[") {
+		return line
 	}
 
 	level := "INFO"

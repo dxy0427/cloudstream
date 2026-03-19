@@ -76,22 +76,6 @@ type TaskFile struct {
 	FilePath string `gorm:"index;uniqueIndex:idx_task_file;not null"`
 }
 
-type TaskRunHistory struct {
-	gorm.Model
-	TaskID           uint   `gorm:"index;not null" json:"TaskID"`
-	TaskName         string `gorm:"not null" json:"TaskName"`
-	RunMode          string `gorm:"not null" json:"RunMode"`
-	Status           string `gorm:"not null" json:"Status"`
-	NewStrmCount     int    `gorm:"default:0" json:"NewStrmCount"`
-	NewMetaCount     int    `gorm:"default:0" json:"NewMetaCount"`
-	DeletedCount     int    `gorm:"default:0" json:"DeletedCount"`
-	TotalStrmCount   int    `gorm:"default:0" json:"TotalStrmCount"`
-	TotalMetaCount   int    `gorm:"default:0" json:"TotalMetaCount"`
-	ProcessedCount   int    `gorm:"default:0" json:"ProcessedCount"`
-	NotificationSent bool   `gorm:"default:false" json:"NotificationSent"`
-	Message          string `gorm:"type:text" json:"Message"`
-}
-
 type MediaServer struct {
 	gorm.Model
 	Name string `gorm:"unique;not null" json:"Name"`

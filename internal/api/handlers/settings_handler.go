@@ -57,15 +57,13 @@ func StreamSystemLogsHandler(c *gin.Context) {
 		return
 	}
 
-	logs, err := core.ReadRecentLogs()
+	logs, offset, err := core.ReadRecentLogsWithOffset()
 	if err == nil && len(logs) > 0 {
 		for _, line := range logs {
 			fmt.Fprintf(c.Writer, "data: %s\n\n", line)
 		}
 		flusher.Flush()
 	}
-
-	var offset int64 = 0
 	for {
 		select {
 		case <-c.Request.Context().Done():

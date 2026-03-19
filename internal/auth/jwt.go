@@ -94,14 +94,15 @@ func generateToken(username string, tokenVersion int) (string, error) {
 func JWTAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
-		if authHeader == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "请求未包含 Token"})
-			return
-		}
 		var tokenString string
-		fmt.Sscanf(authHeader, "Bearer %s", &tokenString)
+		if authHeader != "" {
+			fmt.Sscanf(authHeader, "Bearer %s", &tokenString)
+		}
 		if tokenString == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token 格式不正确"})
+			tokenString = c.Query("token")
+		}
+		if tokenString == "" {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "请求未包含 Token"})
 			return
 		}
 		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {

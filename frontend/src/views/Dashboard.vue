@@ -32,6 +32,7 @@ const autoScroll = ref(true)
 const levelFilter = ref('ALL')
 const logContainerRef = ref(null)
 let eventSource = null
+let reconnectTimer = null
 
 const levelOptions = [
   { label: '全部', value: 'ALL' },
@@ -59,6 +60,14 @@ const loadStats = async () => {
   stats.enabledTasks = (taskRes.data || []).filter(t => t.Enabled).length
 }
 
+const scheduleReconnect = () => {
+  if (reconnectTimer) return
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    connectLogStream()
+  }, 3000)
+}
+
 const connectLogStream = () => {
   const token = localStorage.getItem('jwt_token')
   if (!token) return
@@ -77,6 +86,7 @@ const connectLogStream = () => {
       eventSource.close()
       eventSource = null
     }
+    scheduleReconnect()
   }
 }
 
@@ -87,5 +97,6 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (eventSource) eventSource.close()
+  if (reconnectTimer) clearTimeout(reconnectTimer)
 })
 </script>

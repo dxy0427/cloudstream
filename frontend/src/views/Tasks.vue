@@ -56,7 +56,7 @@
           <n-space vertical>
             <n-checkbox v-model:checked="form.Overwrite">覆盖模式</n-checkbox>
             <n-checkbox v-model:checked="form.SyncDelete">同步删除</n-checkbox>
-            <n-checkbox v-model:checked="form.EncodePath">使用签名路径（开启后仅允许签名访问）</n-checkbox>
+            <n-checkbox v-model:checked="form.EncodePath">签名</n-checkbox>
           </n-space>
         </n-form-item>
         <n-form-item label="并发线程"><n-input-number v-model:value="form.Threads" :min="1" :max="8" /></n-form-item>
@@ -87,6 +87,7 @@ const showModal = ref(false)
 const showBrowser = ref(false)
 const accountOptions = ref([])
 let eventSource = null
+let reconnectTimer = null
 
 const defaultForm = {
   ID: 0, Name: '', AccountID: null, SourceFolderID: '0', LocalPath: '/app/strm/', Cron: '0 */2 * * *', Overwrite: false, SyncDelete: false, EncodePath: false, Threads: 4,
@@ -109,6 +110,14 @@ const loadData = async () => {
   accountOptions.value = (accRes.data || []).map(a => ({ label: a.Name, value: a.ID }))
 }
 
+const scheduleReconnect = () => {
+  if (reconnectTimer) return
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null
+    connectTaskStream()
+  }, 3000)
+}
+
 const connectTaskStream = () => {
   const token = localStorage.getItem('jwt_token')
   if (!token) return
@@ -124,6 +133,7 @@ const connectTaskStream = () => {
       eventSource.close()
       eventSource = null
     }
+    scheduleReconnect()
   }
 }
 
@@ -134,6 +144,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   if (eventSource) eventSource.close()
+  if (reconnectTimer) clearTimeout(reconnectTimer)
 })
 
 const openModal = (row) => {
