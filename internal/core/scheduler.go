@@ -54,7 +54,7 @@ func RefreshScheduler() {
 			runningTasks[t.ID] = cancel
 			taskMutex.Unlock()
 
-			RunScanTask(ctx, t)
+			RunScanTask(ctx, t, RunModeScheduled)
 		})
 
 		if err != nil {
@@ -71,7 +71,7 @@ func RunManualTask(task models.Task) bool {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	runningTasks[task.ID] = cancel
-	go RunScanTask(ctx, task)
+	go RunScanTask(ctx, task, RunModeManual)
 	return true
 }
 

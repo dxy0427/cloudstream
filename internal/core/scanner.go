@@ -65,7 +65,43 @@ func (t *FileTracker) Count() int {
 	return len(t.files)
 }
 
-func RunScanTask(ctx context.Context, task models.Task) {
+type RunMode string
+
+const (
+	RunModeScheduled RunMode = "scheduled"
+	RunModeManual    RunMode = "manual"
+)
+
+type ScanStats struct {
+	newStrmCount atomic.Int64
+	newMetaCount atomic.Int64
+}
+
+type ScanSummary struct {
+	NewStrmCount   int
+	NewMetaCount   int
+	DeletedCount   int
+	TotalStrmCount int
+	TotalMetaCount int
+}
+
+func (s ScanSummary) HasChanges() bool {
+	return s.NewStrmCount > 0 || s.NewMetaCount > 0 || s.DeletedCount > 0
+}
+
+func (s ScanSummary) TotalCount() int {
+	return s.TotalStrmCount + s.TotalMetaCount
+}
+
+func (s ScanSummary) NotificationBody(taskName string) string {
+	changeText := fmt.Sprintf("新增 STRM：%d\n新增元数据：%d\n删除文件：%d", s.NewStrmCount, s.NewMetaCount, s.DeletedCount)
+	if !s.HasChanges() {
+		changeText = "本次无新增或删除"
+	}
+	return fmt.Sprintf("任务：%s\n%s\nSTRM 总量：%d\n元数据总量：%d", taskName, changeText, s.TotalStrmCount, s.TotalMetaCount)
+}
+
+func RunScanTask(ctx context.Context, task models.Task, mode RunMode) {
 	database.DB.Model(&models.Task{}).Where("id = ?", task.ID).Updates(map[string]interface{}{
 		"last_run_status": "扫描中...",
 		"processed_count": 0,
@@ -93,12 +129,13 @@ func RunScanTask(ctx context.Context, task models.Task) {
 		threads = 16
 	}
 
-	log.Info().Str("任务", task.Name).Str("账户", account.Name).Int("线程数", threads).Msg("开始执行任务")
+	log.Info().Str("任务", task.Name).Str("账户", account.Name).Int("线程数", threads).Str("运行模式", string(mode)).Msg("开始执行任务")
 	client := pan123.NewClient(account)
 	strmExtMap := parseExtensions(task.StrmExtensions)
 	metaExtMap := parseExtensions(task.MetaExtensions)
 
 	tracker := NewFileTracker()
+	stats := &ScanStats{}
 	var hasError atomic.Bool
 	hasError.Store(false)
 
@@ -127,7 +164,7 @@ func RunScanTask(ctx context.Context, task models.Task) {
 		startFolderID = "/"
 	}
 
-	scanDirectoryRecursive(ctx, client, task, account.Type, startFolderID, "", task.LocalPath, strmExtMap, metaExtMap, &wg, workerPool, rateLimiter, tracker, &hasError)
+	scanDirectoryRecursive(ctx, client, task, account.Type, startFolderID, "", task.LocalPath, strmExtMap, metaExtMap, &wg, workerPool, rateLimiter, tracker, stats, &hasError)
 
 	wg.Wait()
 	progressTicker.Stop()
@@ -150,13 +187,29 @@ func RunScanTask(ctx context.Context, task models.Task) {
 			log.Error().Err(err).Msg("更新数据库文件记录失败")
 			updateTaskStatus(task.ID, "更新DB失败", tracker.Count())
 		} else {
+			deletedCount := 0
 			if task.SyncDelete {
-				performSafeSyncDeleteOptimized(task.ID, tracker)
+				deletedCount = performSafeSyncDeleteOptimized(task.ID, tracker)
 				cleanEmptyDirs(task.LocalPath)
 			}
-			log.Info().Str("任务", task.Name).Int("总文件", tracker.Count()).Msg("任务执行完毕")
+
+			totalStrmCount, totalMetaCount := countTrackedOutputs(tracker)
+			summary := ScanSummary{
+				NewStrmCount:   int(stats.newStrmCount.Load()),
+				NewMetaCount:   int(stats.newMetaCount.Load()),
+				DeletedCount:   deletedCount,
+				TotalStrmCount: totalStrmCount,
+				TotalMetaCount: totalMetaCount,
+			}
+
+			log.Info().Str("任务", task.Name).Int("总文件", summary.TotalCount()).Int("新增STRM", summary.NewStrmCount).Int("新增元数据", summary.NewMetaCount).Int("删除文件", summary.DeletedCount).Msg("任务执行完毕")
 			updateTaskStatus(task.ID, "已完成", tracker.Count())
-			SendNotification("任务完成", fmt.Sprintf("任务 '%s' 已执行完毕，共处理 %d 个文件", task.Name, tracker.Count()))
+
+			if mode == RunModeManual || summary.HasChanges() {
+				SendNotification("任务完成", summary.NotificationBody(task.Name))
+			} else {
+				log.Info().Str("任务", task.Name).Msg("定时任务本次无变化，跳过发送完成通知")
+			}
 		}
 	}
 }
@@ -228,7 +281,7 @@ func updateFileRecordsOptimized(taskID uint, tracker *FileTracker) error {
 	})
 }
 
-func performSafeSyncDeleteOptimized(taskID uint, currentScanTracker *FileTracker) {
+func performSafeSyncDeleteOptimized(taskID uint, currentScanTracker *FileTracker) int {
 	log.Info().Uint("taskID", taskID).Msg("开始执行安全清理...")
 
 	deletedCount := 0
@@ -268,9 +321,10 @@ func performSafeSyncDeleteOptimized(taskID uint, currentScanTracker *FileTracker
 	if deletedCount > 0 {
 		log.Info().Int("删除文件数", deletedCount).Int("删除记录数", dbDeletedCount).Msg("清理完成")
 	}
+	return deletedCount
 }
 
-func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task models.Task, accountType, folderID, currentCloudPath, localBasePath string, strmExtMap, metaExtMap map[string]bool, wg *sync.WaitGroup, pool chan struct{}, limiter *time.Ticker, tracker *FileTracker, hasError *atomic.Bool) {
+func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task models.Task, accountType, folderID, currentCloudPath, localBasePath string, strmExtMap, metaExtMap map[string]bool, wg *sync.WaitGroup, pool chan struct{}, limiter *time.Ticker, tracker *FileTracker, stats *ScanStats, hasError *atomic.Bool) {
 	if hasError.Load() {
 		return
 	}
@@ -368,7 +422,7 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 				case pool <- struct{}{}:
 				}
 				defer func() { <-pool }()
-				scanDirectoryRecursive(ctx, client, task, accountType, nextFolderID, itemCloudPath, nextLocalPath, strmExtMap, metaExtMap, wg, pool, limiter, tracker, hasError)
+				scanDirectoryRecursive(ctx, client, task, accountType, nextFolderID, itemCloudPath, nextLocalPath, strmExtMap, metaExtMap, wg, pool, limiter, tracker, stats, hasError)
 			}()
 		} else {
 			wg.Add(1)
@@ -392,7 +446,7 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 
 				ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(fileToProcess.FileName), "."))
 				if strmExtMap[ext] {
-					createStrmFile(client, task, fileToProcess, cloudRelPath, localBasePath, tracker)
+					createStrmFile(client, task, fileToProcess, cloudRelPath, localBasePath, tracker, stats)
 				} else if metaExtMap[ext] {
 					var downloadIdentity interface{}
 					if accountType == models.AccountTypeOpenList {
@@ -400,24 +454,24 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 					} else {
 						downloadIdentity = fileToProcess.FileId
 					}
-					downloadAndSaveMetaFile(client, task, downloadIdentity, fileToProcess.FileName, localBasePath, tracker)
+					downloadAndSaveMetaFile(client, task, downloadIdentity, fileToProcess.FileName, localBasePath, tracker, stats)
 				}
 			}(currentItem, itemCloudPath)
 		}
 	}
 }
 
-func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInfo, cloudRelPath string, localBasePath string, tracker *FileTracker) {
+func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInfo, cloudRelPath string, localBasePath string, tracker *FileTracker, stats *ScanStats) {
 	fileNameWithoutExt := strings.TrimSuffix(file.FileName, filepath.Ext(file.FileName))
 	strmFileName := fileNameWithoutExt + ".strm"
 	localFilePath := filepath.Join(localBasePath, strmFileName)
 
 	tracker.Add(localFilePath)
 
-	if !task.Overwrite {
-		if _, err := os.Stat(localFilePath); err == nil {
-			return
-		}
+	_, statErr := os.Stat(localFilePath)
+	existedBefore := statErr == nil
+	if !task.Overwrite && existedBefore {
+		return
 	}
 
 	baseURL := client.Account.StrmBaseURL
@@ -483,18 +537,21 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 	}
 
 	if err := os.WriteFile(localFilePath, []byte(streamURL), 0644); err == nil {
+		if !existedBefore {
+			stats.newStrmCount.Add(1)
+		}
 		log.Info().Str("文件", strmFileName).Msg("已生成 STRM 文件")
 	}
 }
 
-func downloadAndSaveMetaFile(client *pan123.Client, task models.Task, identity interface{}, fileName string, localBasePath string, tracker *FileTracker) {
+func downloadAndSaveMetaFile(client *pan123.Client, task models.Task, identity interface{}, fileName string, localBasePath string, tracker *FileTracker, stats *ScanStats) {
 	localFilePath := filepath.Join(localBasePath, fileName)
 	tracker.Add(localFilePath)
 
-	if !task.Overwrite {
-		if _, err := os.Stat(localFilePath); err == nil {
-			return
-		}
+	_, statErr := os.Stat(localFilePath)
+	existedBefore := statErr == nil
+	if !task.Overwrite && existedBefore {
+		return
 	}
 	downloadURL, err := client.GetDownloadURL(identity)
 	if err != nil {
@@ -518,8 +575,24 @@ func downloadAndSaveMetaFile(client *pan123.Client, task models.Task, identity i
 	}
 	defer outFile.Close()
 	if _, err := io.Copy(outFile, resp.Body); err == nil {
+		if !existedBefore {
+			stats.newMetaCount.Add(1)
+		}
 		log.Info().Str("文件", fileName).Msg("已下载元数据文件")
 	}
+}
+
+func countTrackedOutputs(tracker *FileTracker) (int, int) {
+	strmCount := 0
+	metaCount := 0
+	for _, p := range tracker.Keys() {
+		if strings.EqualFold(filepath.Ext(p), ".strm") {
+			strmCount++
+		} else {
+			metaCount++
+		}
+	}
+	return strmCount, metaCount
 }
 
 func parseExtensions(extStr string) map[string]bool {
