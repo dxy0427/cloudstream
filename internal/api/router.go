@@ -30,7 +30,7 @@ func InitRouter() *gin.Engine {
 
 			authorized.GET("/username", handlers.GetUsernameHandler)
 			authorized.GET("/logs", handlers.GetSystemLogsHandler)
-			authorized.GET("/task-runs", handlers.GetTaskRunHistoryHandler)
+			authorized.GET("/logs/stream", handlers.StreamSystemLogsHandler)
 
 			authorized.GET("/user/settings", handlers.GetUserSettingsHandler)
 			authorized.POST("/user/settings", handlers.UpdateUserSettingsHandler)
@@ -52,6 +52,7 @@ func InitRouter() *gin.Engine {
 			tasks := authorized.Group("/tasks")
 			{
 				tasks.GET("", handlers.ListTasksHandler)
+				tasks.GET("/stream", handlers.StreamTasksHandler)
 				tasks.POST("", handlers.CreateTaskHandler)
 				tasks.PUT("/:id", handlers.UpdateTaskHandler)
 				tasks.DELETE("/:id", handlers.DeleteTaskHandler)

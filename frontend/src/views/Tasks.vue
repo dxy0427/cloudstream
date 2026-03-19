@@ -86,6 +86,7 @@ const loading = ref(false)
 const showModal = ref(false)
 const showBrowser = ref(false)
 const accountOptions = ref([])
+let eventSource = null
 
 const defaultForm = {
   ID: 0, Name: '', AccountID: null, SourceFolderID: '0', LocalPath: '/app/strm/', Cron: '0 */2 * * *', Overwrite: false, SyncDelete: false, EncodePath: false, Threads: 4,
@@ -108,46 +109,31 @@ const loadData = async () => {
   accountOptions.value = (accRes.data || []).map(a => ({ label: a.Name, value: a.ID }))
 }
 
-let timer = null
-const activePollIntervalMs = 2000
-const idlePollIntervalMs = 10000
-const scheduleNextPoll = () => {
-  stopPolling()
-  if (document.hidden) return
-  const hasRunning = data.value.some(item => item.IsRunning)
-  timer = setTimeout(async () => {
-    if (document.hidden) return
+const connectTaskStream = () => {
+  const token = localStorage.getItem('jwt_token')
+  if (!token) return
+  if (eventSource) eventSource.close()
+  eventSource = new EventSource(`/api/v1/tasks/stream?token=${encodeURIComponent(token)}`)
+  eventSource.addEventListener('tasks', (event) => {
     try {
-      const res = await api.get('/tasks')
-      data.value = res.data || []
+      data.value = JSON.parse(event.data)
     } catch (e) {}
-    scheduleNextPoll()
-  }, hasRunning ? activePollIntervalMs : idlePollIntervalMs)
-}
-
-const stopPolling = () => {
-  if (timer) {
-    clearTimeout(timer)
-    timer = null
-  }
-}
-
-const handleVisibilityChange = () => {
-  if (document.hidden) {
-    stopPolling()
-  } else {
-    loadData().finally(() => scheduleNextPoll())
+  })
+  eventSource.onerror = () => {
+    if (eventSource) {
+      eventSource.close()
+      eventSource = null
+    }
   }
 }
 
 onMounted(() => {
-  loadData().finally(() => scheduleNextPoll())
-  document.addEventListener('visibilitychange', handleVisibilityChange)
+  loadData()
+  connectTaskStream()
 })
 
 onUnmounted(() => {
-  stopPolling()
-  document.removeEventListener('visibilitychange', handleVisibilityChange)
+  if (eventSource) eventSource.close()
 })
 
 const openModal = (row) => {

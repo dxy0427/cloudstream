@@ -9,6 +9,7 @@ import (
 	"github.com/robfig/cron/v3"
 	"net/http"
 	"strconv"
+	"time"
 )
 
 func validateCron(spec string) error {
@@ -23,24 +24,76 @@ func validateCron(spec string) error {
 	return nil
 }
 
-func ListTasksHandler(c *gin.Context) {
+func buildTaskList() ([]gin.H, error) {
 	var tasks []models.Task
 	if err := database.DB.Order("id desc").Find(&tasks).Error; err != nil {
+		return nil, err
+	}
+	result := make([]gin.H, 0, len(tasks))
+	for _, task := range tasks {
+		result = append(result, gin.H{
+			"ID":             task.ID,
+			"CreatedAt":      task.CreatedAt,
+			"UpdatedAt":      task.UpdatedAt,
+			"Name":           task.Name,
+			"AccountID":      task.AccountID,
+			"SourceFolderID": task.SourceFolderID,
+			"LocalPath":      task.LocalPath,
+			"Cron":           task.Cron,
+			"Enabled":        task.Enabled,
+			"Overwrite":      task.Overwrite,
+			"SyncDelete":     task.SyncDelete,
+			"EncodePath":     task.EncodePath,
+			"StrmExtensions": task.StrmExtensions,
+			"MetaExtensions": task.MetaExtensions,
+			"Threads":        task.Threads,
+			"ProcessedCount": task.ProcessedCount,
+			"LastRunStatus":  task.LastRunStatus,
+			"IsRunning":      core.IsTaskRunning(task.ID),
+		})
+	}
+	return result, nil
+}
+
+func ListTasksHandler(c *gin.Context) {
+	tasks, err := buildTaskList()
+	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": fmt.Sprintf("获取任务列表失败: %s", err.Error())})
 		return
 	}
-	type TaskWithStatus struct {
-		models.Task
-		IsRunning bool `json:"IsRunning"`
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": tasks})
+}
+
+func StreamTasksHandler(c *gin.Context) {
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "stream not supported"})
+		return
 	}
-	tasksWithStatus := make([]TaskWithStatus, len(tasks))
-	for i, task := range tasks {
-		tasksWithStatus[i] = TaskWithStatus{
-			Task:      task,
-			IsRunning: core.IsTaskRunning(task.ID),
+
+	sendSnapshot := func() {
+		tasks, err := buildTaskList()
+		if err != nil {
+			return
+		}
+		c.SSEvent("tasks", tasks)
+		flusher.Flush()
+	}
+
+	sendSnapshot()
+	for {
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case <-time.After(2 * time.Second):
+			sendSnapshot()
 		}
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": tasksWithStatus})
 }
 
 func CreateTaskHandler(c *gin.Context) {
@@ -96,42 +149,18 @@ func UpdateTaskHandler(c *gin.Context) {
 		return
 	}
 
-	if req.Name != nil {
-		task.Name = *req.Name
-	}
-	if req.AccountID != nil {
-		task.AccountID = *req.AccountID
-	}
-	if req.SourceFolderID != nil {
-		task.SourceFolderID = *req.SourceFolderID
-	}
-	if req.LocalPath != nil {
-		task.LocalPath = *req.LocalPath
-	}
-	if req.Cron != nil {
-		task.Cron = *req.Cron
-	}
-	if req.Enabled != nil {
-		task.Enabled = *req.Enabled
-	}
-	if req.Overwrite != nil {
-		task.Overwrite = *req.Overwrite
-	}
-	if req.SyncDelete != nil {
-		task.SyncDelete = *req.SyncDelete
-	}
-	if req.EncodePath != nil {
-		task.EncodePath = *req.EncodePath
-	}
-	if req.StrmExtensions != nil {
-		task.StrmExtensions = *req.StrmExtensions
-	}
-	if req.MetaExtensions != nil {
-		task.MetaExtensions = *req.MetaExtensions
-	}
-	if req.Threads != nil {
-		task.Threads = *req.Threads
-	}
+	if req.Name != nil { task.Name = *req.Name }
+	if req.AccountID != nil { task.AccountID = *req.AccountID }
+	if req.SourceFolderID != nil { task.SourceFolderID = *req.SourceFolderID }
+	if req.LocalPath != nil { task.LocalPath = *req.LocalPath }
+	if req.Cron != nil { task.Cron = *req.Cron }
+	if req.Enabled != nil { task.Enabled = *req.Enabled }
+	if req.Overwrite != nil { task.Overwrite = *req.Overwrite }
+	if req.SyncDelete != nil { task.SyncDelete = *req.SyncDelete }
+	if req.EncodePath != nil { task.EncodePath = *req.EncodePath }
+	if req.StrmExtensions != nil { task.StrmExtensions = *req.StrmExtensions }
+	if req.MetaExtensions != nil { task.MetaExtensions = *req.MetaExtensions }
+	if req.Threads != nil { task.Threads = *req.Threads }
 
 	if err := validateCron(task.Cron); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": err.Error()})

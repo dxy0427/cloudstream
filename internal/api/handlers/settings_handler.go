@@ -5,8 +5,10 @@ import (
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
 	"cloudstream/internal/utils"
+	"fmt"
 	"github.com/gin-gonic/gin"
 	"net/http"
+	"time"
 )
 
 func GetUsernameHandler(c *gin.Context) {
@@ -41,6 +43,44 @@ func GetSystemLogsHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": logs})
+}
+
+func StreamSystemLogsHandler(c *gin.Context) {
+	c.Writer.Header().Set("Content-Type", "text/event-stream")
+	c.Writer.Header().Set("Cache-Control", "no-cache")
+	c.Writer.Header().Set("Connection", "keep-alive")
+	c.Writer.Header().Set("X-Accel-Buffering", "no")
+
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "stream not supported"})
+		return
+	}
+
+	logs, err := core.ReadRecentLogs()
+	if err == nil && len(logs) > 0 {
+		for _, line := range logs {
+			fmt.Fprintf(c.Writer, "data: %s\n\n", line)
+		}
+		flusher.Flush()
+	}
+
+	var offset int64 = 0
+	for {
+		select {
+		case <-c.Request.Context().Done():
+			return
+		case <-time.After(2 * time.Second):
+			lines, newOffset, err := core.ReadLogFromOffset(offset)
+			if err == nil {
+				offset = newOffset
+				for _, line := range lines {
+					fmt.Fprintf(c.Writer, "data: %s\n\n", line)
+				}
+				flusher.Flush()
+			}
+		}
+	}
 }
 
 func TestWebhookHandler(c *gin.Context) {
@@ -101,15 +141,6 @@ func UpdateNotificationHandler(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "通知设置已保存"})
-}
-
-func GetTaskRunHistoryHandler(c *gin.Context) {
-	var histories []models.TaskRunHistory
-	if err := database.DB.Order("id desc").Limit(100).Find(&histories).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "获取运行历史失败: " + err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": histories})
 }
 
 func UpdateCredentialsHandler(c *gin.Context) {

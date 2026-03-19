@@ -2,15 +2,51 @@ package core
 
 import (
 	"bufio"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
-	"sort"
+	"regexp"
 	"strings"
+	"sync"
+
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
+
+const LogFilePath = "./data/cloudstream.log"
+
+var initLoggerOnce sync.Once
+
+func InitLogger() {
+	initLoggerOnce.Do(func() {
+		if err := os.MkdirAll(filepath.Dir(LogFilePath), 0755); err != nil {
+			fmt.Printf("failed to create log dir: %v\n", err)
+			return
+		}
+
+		writer := zerolog.MultiLevelWriter(
+			zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: "2006-01-02 15:04:05"},
+			&lumberjack.Logger{
+				Filename:   LogFilePath,
+				MaxSize:    20,
+				MaxBackups: 3,
+				MaxAge:     7,
+				Compress:   false,
+			},
+		)
+
+		log.Logger = zerolog.New(writer).With().Timestamp().Logger()
+	})
+}
 
 func tailLines(path string, maxLines int) ([]string, error) {
 	file, err := os.Open(path)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{}, nil
+		}
 		return nil, err
 	}
 	defer file.Close()
@@ -18,7 +54,10 @@ func tailLines(path string, maxLines int) ([]string, error) {
 	lines := make([]string, 0, maxLines)
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
+		formatted := normalizeLogLine(scanner.Text())
+		if formatted != "" {
+			lines = append(lines, formatted)
+		}
 		if len(lines) > maxLines {
 			lines = lines[1:]
 		}
@@ -30,46 +69,71 @@ func tailLines(path string, maxLines int) ([]string, error) {
 }
 
 func ReadRecentLogs() ([]string, error) {
-	candidates := []string{
-		"./data/cloudstream.log",
-		"./cloudstream.log",
+	return tailLines(LogFilePath, 300)
+}
+
+func ReadLogFromOffset(offset int64) ([]string, int64, error) {
+	file, err := os.Open(LogFilePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{}, 0, nil
+		}
+		return nil, offset, err
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return nil, offset, err
+	}
+	if offset > info.Size() {
+		offset = info.Size()
+	}
+	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+		return nil, offset, err
 	}
 
-	for _, path := range candidates {
-		if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Size() > 0 {
-			return tailLines(path, 200)
+	lines := []string{}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		formatted := normalizeLogLine(scanner.Text())
+		if formatted != "" {
+			lines = append(lines, formatted)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, offset, err
+	}
+	newOffset, err := file.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return lines, offset, nil
+	}
+	return lines, newOffset, nil
+}
+
+var (
+	levelRegexp = regexp.MustCompile(`(?i)\b(trace|debug|info|warn|warning|error|fatal|panic)\b`)
+	timeRegexp  = regexp.MustCompile(`\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}`)
+)
+
+func normalizeLogLine(line string) string {
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return ""
+	}
+
+	level := "INFO"
+	if m := levelRegexp.FindStringSubmatch(line); len(m) > 1 {
+		level = strings.ToUpper(m[1])
+		if level == "WARNING" {
+			level = "WARN"
 		}
 	}
 
-	var matched []string
-	searchRoots := []string{"./data", "."}
-	for _, root := range searchRoots {
-		_ = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info == nil || info.IsDir() {
-				return nil
-			}
-			name := strings.ToLower(info.Name())
-			if strings.HasSuffix(name, ".log") || strings.Contains(name, "cloudstream") {
-				matched = append(matched, path)
-			}
-			return nil
-		})
+	timestamp := "-"
+	if ts := timeRegexp.FindString(line); ts != "" {
+		timestamp = ts
 	}
 
-	if len(matched) == 0 {
-		return []string{"暂无系统日志"}, nil
-	}
-
-	sort.Strings(matched)
-	for i := len(matched) - 1; i >= 0; i-- {
-		path := matched[i]
-		if info, err := os.Stat(path); err == nil && !info.IsDir() && info.Size() > 0 {
-			lines, err := tailLines(path, 200)
-			if err == nil && len(lines) > 0 {
-				return lines, nil
-			}
-		}
-	}
-
-	return []string{"暂无系统日志"}, nil
+	return fmt.Sprintf("[%s] [%s] %s", timestamp, level, line)
 }
