@@ -135,6 +135,7 @@ async function logout() {
   try { await api.post('/logout') } catch (e) {}
   localStorage.removeItem('jwt_token')
   localStorage.removeItem('needs_password_reminder')
+  document.cookie = 'cloudstream_token=; Max-Age=0; path=/'
   router.push('/login')
 }
 </script>

@@ -2,11 +2,13 @@ package core
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 
@@ -134,6 +136,13 @@ func normalizeLogLine(line string) string {
 		return line
 	}
 
+	if strings.HasPrefix(line, "{") && strings.HasSuffix(line, "}") {
+		var obj map[string]interface{}
+		if err := json.Unmarshal([]byte(line), &obj); err == nil {
+			return formatJSONLog(obj)
+		}
+	}
+
 	level := "INFO"
 	if m := levelRegexp.FindStringSubmatch(line); len(m) > 1 {
 		level = strings.ToUpper(m[1])
@@ -148,4 +157,42 @@ func normalizeLogLine(line string) string {
 	}
 
 	return fmt.Sprintf("[%s] [%s] %s", timestamp, level, line)
+}
+
+func formatJSONLog(obj map[string]interface{}) string {
+	level := "INFO"
+	if v, ok := obj["level"].(string); ok && v != "" {
+		level = strings.ToUpper(v)
+	}
+
+	timestamp := "-"
+	if v, ok := obj["time"].(string); ok && v != "" {
+		timestamp = v
+	}
+
+	message := ""
+	if v, ok := obj["message"].(string); ok {
+		message = v
+	}
+
+	extra := make([]string, 0)
+	keys := make([]string, 0, len(obj))
+	for k := range obj {
+		if k == "level" || k == "time" || k == "message" {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		extra = append(extra, fmt.Sprintf("%s=%v", k, obj[k]))
+	}
+
+	if len(extra) > 0 && message != "" {
+		message = fmt.Sprintf("%s | %s", strings.Join(extra, " "), message)
+	} else if len(extra) > 0 {
+		message = strings.Join(extra, " ")
+	}
+
+	return fmt.Sprintf("[%s] [%s] %s", timestamp, level, strings.TrimSpace(message))
 }

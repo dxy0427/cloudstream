@@ -74,6 +74,7 @@ func LoginHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法生成 Token"})
 		return
 	}
+	c.SetCookie("cloudstream_token", tokenString, 7*24*3600, "/", "", false, true)
 	c.JSON(http.StatusOK, gin.H{
 		"token":                 tokenString,
 		"needsPasswordReminder": user.NeedsPasswordReminder,
@@ -97,6 +98,11 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 		var tokenString string
 		if authHeader != "" {
 			fmt.Sscanf(authHeader, "Bearer %s", &tokenString)
+		}
+		if tokenString == "" {
+			if cookieToken, err := c.Cookie("cloudstream_token"); err == nil {
+				tokenString = cookieToken
+			}
 		}
 		if tokenString == "" {
 			tokenString = c.Query("token")
