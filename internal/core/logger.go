@@ -33,7 +33,6 @@ func ReadRecentLogs() ([]string, error) {
 	candidates := []string{
 		"./data/cloudstream.log",
 		"./cloudstream.log",
-		"/root/.openclaw/workspace/cloudstream/data/cloudstream.log",
 	}
 
 	for _, path := range candidates {
