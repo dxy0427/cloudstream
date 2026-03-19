@@ -204,14 +204,11 @@ func RunScanTask(ctx context.Context, task models.Task, mode RunMode) {
 			log.Info().Str("任务", task.Name).Int("总文件", summary.TotalCount()).Int("新增STRM", summary.NewStrmCount).Int("新增元数据", summary.NewMetaCount).Int("删除文件", summary.DeletedCount).Msg("任务执行完毕")
 			updateTaskStatus(task.ID, "已完成", tracker.Count())
 
-			notificationSent := false
 			message := summary.NotificationBody(task.Name)
 			if mode == RunModeManual {
 				SendNotificationByEvent("任务完成", message, NotifyEventManual)
-				notificationSent = true
 			} else if summary.HasChanges() {
 				SendNotificationByEvent("任务完成", message, NotifyEventComplete)
-				notificationSent = true
 			} else {
 				log.Info().Str("任务", task.Name).Msg("定时任务本次无变化，跳过发送完成通知")
 			}
