@@ -7,12 +7,12 @@ COPY frontend/ .
 RUN npm run build
 
 # --- Stage 2: Build Backend ---
-FROM golang:1.23-alpine AS backend-builder
+FROM golang:1.24-alpine AS backend-builder
 RUN apk add --no-cache gcc musl-dev sqlite-dev
 WORKDIR /app
-COPY go.mod go.sum* ./
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
-RUN go mod tidy
 RUN CGO_ENABLED=1 GOOS=linux go build -ldflags="-s -w" -o /cloudstream ./cmd/cloudstream
 
 # --- Stage 3: Final Image ---

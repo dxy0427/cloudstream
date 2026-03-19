@@ -4,10 +4,10 @@ import Layout from '../layout/Layout.vue'
 const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { 
-      path: '/login', 
-      component: () => import('../views/Login.vue'), 
-      meta: { noAuth: true } 
+    {
+      path: '/login',
+      component: () => import('../views/Login.vue'),
+      meta: { noAuth: true }
     },
     {
       path: '/',
@@ -25,11 +25,27 @@ const router = createRouter({
   ]
 })
 
-// 检查 token 是否过期
+function decodeJwtPayload(token) {
+  const parts = token.split('.')
+  if (parts.length < 2) {
+    throw new Error('Invalid JWT format')
+  }
+
+  const base64 = parts[1]
+    .replace(/-/g, '+')
+    .replace(/_/g, '/')
+    .padEnd(Math.ceil(parts[1].length / 4) * 4, '=')
+
+  return JSON.parse(atob(base64))
+}
+
 function isTokenExpired(token) {
   try {
-    const payload = JSON.parse(atob(token.split('.')[1]))
+    const payload = decodeJwtPayload(token)
     const exp = payload.exp
+    if (typeof exp !== 'number') {
+      return true
+    }
     const now = Math.floor(Date.now() / 1000)
     return exp < now
   } catch (e) {
@@ -42,7 +58,6 @@ router.beforeEach((to, from, next) => {
   if (!token && !to.meta.noAuth) {
     next('/login')
   } else if (token && !to.meta.noAuth) {
-    // 检查 token 是否过期
     if (isTokenExpired(token)) {
       localStorage.removeItem('jwt_token')
       next('/login')

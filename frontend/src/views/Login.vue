@@ -1,7 +1,7 @@
 <template>
   <div class="login-container" :class="store.isDark ? 'dark-bg' : 'light-bg'">
     <div class="theme-switch">
-      <n-switch :value="store.isDark" @update:value="store.toggleTheme">
+      <n-switch :value="store.isDark" @update:value="handleThemeToggle">
         <template #checked-icon>🌙</template>
         <template #unchecked-icon>☀️</template>
       </n-switch>
@@ -14,9 +14,9 @@
         </div>
         <n-form ref="formRef" :model="form" :rules="rules" size="large">
           <n-form-item path="username" label="用户名">
-            <n-input 
-              v-model:value="form.username" 
-              placeholder="请输入用户名" 
+            <n-input
+              v-model:value="form.username"
+              placeholder="请输入用户名"
               @keydown.enter="handleLogin"
             >
               <template #prefix>
@@ -70,6 +70,14 @@ const rules = {
   password: { required: true, message: '请输入密码', trigger: 'blur' }
 }
 
+const handleThemeToggle = async () => {
+  try {
+    await store.toggleTheme({ syncTitle: false })
+  } catch (error) {
+    message.error('切换主题失败')
+  }
+}
+
 const handleLogin = async () => {
   if (!form.username || !form.password) {
     message.warning('请输入完整信息')
@@ -79,9 +87,12 @@ const handleLogin = async () => {
   try {
     const res = await api.post('/login', form)
     localStorage.setItem('jwt_token', res.token)
+    await store.loadSettings()
     message.success('登录成功')
     router.push('/dashboard')
   } catch (error) {
+    const msg = error?.response?.data?.message || error?.response?.data?.error || '用户名或密码错误'
+    message.error(msg)
   } finally {
     loading.value = false
   }

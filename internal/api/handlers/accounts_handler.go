@@ -11,7 +11,6 @@ import (
 
 func ListAccountsHandler(c *gin.Context) {
 	var accounts []models.Account
-	// 修复：按 ID 升序排列
 	database.DB.Order("id asc").Find(&accounts)
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": accounts})
 }
@@ -95,14 +94,23 @@ func DeleteAccountHandler(c *gin.Context) {
 	accountID := uint(id)
 
 	var tasksUsingAccount []models.Task
-	database.DB.Where("account_id = ?", accountID).Find(&tasksUsingAccount)
+	if err := database.DB.Where("account_id = ?", accountID).Find(&tasksUsingAccount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "查询关联任务失败: " + err.Error()})
+		return
+	}
 
 	for _, task := range tasksUsingAccount {
 		core.StopTask(task.ID)
-		database.DB.Unscoped().Delete(&task)
+		if err := database.DB.Unscoped().Delete(&task).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "删除关联任务失败: " + err.Error()})
+			return
+		}
 	}
 
-	database.DB.Unscoped().Delete(&models.Account{}, accountID)
+	if err := database.DB.Unscoped().Delete(&models.Account{}, accountID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "删除账户失败: " + err.Error()})
+		return
+	}
 	core.RefreshScheduler()
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "账户及关联任务已删除"})
 }

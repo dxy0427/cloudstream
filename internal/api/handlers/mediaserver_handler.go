@@ -9,14 +9,12 @@ import (
 	"strconv"
 )
 
-// ListMediaServersHandler 获取所有媒体服务器
 func ListMediaServersHandler(c *gin.Context) {
 	var servers []models.MediaServer
 	database.DB.Order("id asc").Find(&servers)
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": servers})
 }
 
-// CreateMediaServerHandler 创建媒体服务器
 func CreateMediaServerHandler(c *gin.Context) {
 	var server models.MediaServer
 	if err := c.ShouldBindJSON(&server); err != nil {
@@ -24,7 +22,6 @@ func CreateMediaServerHandler(c *gin.Context) {
 		return
 	}
 
-	// 验证必填字段
 	if server.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "服务器名称不能为空"})
 		return
@@ -41,7 +38,6 @@ func CreateMediaServerHandler(c *gin.Context) {
 		return
 	}
 
-	// 序列化JSON字段
 	if server.PathMappings == "" {
 		server.PathMappings = "[]"
 	}
@@ -54,13 +50,10 @@ func CreateMediaServerHandler(c *gin.Context) {
 		return
 	}
 
-	// 重新加载管理器
 	mediaserver.GetManager().ReloadServer(server.ID)
-
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": server})
 }
 
-// UpdateMediaServerHandler 更新媒体服务器
 func UpdateMediaServerHandler(c *gin.Context) {
 	id := c.Param("id")
 
@@ -75,7 +68,6 @@ func UpdateMediaServerHandler(c *gin.Context) {
 		return
 	}
 
-	// 验证必填字段
 	if server.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "服务器名称不能为空"})
 		return
@@ -92,7 +84,6 @@ func UpdateMediaServerHandler(c *gin.Context) {
 		return
 	}
 
-	// 序列化JSON字段
 	if server.PathMappings == "" {
 		server.PathMappings = "[]"
 	}
@@ -105,13 +96,10 @@ func UpdateMediaServerHandler(c *gin.Context) {
 		return
 	}
 
-	// 重新加载管理器
 	mediaserver.GetManager().ReloadServer(server.ID)
-
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": server})
 }
 
-// DeleteMediaServerHandler 删除媒体服务器
 func DeleteMediaServerHandler(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseUint(idStr, 10, 32)
@@ -121,15 +109,15 @@ func DeleteMediaServerHandler(c *gin.Context) {
 	}
 	serverID := uint(id)
 
-	database.DB.Unscoped().Delete(&models.MediaServer{}, serverID)
+	if err := database.DB.Unscoped().Delete(&models.MediaServer{}, serverID).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "删除媒体服务器失败: " + err.Error()})
+		return
+	}
 
-	// 从管理器中移除
 	mediaserver.GetManager().ReloadServer(serverID)
-
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "媒体服务器已删除"})
 }
 
-// TestMediaServerConnectionHandler 测试媒体服务器连接
 func TestMediaServerConnectionHandler(c *gin.Context) {
 	var server models.MediaServer
 	if err := c.ShouldBindJSON(&server); err != nil {
@@ -145,7 +133,6 @@ func TestMediaServerConnectionHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "连接成功"})
 }
 
-// MediaServerProxyHandler 媒体服务器代理处理器
 func MediaServerProxyHandler(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseUint(idStr, 10, 32)

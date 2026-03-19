@@ -26,7 +26,7 @@
       <n-layout-sider
         bordered
         collapse-mode="transform"
-        :collapsed-width="0" 
+        :collapsed-width="0"
         :width="240"
         :collapsed="collapsed"
         :native-scrollbar="false"
@@ -44,12 +44,21 @@
 </template>
 
 <script setup>
-import { h, ref, computed, onMounted } from 'vue'
+import { h, ref, computed, onMounted, onUnmounted } from 'vue'
 import { NIcon, NText } from 'naive-ui'
 import { useRoute, useRouter } from 'vue-router'
 import { useGlobalStore } from '../store/global'
 import api from '../api'
-import { DashboardOutlined, CloudOutlined, SyncOutlined, BellOutlined, SettingOutlined, MenuFoldOutlined, MenuUnfoldOutlined, PlayCircleOutlined } from '@vicons/antd'
+import {
+  DashboardOutlined,
+  CloudOutlined,
+  SyncOutlined,
+  BellOutlined,
+  SettingOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
+  PlayCircleOutlined
+} from '@vicons/antd'
 
 const store = useGlobalStore()
 const router = useRouter()
@@ -59,13 +68,16 @@ const isMobile = ref(false)
 
 const checkMobile = () => {
   isMobile.value = window.innerWidth <= 768
-  if (isMobile.value) collapsed.value = true
-  else collapsed.value = false 
+  collapsed.value = isMobile.value
 }
 
 onMounted(() => {
   checkMobile()
   window.addEventListener('resize', checkMobile)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('resize', checkMobile)
 })
 
 function renderIcon(icon) { return () => h(NIcon, null, { default: () => h(icon) }) }
@@ -92,7 +104,7 @@ function handleMenuClick(key) {
 }
 
 async function logout() {
-  try { await api.post('/logout') } catch(e) {}
+  try { await api.post('/logout') } catch (e) {}
   localStorage.removeItem('jwt_token')
   router.push('/login')
 }

@@ -3,68 +3,107 @@ import { ref } from 'vue'
 import { userSettingsApi } from '../api'
 
 export const useGlobalStore = defineStore('global', () => {
-  // 从 localStorage 读取缓存（用于快速响应）
   const cachedTitle = localStorage.getItem('site_title')
   const cachedTheme = localStorage.getItem('theme')
-  
+
   const siteTitle = ref(cachedTitle || 'CloudStream')
   const isDark = ref(cachedTheme !== 'light')
 
-  // 从后端加载用户设置
+  const applyTitle = (title) => {
+    siteTitle.value = title && title.trim() ? title : 'CloudStream'
+    localStorage.setItem('site_title', siteTitle.value)
+    document.title = siteTitle.value
+  }
+
+  const applyTheme = (theme) => {
+    isDark.value = theme !== 'light'
+    localStorage.setItem('theme', isDark.value ? 'dark' : 'light')
+  }
+
+  const applySettings = ({ siteTitle: newTitle, theme }) => {
+    if (typeof newTitle === 'string') {
+      applyTitle(newTitle)
+    }
+    if (typeof theme === 'string') {
+      applyTheme(theme)
+    }
+  }
+
   const loadSettings = async () => {
+    if (!localStorage.getItem('jwt_token')) {
+      return
+    }
+
     try {
       const res = await userSettingsApi.getSettings()
       if (res.code === 0 && res.data) {
-        siteTitle.value = res.data.siteTitle || 'CloudStream'
-        isDark.value = res.data.theme !== 'light'
-        
-        // 更新 localStorage 缓存
-        localStorage.setItem('site_title', siteTitle.value)
-        localStorage.setItem('theme', isDark.value ? 'dark' : 'light')
-        document.title = siteTitle.value
+        applySettings({
+          siteTitle: res.data.siteTitle || 'CloudStream',
+          theme: res.data.theme || 'dark'
+        })
       }
     } catch (error) {
       console.error('加载用户设置失败:', error)
     }
   }
 
-  const toggleTheme = async () => {
-    const newTheme = !isDark.value ? 'dark' : 'light'
-    await updateSettings({ theme: newTheme })
-  }
-
-  const setSiteTitle = async (newTitle) => {
-    // 修复：如果为空，恢复默认
-    const title = newTitle && newTitle.trim() ? newTitle : 'CloudStream'
-    await updateSettings({ siteTitle: title })
-  }
-
-  // 统一更新设置的函数
   const updateSettings = async (data) => {
+    const hasToken = !!localStorage.getItem('jwt_token')
+
+    if (typeof data.siteTitle === 'string') {
+      applyTitle(data.siteTitle)
+    }
+    if (typeof data.theme === 'string') {
+      applyTheme(data.theme)
+    }
+
+    if (!hasToken) {
+      return { code: 0, data: { siteTitle: siteTitle.value, theme: isDark.value ? 'dark' : 'light' } }
+    }
+
     try {
-      const res = await userSettingsApi.updateSettings(data)
-      if (res.code === 0 && res.data) {
-        siteTitle.value = res.data.siteTitle
-        isDark.value = res.data.theme !== 'light'
-        
-        // 更新 localStorage 缓存
-        localStorage.setItem('site_title', siteTitle.value)
-        localStorage.setItem('theme', isDark.value ? 'dark' : 'light')
-        document.title = siteTitle.value
+      const payload = {
+        siteTitle: data.siteTitle ?? siteTitle.value,
+        theme: data.theme ?? (isDark.value ? 'dark' : 'light')
       }
+      const res = await userSettingsApi.updateSettings(payload)
+      if (res.code === 0 && res.data) {
+        applySettings({
+          siteTitle: res.data.siteTitle,
+          theme: res.data.theme
+        })
+      }
+      return res
     } catch (error) {
       console.error('更新用户设置失败:', error)
+      throw error
     }
   }
 
-  // 初始化时设置页面标题
+  const toggleTheme = async (options = {}) => {
+    const newTheme = isDark.value ? 'light' : 'dark'
+    return updateSettings({
+      theme: newTheme,
+      siteTitle: options.syncTitle === false ? undefined : siteTitle.value
+    })
+  }
+
+  const setSiteTitle = async (newTitle) => {
+    const title = newTitle && newTitle.trim() ? newTitle : 'CloudStream'
+    return updateSettings({
+      siteTitle: title,
+      theme: isDark.value ? 'dark' : 'light'
+    })
+  }
+
   document.title = siteTitle.value
 
-  return { 
-    siteTitle, 
-    isDark, 
-    toggleTheme, 
+  return {
+    siteTitle,
+    isDark,
+    toggleTheme,
     setSiteTitle,
-    loadSettings
+    loadSettings,
+    updateSettings
   }
 })

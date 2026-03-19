@@ -7,57 +7,58 @@ import (
 	"time"
 )
 
-// 简单的内存限流器
-var (
-	ipStore = make(map[string]*rateLimiter)
-	mu      sync.Mutex
+const (
+	loginMaxAttempts = 5
+	loginWindow      = time.Minute
+	entryTTL         = 5 * time.Minute
 )
 
 type rateLimiter struct {
-	count    int
-	lastTime time.Time
+	count       int
+	windowStart time.Time
+	lastSeen    time.Time
 }
 
-// 清理过期的限流记录
-func cleanupExpiredEntries() {
-	mu.Lock()
-	defer mu.Unlock()
-	
-	now := time.Now()
-	for ip, limiter := range ipStore {
-		if now.Sub(limiter.lastTime) > 5*time.Minute {
-			delete(ipStore, ip)
+var loginLimiterStore = struct {
+	sync.Mutex
+	entries map[string]*rateLimiter
+}{
+	entries: make(map[string]*rateLimiter),
+}
+
+func cleanupExpiredEntries(now time.Time) {
+	for ip, limiter := range loginLimiterStore.entries {
+		if now.Sub(limiter.lastSeen) > entryTTL {
+			delete(loginLimiterStore.entries, ip)
 		}
 	}
 }
 
-// LoginRateLimiter 每分钟只允许尝试 5 次登录
 func LoginRateLimiter() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		now := time.Now()
 		ip := c.ClientIP()
-		mu.Lock()
-		defer mu.Unlock()
 
-		limiter, exists := ipStore[ip]
+		loginLimiterStore.Lock()
+		defer loginLimiterStore.Unlock()
+
+		cleanupExpiredEntries(now)
+
+		limiter, exists := loginLimiterStore.entries[ip]
 		if !exists {
-			limiter = &rateLimiter{count: 0, lastTime: time.Now()}
-			ipStore[ip] = limiter
+			limiter = &rateLimiter{windowStart: now, lastSeen: now}
+			loginLimiterStore.entries[ip] = limiter
 		}
 
-		// 如果距离上次重置超过1分钟，重置计数器
-		if time.Since(limiter.lastTime) > time.Minute {
+		if now.Sub(limiter.windowStart) >= loginWindow {
 			limiter.count = 0
-			limiter.lastTime = time.Now()
+			limiter.windowStart = now
 		}
 
 		limiter.count++
+		limiter.lastSeen = now
 
-		// 定期清理过期记录（每100次请求清理一次）
-		if limiter.count%100 == 0 {
-			go cleanupExpiredEntries()
-		}
-
-		if limiter.count > 5 {
+		if limiter.count > loginMaxAttempts {
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": "尝试次数过多，请 1 分钟后再试"})
 			c.Abort()
 			return

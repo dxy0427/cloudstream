@@ -10,10 +10,14 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted } from 'vue'
 import { darkTheme } from 'naive-ui'
 import { useGlobalStore } from './store/global'
 
 const store = useGlobalStore()
 const theme = computed(() => store.isDark ? darkTheme : null)
+
+onMounted(() => {
+  store.loadSettings()
+})
 </script>

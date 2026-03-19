@@ -11,7 +11,6 @@ import (
 	"strconv"
 )
 
-// 辅助函数：校验 Cron 表达式
 func validateCron(spec string) error {
 	parser := cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
 	_, err := parser.Parse(spec)
@@ -44,8 +43,6 @@ func ListTasksHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": tasksWithStatus})
 }
 
-// ... Create/Update/Delete handlers 保持不变 (它们会自动处理模型变化) ...
-
 func CreateTaskHandler(c *gin.Context) {
 	var task models.Task
 	if err := c.ShouldBindJSON(&task); err != nil {
@@ -64,6 +61,21 @@ func CreateTaskHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "任务创建成功", "data": task})
 }
 
+type taskUpdateRequest struct {
+	Name           *string `json:"Name"`
+	AccountID      *uint   `json:"AccountID"`
+	SourceFolderID *string `json:"SourceFolderID"`
+	LocalPath      *string `json:"LocalPath"`
+	Cron           *string `json:"Cron"`
+	Enabled        *bool   `json:"Enabled"`
+	Overwrite      *bool   `json:"Overwrite"`
+	SyncDelete     *bool   `json:"SyncDelete"`
+	EncodePath     *bool   `json:"EncodePath"`
+	StrmExtensions *string `json:"StrmExtensions"`
+	MetaExtensions *string `json:"MetaExtensions"`
+	Threads        *int    `json:"Threads"`
+}
+
 func UpdateTaskHandler(c *gin.Context) {
 	idStr := c.Param("id")
 	id, err := strconv.ParseUint(idStr, 10, 32)
@@ -71,15 +83,56 @@ func UpdateTaskHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "无效的任务ID"})
 		return
 	}
+
 	var task models.Task
 	if err := database.DB.First(&task, uint(id)).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "找不到指定的任务"})
 		return
 	}
-	if err := c.ShouldBindJSON(&task); err != nil {
+
+	var req taskUpdateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": fmt.Sprintf("参数错误: %s", err.Error())})
 		return
 	}
+
+	if req.Name != nil {
+		task.Name = *req.Name
+	}
+	if req.AccountID != nil {
+		task.AccountID = *req.AccountID
+	}
+	if req.SourceFolderID != nil {
+		task.SourceFolderID = *req.SourceFolderID
+	}
+	if req.LocalPath != nil {
+		task.LocalPath = *req.LocalPath
+	}
+	if req.Cron != nil {
+		task.Cron = *req.Cron
+	}
+	if req.Enabled != nil {
+		task.Enabled = *req.Enabled
+	}
+	if req.Overwrite != nil {
+		task.Overwrite = *req.Overwrite
+	}
+	if req.SyncDelete != nil {
+		task.SyncDelete = *req.SyncDelete
+	}
+	if req.EncodePath != nil {
+		task.EncodePath = *req.EncodePath
+	}
+	if req.StrmExtensions != nil {
+		task.StrmExtensions = *req.StrmExtensions
+	}
+	if req.MetaExtensions != nil {
+		task.MetaExtensions = *req.MetaExtensions
+	}
+	if req.Threads != nil {
+		task.Threads = *req.Threads
+	}
+
 	if err := validateCron(task.Cron); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": err.Error()})
 		return
@@ -105,7 +158,10 @@ func DeleteTaskHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": fmt.Sprintf("删除任务失败: %s", err.Error())})
 		return
 	}
-	database.DB.Unscoped().Where("task_id = ?", taskID).Delete(&models.TaskFile{})
+	if err := database.DB.Unscoped().Where("task_id = ?", taskID).Delete(&models.TaskFile{}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": fmt.Sprintf("删除任务关联记录失败: %s", err.Error())})
+		return
+	}
 	core.RefreshScheduler()
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "任务及关联记录已删除"})
 }
