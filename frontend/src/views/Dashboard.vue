@@ -4,7 +4,7 @@
       <n-space justify="space-around">
         <n-statistic label="云账户总数" :value="stats.accounts" />
         <n-statistic label="任务总数" :value="stats.tasks" />
-        <n-statistic label="启用任务" :value="stats.enabledTasks" />
+        <n-statistic label="运行中任务" :value="stats.runningTasks" />
       </n-space>
     </n-card>
 
@@ -16,15 +16,19 @@
             {{ streamStatusText }}
           </n-tag>
         </n-space>
-        <n-switch v-model:value="autoScroll">
+        <n-switch v-model:value="autoScroll" :disabled="!canRenderLogs">
           <template #checked>自动滚动</template>
           <template #unchecked>自动滚动</template>
         </n-switch>
       </n-space>
-      <div ref="logContainerRef" v-if="filteredLogs.length > 0" class="log-panel">
-        <div v-for="(line, idx) in filteredLogs" :key="idx" :class="['log-line', levelClass(line)]">{{ line }}</div>
-      </div>
-      <n-empty v-else :description="streamStatus === 'connecting' ? '正在连接实时日志...' : '暂无系统日志'" style="padding: 24px 0;" />
+
+      <template v-if="canRenderLogs">
+        <div ref="logContainerRef" v-if="displayLogs.length > 0" class="log-panel">
+          <div v-for="(line, idx) in displayLogs" :key="idx" :class="['log-line', levelClass(line)]">{{ line }}</div>
+        </div>
+        <n-empty v-else description="暂无系统日志" style="padding: 24px 0;" />
+      </template>
+      <n-empty v-else description="正在连接实时日志..." style="padding: 24px 0;" />
     </n-card>
   </n-space>
 </template>
@@ -35,17 +39,20 @@ defineOptions({ name: 'Dashboard' })
 import { reactive, ref, onMounted, onUnmounted, onActivated, onDeactivated, computed, nextTick, watch } from 'vue'
 import api from '../api'
 
-const stats = reactive({ accounts: 0, tasks: 0, enabledTasks: 0 })
+const stats = reactive({ accounts: 0, tasks: 0, runningTasks: 0 })
 const logs = ref([])
 const autoScroll = ref(true)
 const levelFilter = ref('ALL')
 const logContainerRef = ref(null)
 const streamStatus = ref('connecting')
 const hasInitialized = ref(false)
+const hasEverConnected = ref(false)
+const initialLogsLoaded = ref(false)
 let eventSource = null
 let reconnectTimer = null
 let statsTimer = null
 let initialLogsTimer = null
+let resumeTimer = null
 
 const levelOptions = [
   { label: '全部', value: 'ALL' },
@@ -61,24 +68,29 @@ const streamStatusText = computed(() => {
   return '连接已断开'
 })
 
+const canRenderLogs = computed(() => streamStatus.value === 'connected' || hasEverConnected.value)
+
 const filteredLogs = computed(() => {
+  if (!canRenderLogs.value) return []
   if (levelFilter.value === 'ALL') return logs.value
   return logs.value.filter(line => line.includes(`[${levelFilter.value}]`))
 })
 
+const displayLogs = computed(() => filteredLogs.value.slice(-200))
+
 const scrollToBottom = async () => {
-  if (!autoScroll.value) return
+  if (!canRenderLogs.value || !autoScroll.value) return
   await nextTick()
   const el = logContainerRef.value
   if (el) el.scrollTop = el.scrollHeight
 }
 
 watch(autoScroll, (enabled) => {
-  if (enabled) scrollToBottom()
+  if (enabled && canRenderLogs.value) scrollToBottom()
 })
 
-watch(filteredLogs, () => {
-  scrollToBottom()
+watch(displayLogs, () => {
+  if (canRenderLogs.value) scrollToBottom()
 }, { deep: true })
 
 const levelClass = (line) => {
@@ -93,20 +105,28 @@ const loadStats = async () => {
   const data = res.data || {}
   stats.accounts = data.accounts || 0
   stats.tasks = data.tasks || 0
-  stats.enabledTasks = data.enabledTasks || 0
+  stats.runningTasks = data.runningTasks || 0
 }
 
 const loadInitialLogs = async () => {
+  if (initialLogsLoaded.value || !hasEverConnected.value) return
   try {
     const res = await api.get('/logs')
     const incoming = Array.isArray(res.data) ? res.data : []
-    if (logs.value.length === 0) {
-      logs.value = incoming.slice(-100)
-    }
+    if (logs.value.length === 0) logs.value = incoming.slice(-200)
+    initialLogsLoaded.value = true
     scrollToBottom()
   } catch (e) {
     if (logs.value.length === 0) logs.value = []
   }
+}
+
+const scheduleInitialLogsLoad = () => {
+  if (initialLogsLoaded.value || initialLogsTimer || !hasEverConnected.value) return
+  initialLogsTimer = setTimeout(() => {
+    loadInitialLogs().catch(() => {})
+    initialLogsTimer = null
+  }, 300)
 }
 
 const scheduleReconnect = () => {
@@ -119,7 +139,7 @@ const scheduleReconnect = () => {
 }
 
 const connectLogStream = () => {
-  if (eventSource) eventSource.close()
+  if (eventSource) return
   streamStatus.value = 'connecting'
   const token = localStorage.getItem('jwt_token')
   if (!token) {
@@ -129,12 +149,14 @@ const connectLogStream = () => {
   eventSource = new EventSource(`/api/v1/logs/stream?token=${encodeURIComponent(token)}`)
   eventSource.onopen = () => {
     streamStatus.value = 'connected'
+    hasEverConnected.value = true
+    scheduleInitialLogsLoad()
   }
   eventSource.onmessage = (event) => {
     if (event.data) {
       logs.value.push(event.data)
-      if (logs.value.length > 200) logs.value = logs.value.slice(-200)
-      scrollToBottom()
+      if (logs.value.length > 400) logs.value = logs.value.slice(-400)
+      if (canRenderLogs.value) scrollToBottom()
     }
   }
   eventSource.onerror = () => {
@@ -161,31 +183,25 @@ const stopStatsRefresh = () => {
 }
 
 onMounted(() => {
-  connectLogStream()
-  startStatsRefresh()
-
   if (!hasInitialized.value) {
     loadStats().catch(() => {})
-    initialLogsTimer = setTimeout(() => {
-      loadInitialLogs().catch(() => {})
-      initialLogsTimer = null
-    }, 300)
+    connectLogStream()
+    startStatsRefresh()
     hasInitialized.value = true
   }
 })
 
 onActivated(() => {
-  if (!eventSource) connectLogStream()
-  loadStats().catch(() => {})
-  startStatsRefresh()
-  scrollToBottom()
+  if (!statsTimer) startStatsRefresh()
+  if (resumeTimer) clearTimeout(resumeTimer)
+  resumeTimer = setTimeout(() => {
+    if (!eventSource) connectLogStream()
+    loadStats().catch(() => {})
+    resumeTimer = null
+  }, 120)
 })
 
 onDeactivated(() => {
-  if (eventSource) {
-    eventSource.close()
-    eventSource = null
-  }
   if (reconnectTimer) {
     clearTimeout(reconnectTimer)
     reconnectTimer = null
@@ -194,13 +210,17 @@ onDeactivated(() => {
     clearTimeout(initialLogsTimer)
     initialLogsTimer = null
   }
-  stopStatsRefresh()
+  if (resumeTimer) {
+    clearTimeout(resumeTimer)
+    resumeTimer = null
+  }
 })
 
 onUnmounted(() => {
   if (eventSource) eventSource.close()
   if (reconnectTimer) clearTimeout(reconnectTimer)
   if (initialLogsTimer) clearTimeout(initialLogsTimer)
+  if (resumeTimer) clearTimeout(resumeTimer)
   stopStatsRefresh()
 })
 </script>

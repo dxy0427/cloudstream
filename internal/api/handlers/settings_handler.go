@@ -39,7 +39,8 @@ func GetUsernameHandler(c *gin.Context) {
 func GetDashboardStatsHandler(c *gin.Context) {
 	var accountCount int64
 	var taskCount int64
-	var enabledTaskCount int64
+	var runningTaskCount int64
+	var tasks []models.Task
 
 	if err := database.DB.Model(&models.Account{}).Count(&accountCount).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取账户统计失败"})
@@ -49,15 +50,20 @@ func GetDashboardStatsHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取任务统计失败"})
 		return
 	}
-	if err := database.DB.Model(&models.Task{}).Where("enabled = ?", true).Count(&enabledTaskCount).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取启用任务统计失败"})
+	if err := database.DB.Select("id").Find(&tasks).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取运行中任务统计失败"})
 		return
+	}
+	for _, task := range tasks {
+		if core.IsTaskRunning(task.ID) {
+			runningTaskCount++
+		}
 	}
 
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
 		"accounts":     accountCount,
 		"tasks":        taskCount,
-		"enabledTasks": enabledTaskCount,
+		"runningTasks": runningTaskCount,
 	}})
 }
 
