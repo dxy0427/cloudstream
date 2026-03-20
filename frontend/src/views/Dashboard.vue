@@ -53,6 +53,7 @@ let reconnectTimer = null
 let statsTimer = null
 let initialLogsTimer = null
 let resumeTimer = null
+let scrollTimer = null
 
 const levelOptions = [
   { label: '全部', value: 'ALL' },
@@ -78,20 +79,36 @@ const filteredLogs = computed(() => {
 
 const displayLogs = computed(() => filteredLogs.value.slice(-200))
 
-const scrollToBottom = async () => {
-  if (!canRenderLogs.value || !autoScroll.value) return
-  await nextTick()
+const scrollToBottomNow = () => {
   const el = logContainerRef.value
   if (el) el.scrollTop = el.scrollHeight
 }
 
+const ensureScrollToBottom = async () => {
+  if (!canRenderLogs.value || !autoScroll.value) return
+  await nextTick()
+  scrollToBottomNow()
+  requestAnimationFrame(() => {
+    scrollToBottomNow()
+  })
+  if (scrollTimer) clearTimeout(scrollTimer)
+  scrollTimer = setTimeout(() => {
+    scrollToBottomNow()
+    scrollTimer = null
+  }, 60)
+}
+
 watch(autoScroll, (enabled) => {
-  if (enabled && canRenderLogs.value) scrollToBottom()
+  if (enabled && canRenderLogs.value) ensureScrollToBottom()
 })
 
 watch(displayLogs, () => {
-  if (canRenderLogs.value) scrollToBottom()
+  if (canRenderLogs.value) ensureScrollToBottom()
 }, { deep: true })
+
+watch(canRenderLogs, (enabled) => {
+  if (enabled) ensureScrollToBottom()
+})
 
 const levelClass = (line) => {
   if (line.includes('[WARN]')) return 'log-warn'
@@ -115,7 +132,7 @@ const loadInitialLogs = async () => {
     const incoming = Array.isArray(res.data) ? res.data : []
     if (logs.value.length === 0) logs.value = incoming.slice(-200)
     initialLogsLoaded.value = true
-    scrollToBottom()
+    ensureScrollToBottom()
   } catch (e) {
     if (logs.value.length === 0) logs.value = []
   }
@@ -150,13 +167,14 @@ const connectLogStream = () => {
   eventSource.onopen = () => {
     streamStatus.value = 'connected'
     hasEverConnected.value = true
+    ensureScrollToBottom()
     scheduleInitialLogsLoad()
   }
   eventSource.onmessage = (event) => {
     if (event.data) {
       logs.value.push(event.data)
       if (logs.value.length > 400) logs.value = logs.value.slice(-400)
-      if (canRenderLogs.value) scrollToBottom()
+      if (canRenderLogs.value) ensureScrollToBottom()
     }
   }
   eventSource.onerror = () => {
@@ -193,10 +211,12 @@ onMounted(() => {
 
 onActivated(() => {
   if (!statsTimer) startStatsRefresh()
+  if (autoScroll.value && canRenderLogs.value) ensureScrollToBottom()
   if (resumeTimer) clearTimeout(resumeTimer)
   resumeTimer = setTimeout(() => {
     if (!eventSource) connectLogStream()
     loadStats().catch(() => {})
+    if (autoScroll.value && canRenderLogs.value) ensureScrollToBottom()
     resumeTimer = null
   }, 120)
 })
@@ -214,6 +234,10 @@ onDeactivated(() => {
     clearTimeout(resumeTimer)
     resumeTimer = null
   }
+  if (scrollTimer) {
+    clearTimeout(scrollTimer)
+    scrollTimer = null
+  }
 })
 
 onUnmounted(() => {
@@ -221,6 +245,7 @@ onUnmounted(() => {
   if (reconnectTimer) clearTimeout(reconnectTimer)
   if (initialLogsTimer) clearTimeout(initialLogsTimer)
   if (resumeTimer) clearTimeout(resumeTimer)
+  if (scrollTimer) clearTimeout(scrollTimer)
   stopStatsRefresh()
 })
 </script>
