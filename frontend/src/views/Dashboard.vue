@@ -54,6 +54,7 @@ let statsTimer = null
 let initialLogsTimer = null
 let resumeTimer = null
 let scrollTimer = null
+let scrollRafId = null
 
 const levelOptions = [
   { label: '全部', value: 'ALL' },
@@ -79,27 +80,49 @@ const filteredLogs = computed(() => {
 
 const displayLogs = computed(() => filteredLogs.value.slice(-200))
 
+const shouldAutoScroll = () => canRenderLogs.value && autoScroll.value
+
 const scrollToBottomNow = () => {
+  if (!shouldAutoScroll()) return
   const el = logContainerRef.value
   if (el) el.scrollTop = el.scrollHeight
 }
 
+const cancelPendingScroll = () => {
+  if (scrollTimer) {
+    clearTimeout(scrollTimer)
+    scrollTimer = null
+  }
+  if (scrollRafId !== null) {
+    cancelAnimationFrame(scrollRafId)
+    scrollRafId = null
+  }
+}
+
 const ensureScrollToBottom = async () => {
-  if (!canRenderLogs.value || !autoScroll.value) return
+  if (!shouldAutoScroll()) return
   await nextTick()
+  if (!shouldAutoScroll()) return
   scrollToBottomNow()
-  requestAnimationFrame(() => {
+  scrollRafId = requestAnimationFrame(() => {
+    scrollRafId = null
+    if (!shouldAutoScroll()) return
     scrollToBottomNow()
   })
-  if (scrollTimer) clearTimeout(scrollTimer)
+  cancelPendingScroll()
   scrollTimer = setTimeout(() => {
-    scrollToBottomNow()
     scrollTimer = null
+    if (!shouldAutoScroll()) return
+    scrollToBottomNow()
   }, 60)
 }
 
 watch(autoScroll, (enabled) => {
-  if (enabled && canRenderLogs.value) ensureScrollToBottom()
+  if (!enabled) {
+    cancelPendingScroll()
+    return
+  }
+  if (canRenderLogs.value) ensureScrollToBottom()
 })
 
 watch(displayLogs, () => {
@@ -234,10 +257,7 @@ onDeactivated(() => {
     clearTimeout(resumeTimer)
     resumeTimer = null
   }
-  if (scrollTimer) {
-    clearTimeout(scrollTimer)
-    scrollTimer = null
-  }
+  cancelPendingScroll()
 })
 
 onUnmounted(() => {
@@ -245,7 +265,7 @@ onUnmounted(() => {
   if (reconnectTimer) clearTimeout(reconnectTimer)
   if (initialLogsTimer) clearTimeout(initialLogsTimer)
   if (resumeTimer) clearTimeout(resumeTimer)
-  if (scrollTimer) clearTimeout(scrollTimer)
+  cancelPendingScroll()
   stopStatsRefresh()
 })
 </script>
