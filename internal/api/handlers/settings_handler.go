@@ -14,7 +14,10 @@ import (
 func GetUsernameHandler(c *gin.Context) {
 	username, _ := c.Get("username")
 	var user models.User
-	database.DB.Where("username = ?", username).First(&user)
+	if err := database.DB.Where("username = ?", username).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "用户不存在"})
+		return
+	}
 
 	notifyType := user.NotifyType
 	if notifyType == "" {
@@ -197,7 +200,10 @@ func UpdateCredentialsHandler(c *gin.Context) {
 
 	currentUsername, _ := c.Get("username")
 	var user models.User
-	database.DB.Where("username = ?", currentUsername).First(&user)
+	if err := database.DB.Where("username = ?", currentUsername).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "用户不存在"})
+		return
+	}
 
 	if !utils.CheckPasswordHash(req.CurrentPassword, user.PasswordHash) {
 		c.JSON(http.StatusUnauthorized, gin.H{"code": 1, "message": "当前密码不正确"})

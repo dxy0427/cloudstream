@@ -62,7 +62,8 @@ const form = reactive({
 
 const load = async () => {
   try {
-    const res = await api.get('/notifications')
+    // /username 接口同时返回通知配置字段，且 api 拦截器已 unwrap res.data
+    const res = await api.get('/username')
     Object.assign(form, {
       notifyType: res.notifyType || 'webhook',
       webhookUrl: res.webhookUrl || '',
