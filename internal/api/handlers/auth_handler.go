@@ -61,16 +61,15 @@ func UpdateUserSettingsHandler(c *gin.Context) {
 		return
 	}
 
-	if req.Theme != "dark" && req.Theme != "light" {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "主题值必须是 dark 或 light"})
-		return
-	}
-
 	if req.SiteTitle == "" {
 		req.SiteTitle = "CloudStream"
 	}
 	if req.Theme == "" {
 		req.Theme = "light"
+	}
+	if req.Theme != "dark" && req.Theme != "light" {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "主题值必须是 dark 或 light"})
+		return
 	}
 
 	var user models.User

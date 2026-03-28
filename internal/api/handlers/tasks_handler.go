@@ -13,15 +13,17 @@ import (
 )
 
 func validateCron(spec string) error {
-	parser := cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-	_, err := parser.Parse(spec)
-	if err != nil {
-		parserStandard := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-		if _, err2 := parserStandard.Parse(spec); err2 != nil {
-			return fmt.Errorf("Cron 表达式格式错误")
-		}
+	// 先尝试标准 5 段（分 时 日 月 周），这是用户最常用的格式
+	parserStandard := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	if _, err := parserStandard.Parse(spec); err == nil {
+		return nil
 	}
-	return nil
+	// 再尝试 6 段（秒 分 时 日 月 周）
+	parserWithSecond := cron.NewParser(cron.Second | cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	if _, err := parserWithSecond.Parse(spec); err == nil {
+		return nil
+	}
+	return fmt.Errorf("Cron 表达式格式错误")
 }
 
 func buildTaskList() ([]gin.H, error) {
