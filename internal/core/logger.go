@@ -6,42 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
-
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
-	"gopkg.in/natefinch/lumberjack.v2"
 )
 
+// LogFilePath 与 internal/logger/logger.go 中保持一致
 const LogFilePath = "./data/cloudstream.log"
-
-var initLoggerOnce sync.Once
-
-func InitLogger() {
-	initLoggerOnce.Do(func() {
-		if err := os.MkdirAll(filepath.Dir(LogFilePath), 0755); err != nil {
-			fmt.Printf("failed to create log dir: %v\n", err)
-			return
-		}
-
-		writer := zerolog.MultiLevelWriter(
-			zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: "2006-01-02 15:04:05"},
-			&lumberjack.Logger{
-				Filename:   LogFilePath,
-				MaxSize:    20,
-				MaxBackups: 3,
-				MaxAge:     7,
-				Compress:   false,
-			},
-		)
-
-		log.Logger = zerolog.New(writer).With().Timestamp().Logger()
-	})
-}
 
 func tailLines(path string, maxLines int) ([]string, int64, error) {
 	file, err := os.Open(path)
