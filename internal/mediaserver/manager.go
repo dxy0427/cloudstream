@@ -289,23 +289,12 @@ func (m *Manager) HandleProxy(c *gin.Context, serverID uint) {
 	proxy.ReverseProxy(c, false)
 }
 
-// TestConnection 测试媒体服务器连接
+// TestConnection 测试媒体服务器连接（使用 /System/Info/Public 端点）
 func TestConnection(server *models.MediaServer) error {
-	cfg := &Config{
-		Server: ServerConf{
-			Type: server.ServerType,
-			Addr: server.ServerAddr,
-			Auth: server.APIKey,
-		},
+	addr := server.ServerAddr
+	if !strings.HasPrefix(addr, "http://") && !strings.HasPrefix(addr, "https://") {
+		addr = "http://" + addr
 	}
-
-	client := NewClient(cfg.Server.Type, cfg.Server.Addr, cfg.Server.Auth)
-	
-	// 尝试获取系统信息来测试连接
-	_, err := client.GetItemInfo("", "")
-	if err != nil {
-		return fmt.Errorf("连接失败: %w", err)
-	}
-
-	return nil
+	client := NewClient(server.ServerType, addr, server.APIKey)
+	return client.Ping()
 }

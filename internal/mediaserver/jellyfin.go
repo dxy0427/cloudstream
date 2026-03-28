@@ -22,6 +22,23 @@ func NewJellyfinClient(host, apiKey string) *JellyfinClient {
 	}
 }
 
+func (j *JellyfinClient) Ping() error {
+	url := fmt.Sprintf("%s/System/Info/Public", j.host)
+	req := j.client.R()
+	if j.apiKey != "" {
+		req.SetHeader("X-Emby-Token", j.apiKey)
+		req.SetQueryParam("api_key", j.apiKey)
+	}
+	resp, err := req.Get(url)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode() != 200 {
+		return fmt.Errorf("jellyfin 连接失败，状态码: %d", resp.StatusCode())
+	}
+	return nil
+}
+
 func (j *JellyfinClient) GetItemInfo(itemId string, mediaSourceId string) (string, error) {
 	url := fmt.Sprintf("%s/Items", j.host)
 	req := j.client.R().

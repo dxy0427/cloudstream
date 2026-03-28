@@ -22,6 +22,22 @@ func NewEmbyClient(host, apiKey string) *EmbyClient {
 	}
 }
 
+func (e *EmbyClient) Ping() error {
+	url := fmt.Sprintf("%s/System/Info/Public", e.host)
+	req := e.client.R()
+	if e.apiKey != "" {
+		req.SetQueryParam("api_key", e.apiKey)
+	}
+	resp, err := req.Get(url)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode() != 200 {
+		return fmt.Errorf("emby 连接失败，状态码: %d", resp.StatusCode())
+	}
+	return nil
+}
+
 func (e *EmbyClient) GetItemInfo(itemId string, mediaSourceId string) (string, error) {
 	url := fmt.Sprintf("%s/Items", e.host)
 	req := e.client.R().

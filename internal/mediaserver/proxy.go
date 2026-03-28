@@ -42,16 +42,18 @@ func NewCache() *Cache {
 }
 
 func (c *Cache) Get(key string) (string, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
+	c.mu.RLock()
 	entry, exists := c.data[key]
+	c.mu.RUnlock()
+
 	if !exists {
 		return "", false
 	}
 	if time.Now().After(entry.expiresAt) {
-		// 访问时删除过期 key，避免 map 无限增长
+		// 升级为写锁，删除过期 key，避免 map 无限增长
+		c.mu.Lock()
 		delete(c.data, key)
+		c.mu.Unlock()
 		return "", false
 	}
 	return entry.value, true
