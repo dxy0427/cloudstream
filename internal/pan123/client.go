@@ -245,9 +245,9 @@ func (c *Client) sendAuthorizedRequest(method, endpoint, _ string, queryParams m
 
 		// 处理业务逻辑错误
 		if result.Code == 429 {
-			// 频率限制，等待后重试，但不消耗 authAttempt
+			// 频率限制：等待后直接重发，不走 authAttempt 循环
+			// 注意：不能用 authAttempt-- 因为循环末尾没有 authAttempt++，会死循环
 			time.Sleep(3 * time.Second)
-			authAttempt-- // 保持鉴权重试次数
 			continue
 		}
 

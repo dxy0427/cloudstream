@@ -75,17 +75,17 @@ func main() {
 	log.Info().Msg("正在停止服务...")
 
 	// 给予 5 秒时间让正在处理的请求完成
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	
-	// 停止主服务
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatal().Err(err).Msg("主服务强制停止")
+	// 两个服务各用独立 context，避免第一个超时影响第二个
+	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel1()
+	if err := srv.Shutdown(ctx1); err != nil {
+		log.Error().Err(err).Msg("主服务强制停止")
 	}
-	
-	// 停止代理服务
-	if err := proxySrv.Shutdown(ctx); err != nil {
-		log.Fatal().Err(err).Msg("代理服务强制停止")
+
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	if err := proxySrv.Shutdown(ctx2); err != nil {
+		log.Error().Err(err).Msg("代理服务强制停止")
 	}
 
 	log.Info().Msg("服务已退出")
