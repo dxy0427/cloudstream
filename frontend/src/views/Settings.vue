@@ -53,8 +53,10 @@ const form = reactive({
 })
 
 onMounted(async () => {
- const res = await api.get('/username')
- username.value = res.data.username
+ try {
+  const res = await api.get('/username')
+  username.value = res.username
+ } catch (e) {}
 })
 
 const saveTitle = () => {

@@ -105,9 +105,13 @@ const columns = [
 ]
 
 const loadData = async () => {
-  const [taskRes, accRes] = await Promise.all([api.get('/tasks'), api.get('/accounts')])
-  data.value = taskRes.data || []
-  accountOptions.value = (accRes.data || []).map(a => ({ label: a.Name, value: a.ID }))
+  try {
+    const [taskRes, accRes] = await Promise.all([api.get('/tasks'), api.get('/accounts')])
+    data.value = taskRes.data || []
+    accountOptions.value = (accRes.data || []).map(a => ({ label: a.Name, value: a.ID }))
+  } catch (e) {
+    // 错误已由 api 拦截器全局弹出提示
+  }
 }
 
 const scheduleReconnect = () => {
@@ -180,7 +184,13 @@ const stopTask = async (row) => { await api.post(`/tasks/${row.ID}/stop`); messa
 const handleDelete = (row) => {
   dialog.warning({
     title: '警告', content: '删除任务？', positiveText: '删除', negativeText: '取消',
-    onPositiveClick: async () => { await api.delete(`/tasks/${row.ID}`); await loadData() }
+    onPositiveClick: async () => {
+      try {
+        await api.delete(`/tasks/${row.ID}`)
+        message.success('删除成功')
+        await loadData()
+      } catch (e) {}
+    }
   })
 }
 </script>

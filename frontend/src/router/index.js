@@ -34,9 +34,9 @@ function decodeJwtPayload(token) {
   const base64 = parts[1]
     .replace(/-/g, '+')
     .replace(/_/g, '/')
-    .padEnd(Math.ceil(parts[1].length / 4) * 4, '=')
+  const paddedBase64 = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=')
 
-  return JSON.parse(atob(base64))
+  return JSON.parse(atob(paddedBase64))
 }
 
 function isTokenExpired(token) {

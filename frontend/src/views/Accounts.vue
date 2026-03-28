@@ -142,9 +142,14 @@ const columns = [
 
 const fetchData = async () => {
  loading.value = true
- const res = await api.get('/accounts')
- data.value = res.data || []
- loading.value = false
+ try {
+  const res = await api.get('/accounts')
+  data.value = res.data || []
+ } catch (e) {
+  data.value = []
+ } finally {
+  loading.value = false
+ }
 }
 
 const openModal = (row) => {
@@ -177,7 +182,13 @@ const submit = async () => {
 const handleDelete = (row) => {
  dialog.warning({
  title: '警告', content: '删除账户会将关联任务一起删除。', positiveText: '删除', negativeText: '取消',
- onPositiveClick: async () => { await api.delete(`/accounts/${row.ID}`); message.success('删除成功'); fetchData() }
+ onPositiveClick: async () => {
+  try {
+   await api.delete(`/accounts/${row.ID}`)
+   message.success('删除成功')
+   fetchData()
+  } catch (e) {}
+ }
  })
 }
 

@@ -60,6 +60,7 @@ const levelOptions = [
   { label: '全部', value: 'ALL' },
   { label: 'INFO', value: 'INFO' },
   { label: 'WARN', value: 'WARN' },
+  { label: 'ERROR', value: 'ERROR' },
   { label: 'DEBUG', value: 'DEBUG' },
 ]
 
@@ -101,6 +102,7 @@ const cancelPendingScroll = () => {
 
 const ensureScrollToBottom = async () => {
   if (!shouldAutoScroll()) return
+  cancelPendingScroll()
   await nextTick()
   if (!shouldAutoScroll()) return
   scrollToBottomNow()
@@ -109,7 +111,6 @@ const ensureScrollToBottom = async () => {
     if (!shouldAutoScroll()) return
     scrollToBottomNow()
   })
-  cancelPendingScroll()
   scrollTimer = setTimeout(() => {
     scrollTimer = null
     if (!shouldAutoScroll()) return

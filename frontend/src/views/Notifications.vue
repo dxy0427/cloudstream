@@ -61,17 +61,19 @@ const form = reactive({
 })
 
 const load = async () => {
-  const res = await api.get('/username')
-  Object.assign(form, {
-    notifyType: res.data.notifyType || 'webhook',
-    webhookUrl: res.data.webhookUrl || '',
-    telegramToken: res.data.telegramToken || '',
-    telegramChatId: res.data.telegramChatId || '',
-    notifyOnComplete: res.data.notifyOnComplete !== false,
-    notifyOnError: res.data.notifyOnError !== false,
-    notifyOnStop: res.data.notifyOnStop !== false,
-    notifyOnManual: res.data.notifyOnManual !== false,
-  })
+  try {
+    const res = await api.get('/notifications')
+    Object.assign(form, {
+      notifyType: res.notifyType || 'webhook',
+      webhookUrl: res.webhookUrl || '',
+      telegramToken: res.telegramToken || '',
+      telegramChatId: res.telegramChatId || '',
+      notifyOnComplete: res.notifyOnComplete !== false,
+      notifyOnError: res.notifyOnError !== false,
+      notifyOnStop: res.notifyOnStop !== false,
+      notifyOnManual: res.notifyOnManual !== false,
+    })
+  } catch (e) {}
 }
 
 const save = async () => {
