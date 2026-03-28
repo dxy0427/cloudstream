@@ -62,18 +62,20 @@ func (m *Manager) ReloadAll() error {
 	return nil
 }
 
-// ReloadServer 重新加载单个服务器
+// ReloadServer 重新加载单个服务器（删除时 id 不存在也清理旧实例）
 func (m *Manager) ReloadServer(id uint) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// 先清理旧实例，无论后续是否能加载
+	delete(m.servers, id)
+
 	var server models.MediaServer
 	if err := database.DB.First(&server, id).Error; err != nil {
-		return err
+		// 记录不存在（正常删除场景），不视为错误
+		log.Info().Uint("id", id).Msg("媒体服务器已从管理器卸载（记录不存在）")
+		return nil
 	}
-
-	// 删除旧实例
-	delete(m.servers, id)
 
 	// 如果启用，创建新实例
 	if server.Enabled {
@@ -157,30 +159,30 @@ func (m *Manager) HandleProxy(c *gin.Context, serverID uint) {
 	cfg := proxy.cfg
 
 	// 客户端过滤
-		if cfg.Client.Enable {
-			userAgent := c.Request.UserAgent()
-			allowed := false
-			for _, client := range cfg.Client.List {
-				if strings.Contains(userAgent, client) {
-					allowed = true
-					break
-				}
-			}
-
-			if cfg.Client.Mode == "WhiteList" {
-				if !allowed {
-					log.Warn().Str("mode", "WhiteList").Str("client_ip", c.ClientIP()).Str("user_agent", userAgent).Msg("客户端不在白名单中，拒绝访问")
-					c.AbortWithStatus(http.StatusForbidden)
-					return
-				}
-			} else if cfg.Client.Mode == "BlackList" {
-				if allowed {
-					log.Warn().Str("mode", "BlackList").Str("client_ip", c.ClientIP()).Str("user_agent", userAgent).Msg("客户端在黑名单中，拒绝访问")
-					c.AbortWithStatus(http.StatusForbidden)
-					return
-				}
+	if cfg.Client.Enable {
+		userAgent := c.Request.UserAgent()
+		allowed := false
+		for _, client := range cfg.Client.List {
+			if strings.Contains(userAgent, client) {
+				allowed = true
+				break
 			}
 		}
+	
+		if cfg.Client.Mode == "WhiteList" {
+			if !allowed {
+				log.Warn().Str("mode", "WhiteList").Str("client_ip", c.ClientIP()).Str("user_agent", userAgent).Msg("客户端不在白名单中，拒绝访问")
+				c.AbortWithStatus(http.StatusForbidden)
+				return
+			}
+		} else if cfg.Client.Mode == "BlackList" {
+			if allowed {
+				log.Warn().Str("mode", "BlackList").Str("client_ip", c.ClientIP()).Str("user_agent", userAgent).Msg("客户端在黑名单中，拒绝访问")
+				c.AbortWithStatus(http.StatusForbidden)
+				return
+			}
+		}
+	}
 
 	// PlaybackInfo 拦截
 	if strings.Contains(c.Request.URL.Path, "/PlaybackInfo") {
