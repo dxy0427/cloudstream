@@ -11,7 +11,10 @@ import (
 
 func ListAccountsHandler(c *gin.Context) {
 	var accounts []models.Account
-	database.DB.Order("id asc").Find(&accounts)
+	if err := database.DB.Order("id asc").Find(&accounts).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "获取账户列表失败: " + err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": accounts})
 }
 

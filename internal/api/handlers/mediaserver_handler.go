@@ -11,7 +11,10 @@ import (
 
 func ListMediaServersHandler(c *gin.Context) {
 	var servers []models.MediaServer
-	database.DB.Order("id asc").Find(&servers)
+	if err := database.DB.Order("id asc").Find(&servers).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "获取媒体服务器列表失败: " + err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": servers})
 }
 

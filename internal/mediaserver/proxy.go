@@ -36,24 +36,40 @@ type cacheEntry struct {
 }
 
 func NewCache() *Cache {
-	return &Cache{
+	c := &Cache{
 		data: make(map[string]cacheEntry),
 	}
+	// 后台定期清理过期 key，防止 map 无限增长（内存泄漏）
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			now := time.Now()
+			c.mu.Lock()
+			for k, v := range c.data {
+				if now.After(v.expiresAt) {
+					delete(c.data, k)
+				}
+			}
+			c.mu.Unlock()
+		}
+	}()
+	return c
 }
 
 func (c *Cache) Get(key string) (string, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	entry, exists := c.data[key]
 	if !exists {
 		return "", false
 	}
-	
 	if time.Now().After(entry.expiresAt) {
+		// 访问时删除过期 key，避免 map 无限增长
+		delete(c.data, key)
 		return "", false
 	}
-	
 	return entry.value, true
 }
 

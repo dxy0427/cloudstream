@@ -36,9 +36,12 @@ func ConnectDatabase(dbPath string) error {
 		return err
 	}
 
-	sqlDB.SetMaxOpenConns(25)
-	sqlDB.SetMaxIdleConns(5)
-	sqlDB.SetConnMaxLifetime(5 * time.Minute)
+	// SQLite 是文件锁数据库，并发写操作会导致 SQLITE_BUSY
+	// WAL 模式允许并发读取，但写入仍需串行，限制写入连接数为 1
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+	sqlDB.SetConnMaxLifetime(0)               // 连接长期复用，不超时回收
+	sqlDB.SetConnMaxIdleTime(10 * time.Minute) // 空闲连接超 10 分钟回收，释放文件锁
 
 	if _, err := sqlDB.Exec("PRAGMA journal_mode=WAL;"); err != nil {
 		log.Warn().Err(err).Msg("开启 SQLite WAL 模式失败，性能可能受限")

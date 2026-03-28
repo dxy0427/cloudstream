@@ -41,8 +41,8 @@ func UnifiedStreamHandler(c *gin.Context) {
 			return
 		}
 
-		var account models.Account
-		if err := database.DB.First(&account, accountID).Error; err != nil {
+		var signedAccount models.Account
+		if err := database.DB.First(&signedAccount, accountID).Error; err != nil {
 			c.String(http.StatusNotFound, "Account not found")
 			return
 		}
@@ -56,6 +56,15 @@ func UnifiedStreamHandler(c *gin.Context) {
 				identifier = realIdentity
 			}
 		}
+		// 签名路径已查询 account，直接使用而不重复查询
+		client := pan123.NewClient(signedAccount)
+		downloadURL, err := client.GetDownloadURL(identifier)
+		if err != nil {
+			c.String(http.StatusInternalServerError, fmt.Sprintf("Failed to get link: %v", err))
+			return
+		}
+		c.Redirect(http.StatusFound, downloadURL)
+		return
 	} else {
 		trimmedPath := strings.TrimPrefix(rawPath, "/")
 		parts := strings.Split(trimmedPath, "/")
@@ -92,18 +101,12 @@ func UnifiedStreamHandler(c *gin.Context) {
 		}
 	}
 
-	var account models.Account
-	if err := database.DB.First(&account, accountID).Error; err != nil {
-		c.String(http.StatusNotFound, "Account not found")
-		return
-	}
-
+	// 非签名路径：复用上面已查询到的 account，无需重复查询
 	client := pan123.NewClient(account)
 	downloadURL, err := client.GetDownloadURL(identifier)
 	if err != nil {
 		c.String(http.StatusInternalServerError, fmt.Sprintf("Failed to get link: %v", err))
 		return
 	}
-
 	c.Redirect(http.StatusFound, downloadURL)
 }

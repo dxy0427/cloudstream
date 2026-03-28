@@ -179,8 +179,20 @@ const submit = async () => {
   } catch (e) {}
 }
 
-const runTask = async (row) => { await api.post(`/tasks/${row.ID}/run`); message.success('已触发'); await loadData() }
-const stopTask = async (row) => { await api.post(`/tasks/${row.ID}/stop`); message.success('已发送停止信号'); await loadData() }
+const runTask = async (row) => {
+  try {
+    await api.post(`/tasks/${row.ID}/run`)
+    message.success('已触发')
+    await loadData()
+  } catch (e) {}
+}
+const stopTask = async (row) => {
+  try {
+    await api.post(`/tasks/${row.ID}/stop`)
+    message.success('已发送停止信号')
+    await loadData()
+  } catch (e) {}
+}
 const handleDelete = (row) => {
   dialog.warning({
     title: '警告', content: '删除任务？', positiveText: '删除', negativeText: '取消',
