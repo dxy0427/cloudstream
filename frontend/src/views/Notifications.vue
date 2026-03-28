@@ -78,16 +78,20 @@ const load = async () => {
 }
 
 const save = async () => {
-  await api.post('/notifications', form)
-  message.success('通知设置已保存')
+  try {
+    await api.post('/notifications', form)
+    message.success('通知设置已保存')
+  } catch (e) {}
 }
 
 const testSend = async () => {
   const payload = form.notifyType === 'webhook'
     ? { webhookUrl: form.webhookUrl, notifyType: form.notifyType }
     : { telegramToken: form.telegramToken, telegramChatId: form.telegramChatId, notifyType: form.notifyType }
-  await api.post('/webhook/test', payload)
-  message.success('测试通知已发送')
+  try {
+    await api.post('/webhook/test', payload)
+    message.success('测试通知已发送')
+  } catch (e) {}
 }
 
 onMounted(load)

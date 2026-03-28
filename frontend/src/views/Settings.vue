@@ -65,12 +65,16 @@ const saveTitle = () => {
 }
 
 const submit = async () => {
- if(!form.currentPassword) return message.error('请输入当前密码')
- await api.post('/update_credentials', form)
- message.success('凭证已修改，请重新登录')
- setTimeout(() => {
-   localStorage.removeItem('jwt_token')
-   window.location.reload()
- }, 1000)
+ if (!form.currentPassword) return message.error('请输入当前密码')
+ try {
+   await api.post('/update_credentials', form)
+   message.success('凭证已修改，请重新登录')
+   setTimeout(() => {
+     localStorage.removeItem('jwt_token')
+     window.location.reload()
+   }, 1000)
+ } catch (e) {
+   // 错误已由 api 拦截器全局弹出，此处不重复提示
+ }
 }
 </script>

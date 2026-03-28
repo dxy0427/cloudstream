@@ -8,6 +8,7 @@ import (
 
 type MediaServerClient interface {
 	GetItemInfo(itemId string, mediaSourceId string) (string, error)
+	Ping() error
 }
 
 func NewClient(backendType, host, apiKey string) MediaServerClient {
