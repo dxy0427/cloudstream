@@ -38,6 +38,7 @@
 import { ref, reactive, onMounted } from 'vue'
 import { useMessage } from 'naive-ui'
 import { useGlobalStore } from '../store/global'
+import { hashPassword } from '../utils/crypto'
 import api from '../api'
 
 const message = useMessage()
@@ -66,8 +67,22 @@ const saveTitle = () => {
 
 const submit = async () => {
  if (!form.currentPassword) return message.error('请输入当前密码')
+ if (form.newPassword && form.newPassword !== form.confirmPassword) {
+   return message.error('两次输入的新密码不一致')
+ }
  try {
-   await api.post('/update_credentials', form)
+   // 密码 SHA-256 预哈希：明文永远不离开浏览器
+   // 同时发送 passwordPlain 用于旧方案兼容（仅首次升级需要）
+   const hashedCurrent = await hashPassword(form.currentPassword)
+   const payload = {
+     newUsername: form.newUsername,
+     currentPassword: hashedCurrent,
+     currentPasswordPlain: form.currentPassword,
+     newPassword: form.newPassword ? await hashPassword(form.newPassword) : '',
+     newPasswordPlain: form.newPassword || '',
+     confirmPassword: form.confirmPassword ? await hashPassword(form.confirmPassword) : '',
+   }
+   await api.post('/update_credentials', payload)
    message.success('凭证已修改，请重新登录')
    setTimeout(() => {
      localStorage.removeItem('jwt_token')

@@ -188,10 +188,12 @@ func UpdateNotificationHandler(c *gin.Context) {
 
 func UpdateCredentialsHandler(c *gin.Context) {
 	var req struct {
-		NewUsername     string `json:"newUsername"`
-		CurrentPassword string `json:"currentPassword" binding:"required"`
-		NewPassword     string `json:"newPassword"`
-		ConfirmPassword string `json:"confirmPassword"`
+		NewUsername           string `json:"newUsername"`
+		CurrentPassword       string `json:"currentPassword" binding:"required"`
+		CurrentPasswordPlain  string `json:"currentPasswordPlain"` // 新前端额外提供
+		NewPassword           string `json:"newPassword"`
+		NewPasswordPlain      string `json:"newPasswordPlain"` // 新前端额外提供
+		ConfirmPassword       string `json:"confirmPassword"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "参数错误"})
@@ -205,9 +207,28 @@ func UpdateCredentialsHandler(c *gin.Context) {
 		return
 	}
 
-	if !utils.CheckPasswordHash(req.CurrentPassword, user.PasswordHash) {
+	// 双模式密码校验：兼容新方案(SHA-256)和旧方案(明文)
+	matched, needsUpgrade, upgradeHash := utils.CheckPasswordWithUpgradeV2(req.CurrentPassword, req.CurrentPasswordPlain, user.PasswordHash)
+	if !matched {
 		c.JSON(http.StatusUnauthorized, gin.H{"code": 1, "message": "当前密码不正确"})
 		return
+	}
+	// 透明升级旧方案存储
+	if needsUpgrade {
+		hashToStore := upgradeHash
+		if hashToStore == "" && req.CurrentPasswordPlain != "" {
+			h, err := utils.HashPassword(utils.SHA256Hex(req.CurrentPasswordPlain))
+			if err == nil {
+				hashToStore = h
+			}
+		}
+		if hashToStore != "" {
+			database.DB.Model(&user).Updates(map[string]interface{}{
+				"password_hash":    hashToStore,
+				"password_version": 1,
+			})
+			user.PasswordHash = hashToStore
+		}
 	}
 
 	changed := false
@@ -233,6 +254,7 @@ func UpdateCredentialsHandler(c *gin.Context) {
 			return
 		}
 		user.PasswordHash = newPasswordHash
+		user.PasswordVersion = 1 // 新方案：SHA-256 + bcrypt
 		user.NeedsPasswordReminder = false
 		user.PasswordReminderShown = true
 		passwordChanged = true

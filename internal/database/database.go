@@ -66,14 +66,15 @@ func ConnectDatabase(dbPath string) error {
 
 	if userCount == 0 {
 		log.Info().Msg("未发现用户，正在创建默认管理员 admin/admin...")
-		hashedPassword, err := utils.HashPassword("admin")
+		hashedPassword, err := utils.HashPassword(utils.SHA256Hex("admin"))
 		if err != nil {
 			return fmt.Errorf("密码哈希失败: %w", err)
 		}
 		defaultUser := models.User{
-			Username:              "admin",
-			PasswordHash:          hashedPassword,
-			TokenVersion:          1,
+			Username:          "admin",
+			PasswordHash:      hashedPassword,
+			TokenVersion:      1,
+			PasswordVersion:   1,
 			NeedsPasswordReminder: true,
 		}
 		if err := DB.Create(&defaultUser).Error; err != nil {
