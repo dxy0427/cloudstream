@@ -28,11 +28,3 @@ type AccessTokenResp struct {
 		ExpiredAt   string `json:"expiredAt"`
 	} `json:"data"`
 }
-
-type FileListResp struct {
-	BaseResp
-	Data struct {
-		FileList   []FileInfo `json:"fileList"`
-		LastFileId int64      `json:"lastFileId"`
-	} `json:"data"`
-}

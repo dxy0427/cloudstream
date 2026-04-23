@@ -17,10 +17,6 @@ const (
 	NotifyEventManual   NotifyEvent = "manual"
 )
 
-func SendNotification(title, message string) {
-	sendNotificationWithEvent(title, message, NotifyEventComplete)
-}
-
 func SendNotificationByEvent(title, message string, event NotifyEvent) {
 	sendNotificationWithEvent(title, message, event)
 }

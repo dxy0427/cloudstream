@@ -157,15 +157,6 @@ func (c *Client) invalidateToken() {
 	log.Warn().Str("account", c.Account.Name).Msg("123Pan Token 被标记失效，准备重新获取")
 }
 
-func ClearTokenCache(accountID uint) {
-	mapMutex.Lock()
-	defer mapMutex.Unlock()
-	if _, ok := tokenCaches[accountID]; ok {
-		delete(tokenCaches, accountID)
-		log.Info().Uint("accountID", accountID).Msg("已清理账户的 AccessToken 缓存")
-	}
-}
-
 // 核心优化：带鉴权重试机制的请求发送 (Robust Version)
 func (c *Client) sendAuthorizedRequest(method, endpoint, _ string, queryParams map[string]interface{}) (json.RawMessage, error) {
 	fullURL, _ := url.Parse(ApiBaseURL)
