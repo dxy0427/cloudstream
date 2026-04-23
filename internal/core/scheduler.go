@@ -25,8 +25,6 @@ func InitScheduler() {
 }
 
 func RefreshScheduler() {
-	// 只清除调度计划，不取消正在运行的任务
-	// 正在运行的任务应由用户主动调用 StopTask 来停止
 	MainScheduler.Clear()
 
 	var tasks []models.Task

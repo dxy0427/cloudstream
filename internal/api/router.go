@@ -18,7 +18,6 @@ func InitRouter() *gin.Engine {
 
 	r.Use(gzip.Gzip(gzip.DefaultCompression))
 
-	// CORS 中间件
 	r.Use(func(c *gin.Context) {
 		origin := c.Request.Header.Get("Origin")
 		if origin == "" {

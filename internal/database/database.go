@@ -35,11 +35,9 @@ func ConnectDatabase(dbPath string) error {
 		return err
 	}
 
-	// SQLite 是文件锁数据库，并发写操作会导致 SQLITE_BUSY
-	// WAL 模式允许并发读取，但写入仍需串行，限制写入连接数为 1
 	sqlDB.SetMaxOpenConns(1)
 	sqlDB.SetMaxIdleConns(1)
-	sqlDB.SetConnMaxLifetime(0) // SQLite 不需要连接小时
+	sqlDB.SetConnMaxLifetime(0)
 
 	if _, err := sqlDB.Exec("PRAGMA journal_mode=WAL;"); err != nil {
 		log.Warn().Err(err).Msg("开启 SQLite WAL 模式失败，性能可能受限")
@@ -82,14 +80,9 @@ func ConnectDatabase(dbPath string) error {
 		}
 	}
 
-	// 升级旧用户密码到新方案(SHA-256+bcrypt)
-	// 旧方案：bcrypt(plaintext), password_version=0
-	// 新方案：bcrypt(SHA256(plaintext)), password_version=1
 	var oldVersionUsers []models.User
 	if err := DB.Where("password_version = 0").Find(&oldVersionUsers).Error; err == nil {
 		for _, u := range oldVersionUsers {
-			// 对于默认 admin 账户，我们知道密码是 "admin"
-			// 其他旧用户需要通过重置密码或旧前端登录来升级
 			if u.Username == "admin" {
 				newHash, err := utils.HashPassword(utils.SHA256Hex("admin"))
 				if err == nil {

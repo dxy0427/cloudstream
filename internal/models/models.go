@@ -17,7 +17,7 @@ type User struct {
 	Username        string `gorm:"unique;not null"`
 	PasswordHash    string `gorm:"not null"`
 	TokenVersion    int    `gorm:"default:1"`
-	PasswordVersion int    `gorm:"column:password_version;default:0"` // 0=旧方案(明文→bcrypt), 1=新方案(sha256→bcrypt)
+	PasswordVersion int    `gorm:"column:password_version;default:0"`
 
 	NotifyType     string `gorm:"default:'webhook'" json:"NotifyType"`
 	WebhookURL     string `json:"WebhookURL"`

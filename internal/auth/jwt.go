@@ -51,7 +51,7 @@ func init() {
 
 type LoginRequest struct {
 	Username string `json:"username" binding:"required"`
-	Password string `json:"password" binding:"required"` // 前端发 SHA-256 哈希
+	Password string `json:"password" binding:"required"`
 }
 
 func LoginHandler(c *gin.Context) {
@@ -66,14 +66,12 @@ func LoginHandler(c *gin.Context) {
 		return
 	}
 
-	// 密码校验：前端发来 SHA-256 哈希，后端比对 bcrypt(SHA256)
 	matched, needsUpgrade, newHash := utils.CheckAndUpgradePassword(req.Password, user.PasswordHash)
 	if !matched {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户名或密码错误"})
 		return
 	}
 
-	// 自动升级旧存储
 	if needsUpgrade && newHash != "" {
 		database.DB.Model(&user).Updates(map[string]interface{}{
 			"password_hash":    newHash,

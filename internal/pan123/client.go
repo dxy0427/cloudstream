@@ -42,7 +42,6 @@ var (
 	listCacheMutex sync.RWMutex
 )
 
-// 内存保护：定期清理过期列表缓存
 func init() {
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
@@ -96,7 +95,6 @@ func (c *Client) getAccessToken() (string, error) {
 	cache.Lock()
 	defer cache.Unlock()
 
-	// 双重检查
 	if cache.Token != "" && time.Now().Before(cache.ExpiresAt.Add(-5*time.Minute)) {
 		return cache.Token, nil
 	}
@@ -147,7 +145,6 @@ func (c *Client) getAccessToken() (string, error) {
 	return cache.Token, nil
 }
 
-// 强制清除 Token 缓存
 func (c *Client) invalidateToken() {
 	mapMutex.Lock()
 	delete(tokenCaches, c.Account.ID)
@@ -155,7 +152,6 @@ func (c *Client) invalidateToken() {
 	log.Warn().Str("account", c.Account.Name).Msg("123Pan Token 被标记失效，准备重新获取")
 }
 
-// 核心优化：带鉴权重试机制的请求发送 (Robust Version)
 func (c *Client) sendAuthorizedRequest(method, endpoint string, queryParams map[string]interface{}) (json.RawMessage, error) {
 	fullURL, _ := url.Parse(ApiBaseURL)
 	fullURL.Path = endpoint
@@ -167,16 +163,15 @@ func (c *Client) sendAuthorizedRequest(method, endpoint string, queryParams map[
 	}
 	fullURL.RawQuery = q.Encode()
 
-	// 鉴权重试循环：最多尝试2次（第一次用缓存/新Token，失败则清除缓存重试）
+	// 鉴权重试：最多2次
 	maxAuthRetries := 2
 	for authAttempt := 0; authAttempt < maxAuthRetries; authAttempt++ {
-		// 每次循环都重新获取 Token (可能是缓存的，也可能是新的)
 		accessToken, err := c.getAccessToken()
 		if err != nil {
 			return nil, err
 		}
 
-		// 网络重试循环
+		// 网络重试：最多3次
 		maxNetRetries := 3
 		var lastNetErr error
 		var resp *http.Response
@@ -215,11 +210,10 @@ func (c *Client) sendAuthorizedRequest(method, endpoint string, queryParams map[
 			return nil, fmt.Errorf("请求 123Pan 失败(重试%d次): %w", maxNetRetries, lastNetErr)
 		}
 
-		// 检查 HTTP 401 Unauthorized
 		if resp.StatusCode == 401 {
 			if authAttempt == 0 {
 				c.invalidateToken()
-				continue // 触发重试
+				continue
 			}
 			return nil, fmt.Errorf("123Pan 鉴权失败 (HTTP 401)")
 		}
@@ -232,9 +226,7 @@ func (c *Client) sendAuthorizedRequest(method, endpoint string, queryParams map[
 			return nil, fmt.Errorf("解析 JSON 失败: %w", err)
 		}
 
-		// 处理业务逻辑错误
 		if result.Code == 429 {
-			// 频率限制：等待后重试，最多重试3次
 			if authAttempt == 0 {
 				time.Sleep(3 * time.Second)
 				continue
@@ -242,7 +234,6 @@ func (c *Client) sendAuthorizedRequest(method, endpoint string, queryParams map[
 			return nil, fmt.Errorf("123Pan 频率限制 (Code 429)，重试次数耗尽")
 		}
 
-		// 有些 API 可能会返回业务上的 401 (虽然 123pan 通常用 HTTP status)
 		if result.Code == 401 {
 			if authAttempt == 0 {
 				c.invalidateToken()
@@ -276,7 +267,6 @@ func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, pare
 			listCacheMutex.RUnlock()
 		}
 
-		// 注意：这里的调用不再手动传 accessToken，因为 sendAuthorizedRequest 内部会处理
 		params := map[string]interface{}{
 			"parentFileId": parentFileId,
 			"limit":        limit,
@@ -287,8 +277,7 @@ func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, pare
 		if lastFileId > 0 {
 			params["lastFileId"] = lastFileId
 		}
-		
-		// 传递空字符串作为 token，sendAuthorizedRequest 内部会获取
+
 		rawData, err := c.sendAuthorizedRequest(http.MethodGet, "/api/v2/file/list", params)
 		if err != nil {
 			return nil, 0, err
@@ -366,7 +355,6 @@ func (c *Client) ListOpenListDirectory(parentPath string) ([]FileInfo, error) {
 	return files, nil
 }
 
-// GetDownloadURL 获取直链 (无缓存，直接穿透)
 func (c *Client) GetDownloadURL(identifier interface{}) (string, error) {
 	var finalURL string
 	var err error
@@ -381,7 +369,6 @@ func (c *Client) GetDownloadURL(identifier interface{}) (string, error) {
 		}
 		finalURL, err = c.OpenListClient.GetRawURL(pathStr)
 	} else {
-		// 123 Pan
 		var fileID int64
 		switch v := identifier.(type) {
 		case int64:
@@ -397,7 +384,6 @@ func (c *Client) GetDownloadURL(identifier interface{}) (string, error) {
 		}
 
 		params := map[string]interface{}{"fileId": strconv.FormatInt(fileID, 10)}
-		// sendAuthorizedRequest 内部会自动获取 Token
 		rawData, err := c.sendAuthorizedRequest(http.MethodGet, "/api/v1/file/download_info", params)
 		if err != nil {
 			return "", err
