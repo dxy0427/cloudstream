@@ -5,15 +5,8 @@ const { message } = createDiscreteApi(['message'])
 
 const api = axios.create({
   baseURL: '/api/v1',
-  timeout: 60000
-})
-
-api.interceptors.request.use(config => {
-  const token = localStorage.getItem('jwt_token')
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`
-  }
-  return config
+  timeout: 60000,
+  withCredentials: true  // 自动携带 HTTP-only Cookie
 })
 
 api.interceptors.response.use(
@@ -24,7 +17,6 @@ api.interceptors.response.use(
 
     if (status === 401) {
       if (!window.location.pathname.includes('/login')) {
-        localStorage.removeItem('jwt_token')
         window.location.href = '/login'
       }
       return Promise.reject(err)

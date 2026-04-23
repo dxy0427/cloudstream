@@ -89,7 +89,7 @@ func LoginHandler(c *gin.Context) {
 	}
 	c.SetCookie("cloudstream_token", tokenString, 7*24*3600, "/", "", false, true)
 	c.JSON(http.StatusOK, gin.H{
-		"token":                 tokenString,
+		"code":                  0,
 		"needsPasswordReminder": user.NeedsPasswordReminder,
 		"passwordReminderShown": user.PasswordReminderShown,
 	})

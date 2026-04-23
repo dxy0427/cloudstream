@@ -25,48 +25,10 @@ const router = createRouter({
   ]
 })
 
-function decodeJwtPayload(token) {
-  const parts = token.split('.')
-  if (parts.length < 2) {
-    throw new Error('Invalid JWT format')
-  }
-
-  const base64 = parts[1]
-    .replace(/-/g, '+')
-    .replace(/_/g, '/')
-  const paddedBase64 = base64.padEnd(Math.ceil(base64.length / 4) * 4, '=')
-
-  return JSON.parse(atob(paddedBase64))
-}
-
-function isTokenExpired(token) {
-  try {
-    const payload = decodeJwtPayload(token)
-    const exp = payload.exp
-    if (typeof exp !== 'number') {
-      return true
-    }
-    const now = Math.floor(Date.now() / 1000)
-    return exp < now
-  } catch (e) {
-    return true
-  }
-}
-
+// 路由守卫：仅检查是否在登录页，实际认证由 API 拦截器处理
+// HTTP-only Cookie 不可被 JS 读取，无法在这里检查
 router.beforeEach((to, from, next) => {
-  const token = localStorage.getItem('jwt_token')
-  if (!token && !to.meta.noAuth) {
-    next('/login')
-  } else if (token && !to.meta.noAuth) {
-    if (isTokenExpired(token)) {
-      localStorage.removeItem('jwt_token')
-      next('/login')
-    } else {
-      next()
-    }
-  } else {
-    next()
-  }
+  next()
 })
 
 export default router

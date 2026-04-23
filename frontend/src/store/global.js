@@ -30,10 +30,7 @@ export const useGlobalStore = defineStore('global', () => {
   }
 
   const loadSettings = async (options = {}) => {
-    if (!localStorage.getItem('jwt_token')) {
-      return
-    }
-
+    // HTTP-only Cookie 不可读，直接尝试请求，401 由拦截器处理
     try {
       const res = await userSettingsApi.getSettings()
       if (res.code === 0 && res.data) {
@@ -53,17 +50,13 @@ export const useGlobalStore = defineStore('global', () => {
   }
 
   const updateSettings = async (data) => {
-    const hasToken = !!localStorage.getItem('jwt_token')
+    // HTTP-only Cookie 不可读，直接尝试请求，401 由拦截器处理
 
     if (typeof data.siteTitle === 'string') {
       applyTitle(data.siteTitle)
     }
     if (typeof data.theme === 'string') {
       applyTheme(data.theme)
-    }
-
-    if (!hasToken) {
-      return { code: 0, data: { siteTitle: siteTitle.value, theme: isDark.value ? 'dark' : 'light' } }
     }
 
     try {

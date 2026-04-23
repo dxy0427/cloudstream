@@ -182,12 +182,8 @@ const scheduleReconnect = () => {
 const connectLogStream = () => {
   if (eventSource) return
   streamStatus.value = 'connecting'
-  const token = localStorage.getItem('jwt_token')
-  if (!token) {
-    streamStatus.value = 'disconnected'
-    return
-  }
-  eventSource = new EventSource(`/api/v1/logs/stream?token=${encodeURIComponent(token)}`)
+  // EventSource 同源请求自动携带 HTTP-only Cookie，无需手动传 token
+  eventSource = new EventSource('/api/v1/logs/stream')
   eventSource.onopen = () => {
     streamStatus.value = 'connected'
     hasEverConnected.value = true

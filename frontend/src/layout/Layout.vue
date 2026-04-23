@@ -137,9 +137,9 @@ function handleMenuClick(key) {
 
 async function logout() {
   try { await api.post('/logout') } catch (e) {}
-  localStorage.removeItem('jwt_token')
   localStorage.removeItem('needs_password_reminder')
-  document.cookie = 'cloudstream_token=; Max-Age=0; path=/'
+  // HTTP-only Cookie 无法被 JS 删除，但后端 /logout 已使 Token 失效
+  // 重新加载后 401 拦截器会跳转到登录页
   router.push('/login')
 }
 </script>

@@ -123,10 +123,9 @@ const scheduleReconnect = () => {
 }
 
 const connectTaskStream = () => {
-  const token = localStorage.getItem('jwt_token')
-  if (!token) return
   if (eventSource) eventSource.close()
-  eventSource = new EventSource(`/api/v1/tasks/stream?token=${encodeURIComponent(token)}`)
+  // EventSource 同源请求自动携带 HTTP-only Cookie，无需手动传 token
+  eventSource = new EventSource('/api/v1/tasks/stream')
   eventSource.addEventListener('tasks', (event) => {
     try {
       data.value = JSON.parse(event.data)

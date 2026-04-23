@@ -82,7 +82,6 @@ const submit = async () => {
    await api.post('/update_credentials', payload)
    message.success('凭证已修改，请重新登录')
    setTimeout(() => {
-     localStorage.removeItem('jwt_token')
      window.location.reload()
    }, 1000)
  } catch (e) {
