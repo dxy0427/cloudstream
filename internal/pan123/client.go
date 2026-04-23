@@ -245,10 +245,12 @@ func (c *Client) sendAuthorizedRequest(method, endpoint, _ string, queryParams m
 
 		// 处理业务逻辑错误
 		if result.Code == 429 {
-			// 频率限制：等待后直接重发，不走 authAttempt 循环
-			// 注意：不能用 authAttempt-- 因为循环末尾没有 authAttempt++，会死循环
-			time.Sleep(3 * time.Second)
-			continue
+			// 频率限制：等待后重试，最多重试3次
+			if authAttempt == 0 {
+				time.Sleep(3 * time.Second)
+				continue
+			}
+			return nil, fmt.Errorf("123Pan 频率限制 (Code 429)，重试次数耗尽")
 		}
 
 		// 有些 API 可能会返回业务上的 401 (虽然 123pan 通常用 HTTP status)

@@ -24,10 +24,11 @@ type ProxyServer struct {
 	cache       *Cache
 }
 
-// Cache 内存缓存
+// Cache 内存缓存（带大小限制）
 type Cache struct {
-	data map[string]cacheEntry
-	mu   sync.RWMutex
+	data     map[string]cacheEntry
+	mu       sync.RWMutex
+	maxSize  int
 }
 
 type cacheEntry struct {
@@ -36,8 +37,27 @@ type cacheEntry struct {
 }
 
 func NewCache() *Cache {
-	return &Cache{
-		data: make(map[string]cacheEntry),
+	c := &Cache{
+		data:    make(map[string]cacheEntry),
+		maxSize: 5000,
+	}
+	// 定期清理过期缓存，防止内存泄漏
+	go c.cleanupLoop()
+	return c
+}
+
+func (c *Cache) cleanupLoop() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for range ticker.C {
+		c.mu.Lock()
+		now := time.Now()
+		for k, v := range c.data {
+			if now.After(v.expiresAt) {
+				delete(c.data, k)
+			}
+		}
+		c.mu.Unlock()
 	}
 }
 
@@ -50,10 +70,7 @@ func (c *Cache) Get(key string) (string, bool) {
 		return "", false
 	}
 	if time.Now().After(entry.expiresAt) {
-		// 升级为写锁，删除过期 key，避免 map 无限增长
-		c.mu.Lock()
-		delete(c.data, key)
-		c.mu.Unlock()
+		// 过期条目由 cleanupLoop 定期清理，此处直接返回未命中
 		return "", false
 	}
 	return entry.value, true
@@ -62,7 +79,21 @@ func (c *Cache) Get(key string) (string, bool) {
 func (c *Cache) Set(key string, value string, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	
+
+	// 缓存满时清理过期条目
+	if len(c.data) >= c.maxSize {
+		now := time.Now()
+		for k, v := range c.data {
+			if now.After(v.expiresAt) {
+				delete(c.data, k)
+			}
+		}
+		// 如果清理后仍然满，跳过写入
+		if len(c.data) >= c.maxSize {
+			return
+		}
+	}
+
 	c.data[key] = cacheEntry{
 		value:     value,
 		expiresAt: time.Now().Add(ttl),

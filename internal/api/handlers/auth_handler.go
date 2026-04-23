@@ -4,11 +4,21 @@ import (
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 	"net/http"
 )
 
-// LogoutHandler 仅退出当前设备上的本地会话，不影响其他设备
+// LogoutHandler 退出登录，使当前 Token 失效
 func LogoutHandler(c *gin.Context) {
+	username, exists := c.Get("username")
+	if !exists {
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "退出成功"})
+		return
+	}
+
+	// 递增 TokenVersion 使所有已签发的 Token 失效
+	database.DB.Model(&models.User{}).Where("username = ?", username).Update("token_version", gorm.Expr("token_version + 1"))
+
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "退出成功"})
 }
 

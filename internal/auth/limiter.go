@@ -40,7 +40,6 @@ func LoginRateLimiter() gin.HandlerFunc {
 		ip := c.ClientIP()
 
 		loginLimiterStore.Lock()
-		defer loginLimiterStore.Unlock()
 
 		cleanupExpiredEntries(now)
 
@@ -55,15 +54,24 @@ func LoginRateLimiter() gin.HandlerFunc {
 			limiter.windowStart = now
 		}
 
-		limiter.count++
 		limiter.lastSeen = now
 
-		if limiter.count > loginMaxAttempts {
+		if limiter.count >= loginMaxAttempts {
+			loginLimiterStore.Unlock()
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": "尝试次数过多，请 1 分钟后再试"})
 			c.Abort()
 			return
 		}
 
+		loginLimiterStore.Unlock()
+
 		c.Next()
+
+		// 只在登录失败时递增计数（401 = 用户名密码错误）
+		if c.Writer.Status() == http.StatusUnauthorized {
+			loginLimiterStore.Lock()
+			limiter.count++
+			loginLimiterStore.Unlock()
+		}
 	}
 }
