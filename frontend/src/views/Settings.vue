@@ -72,14 +72,11 @@ const submit = async () => {
  }
  try {
    // 密码 SHA-256 预哈希：明文永远不离开浏览器
-   // 同时发送 passwordPlain 用于旧方案兼容（仅首次升级需要）
    const hashedCurrent = await hashPassword(form.currentPassword)
    const payload = {
      newUsername: form.newUsername,
      currentPassword: hashedCurrent,
-     currentPasswordPlain: form.currentPassword,
      newPassword: form.newPassword ? await hashPassword(form.newPassword) : '',
-     newPasswordPlain: form.newPassword || '',
      confirmPassword: form.confirmPassword ? await hashPassword(form.confirmPassword) : '',
    }
    await api.post('/update_credentials', payload)

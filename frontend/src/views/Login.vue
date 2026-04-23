@@ -71,12 +71,10 @@ const handleLogin = async () => {
   loading.value = true
   try {
     // 密码 SHA-256 预哈希：明文永远不离开浏览器
-    // 同时发送 passwordPlain 用于旧方案兼容（仅首次升级需要）
     const hashedPassword = await hashPassword(form.password)
     const res = await api.post('/login', {
       username: form.username,
-      password: hashedPassword,
-      passwordPlain: form.password
+      password: hashedPassword
     })
     localStorage.setItem('jwt_token', res.token)
     await store.loadSettings({ preserveTheme: true })

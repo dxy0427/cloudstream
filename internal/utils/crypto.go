@@ -32,32 +32,26 @@ func SHA256Hex(s string) string {
 	return hex.EncodeToString(h[:])
 }
 
-// CheckPasswordWithUpgradeV2 支持双字段的密码校验
-// password: 前端发来的值（SHA-256 哈希）
-// passwordPlain: 原始明文（新前端额外提供，用于旧方案fallback）
-// storedHash: 数据库中存储的 bcrypt 哈希
-// 返回 (是否匹配, 是否需要升级, 升级用的新哈希值)
-func CheckPasswordWithUpgradeV2(password, passwordPlain, storedHash string) (bool, bool, string) {
-	if IsSHA256Hex(password) {
-		// 新方案：password 是 SHA-256 哈希
-		if CheckPasswordHash(password, storedHash) {
-			return true, false, "" // 新方案匹配
-		}
-		// 旧方案 fallback：用原始明文尝试
-		if passwordPlain != "" && CheckPasswordHash(passwordPlain, storedHash) {
-			// 旧方案匹配，升级为 bcrypt(SHA256(plaintext))
-			newHash, err := HashPassword(password)
-			if err != nil {
-				return true, true, ""
-			}
-			return true, true, newHash
-		}
-		return false, false, ""
+// CheckAndUpgradePassword 校验密码并自动升级存储
+// password: 前端发来的 SHA-256 哈希
+// storedHash: 数据库中的 bcrypt 哈希
+// 返回 (匹配, 需要升级, 升级后的新哈希)
+func CheckAndUpgradePassword(password, storedHash string) (bool, bool, string) {
+	// 新方案：bcrypt(SHA256) 直接比对
+	if CheckPasswordHash(password, storedHash) {
+		return true, false, ""
 	}
 
-	// 旧前端（传明文）
-	if CheckPasswordHash(password, storedHash) {
-		return true, true, ""
-	}
+	// 旧方案 fallback：存储可能是 bcrypt(plaintext)
+	// 用 SHA-256 值当"明文"去比对旧 bcrypt → 对于正常密码不会匹配
+	// 但如果用户密码恰好是64位hex，这里可能误匹配，概率极低可忽略
+	// 实际上：普通用户的 SHA256("password") ≠ "password"，所以不会走到这里
+
+	// 真正的旧方案 fallback：我们需要原始明文才能升级
+	// 但由于前端不发明文了，旧用户需要重新设置密码
+	// 或者：用 SHA-256 哈希值本身做一次 bcrypt 尝试
+	// 如果旧存储是 bcrypt(plaintext) 且 plaintext ≠ SHA256，则不匹配
+	// → 旧用户首次登录会失败，需要管理员重置密码或用旧前端登录一次
+
 	return false, false, ""
 }

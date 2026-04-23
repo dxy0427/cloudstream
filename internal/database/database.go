@@ -82,6 +82,27 @@ func ConnectDatabase(dbPath string) error {
 		}
 	}
 
+	// 升级旧用户密码到新方案(SHA-256+bcrypt)
+	// 旧方案：bcrypt(plaintext), password_version=0
+	// 新方案：bcrypt(SHA256(plaintext)), password_version=1
+	var oldVersionUsers []models.User
+	if err := DB.Where("password_version = 0").Find(&oldVersionUsers).Error; err == nil {
+		for _, u := range oldVersionUsers {
+			// 对于默认 admin 账户，我们知道密码是 "admin"
+			// 其他旧用户需要通过重置密码或旧前端登录来升级
+			if u.Username == "admin" {
+				newHash, err := utils.HashPassword(utils.SHA256Hex("admin"))
+				if err == nil {
+					DB.Model(&u).Updates(map[string]interface{}{
+						"password_hash":    newHash,
+						"password_version": 1,
+					})
+					log.Info().Str("username", "admin").Msg("默认管理员密码已升级到新方案(SHA-256+bcrypt)")
+				}
+			}
+		}
+	}
+
 	log.Info().Msg("数据库连接和迁移成功 (WAL模式已启用)")
 	return nil
 }

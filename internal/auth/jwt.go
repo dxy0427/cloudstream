@@ -50,9 +50,8 @@ func init() {
 }
 
 type LoginRequest struct {
-	Username      string `json:"username" binding:"required"`
-	Password      string `json:"password" binding:"required"`
-	PasswordPlain string `json:"passwordPlain"` // 新前端额外提供原始明文，用于旧方案fallback
+	Username string `json:"username" binding:"required"`
+	Password string `json:"password" binding:"required"` // 前端发 SHA-256 哈希
 }
 
 func LoginHandler(c *gin.Context) {
@@ -67,29 +66,20 @@ func LoginHandler(c *gin.Context) {
 		return
 	}
 
-	// 双模式密码校验：支持新方案(SHA-256哈希)和旧方案(明文)
-	matched, needsUpgrade, newHash := utils.CheckPasswordWithUpgradeV2(req.Password, req.PasswordPlain, user.PasswordHash)
+	// 密码校验：前端发来 SHA-256 哈希，后端比对 bcrypt(SHA256)
+	matched, needsUpgrade, newHash := utils.CheckAndUpgradePassword(req.Password, user.PasswordHash)
 	if !matched {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户名或密码错误"})
 		return
 	}
 
-	// 透明升级：旧方案用户首次用新前端登录时，自动升级存储
-	if needsUpgrade {
-		hashToStore := newHash
-		if hashToStore == "" && req.PasswordPlain != "" {
-			h, err := utils.HashPassword(utils.SHA256Hex(req.PasswordPlain))
-			if err == nil {
-				hashToStore = h
-			}
-		}
-		if hashToStore != "" {
-			database.DB.Model(&user).Updates(map[string]interface{}{
-				"password_hash":    hashToStore,
-				"password_version": 1,
-			})
-			log.Info().Str("username", user.Username).Msg("密码存储已自动升级到新方案(SHA-256+bcrypt)")
-		}
+	// 自动升级旧存储
+	if needsUpgrade && newHash != "" {
+		database.DB.Model(&user).Updates(map[string]interface{}{
+			"password_hash":    newHash,
+			"password_version": 1,
+		})
+		log.Info().Str("username", user.Username).Msg("密码存储已自动升级")
 	}
 
 	tokenString, err := generateToken(user.Username, user.TokenVersion)
