@@ -529,14 +529,17 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 	}
 
 	if err := os.MkdirAll(filepath.Dir(localFilePath), 0755); err != nil {
+		log.Error().Err(err).Str("文件", strmFileName).Msg("创建目录失败")
 		return
 	}
-	if err := os.WriteFile(localFilePath, []byte(streamURL), 0644); err == nil {
-		if !existedBefore {
-			stats.newStrmCount.Add(1)
-		}
-		log.Info().Str("文件", strmFileName).Msg("已生成 STRM 文件")
+	if err := os.WriteFile(localFilePath, []byte(streamURL), 0644); err != nil {
+		log.Error().Err(err).Str("文件", strmFileName).Msg("写入STRM文件失败")
+		return
 	}
+	if !existedBefore {
+		stats.newStrmCount.Add(1)
+	}
+	log.Info().Str("文件", strmFileName).Msg("已生成 STRM 文件")
 }
 
 func downloadAndSaveMetaFile(client *pan123.Client, task models.Task, identity interface{}, fileName string, localBasePath string, tracker *FileTracker, stats *ScanStats) {
@@ -552,28 +555,35 @@ func downloadAndSaveMetaFile(client *pan123.Client, task models.Task, identity i
 		log.Error().Err(err).Str("文件", fileName).Msg("获取元数据链接失败")
 		return
 	}
-	resp, err := http.Get(downloadURL)
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	resp, err := httpClient.Get(downloadURL)
 	if err != nil {
+		log.Error().Err(err).Str("文件", fileName).Msg("下载元数据失败")
 		return
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		log.Warn().Str("文件", fileName).Int("status", resp.StatusCode).Msg("下载元数据返回非200")
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(localFilePath), 0755); err != nil {
+		log.Error().Err(err).Str("文件", fileName).Msg("创建目录失败")
 		return
 	}
 	outFile, err := os.Create(localFilePath)
 	if err != nil {
+		log.Error().Err(err).Str("文件", fileName).Msg("创建文件失败")
 		return
 	}
 	defer outFile.Close()
-	if _, err := io.Copy(outFile, resp.Body); err == nil {
-		if !existedBefore {
-			stats.newMetaCount.Add(1)
-		}
-		log.Info().Str("文件", fileName).Msg("已下载元数据文件")
+	if _, err := io.Copy(outFile, resp.Body); err != nil {
+		log.Error().Err(err).Str("文件", fileName).Msg("写入文件失败")
+		return
 	}
+	if !existedBefore {
+		stats.newMetaCount.Add(1)
+	}
+	log.Info().Str("文件", fileName).Msg("已下载元数据文件")
 }
 
 func countTrackedOutputs(tracker *FileTracker) (int, int) {

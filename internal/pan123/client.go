@@ -42,21 +42,22 @@ var (
 	listCacheMutex sync.RWMutex
 )
 
-// 内存保护：仅清理列表缓存
-func cleanupCache() {
-	listCacheMutex.Lock()
-	if len(listCache) > 3000 {
-		log.Info().Int("count", len(listCache)).Msg("触发列表缓存清理")
-		for k, v := range listCache {
-			if time.Now().After(v.ExpiresAt) {
-				delete(listCache, k)
+// 内存保护：定期清理过期列表缓存
+func init() {
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			listCacheMutex.Lock()
+			now := time.Now()
+			for k, v := range listCache {
+				if now.After(v.ExpiresAt) {
+					delete(listCache, k)
+				}
 			}
+			listCacheMutex.Unlock()
 		}
-		if len(listCache) > 3000 {
-			listCache = make(map[string]*listCacheItem)
-		}
-	}
-	listCacheMutex.Unlock()
+	}()
 }
 
 type Client struct {
@@ -72,9 +73,6 @@ func NewClient(account models.Account) *Client {
 	}
 	if account.Type == models.AccountTypeOpenList {
 		client.OpenListClient = openlist.NewClient(account)
-	}
-	if len(listCache) > 3000 {
-		go cleanupCache()
 	}
 	return client
 }
@@ -158,7 +156,7 @@ func (c *Client) invalidateToken() {
 }
 
 // 核心优化：带鉴权重试机制的请求发送 (Robust Version)
-func (c *Client) sendAuthorizedRequest(method, endpoint, _ string, queryParams map[string]interface{}) (json.RawMessage, error) {
+func (c *Client) sendAuthorizedRequest(method, endpoint string, queryParams map[string]interface{}) (json.RawMessage, error) {
 	fullURL, _ := url.Parse(ApiBaseURL)
 	fullURL.Path = endpoint
 	q := fullURL.Query()
@@ -291,7 +289,7 @@ func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, pare
 		}
 		
 		// 传递空字符串作为 token，sendAuthorizedRequest 内部会获取
-		rawData, err := c.sendAuthorizedRequest(http.MethodGet, "/api/v2/file/list", "", params)
+		rawData, err := c.sendAuthorizedRequest(http.MethodGet, "/api/v2/file/list", params)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -400,7 +398,7 @@ func (c *Client) GetDownloadURL(identifier interface{}) (string, error) {
 
 		params := map[string]interface{}{"fileId": strconv.FormatInt(fileID, 10)}
 		// sendAuthorizedRequest 内部会自动获取 Token
-		rawData, err := c.sendAuthorizedRequest(http.MethodGet, "/api/v1/file/download_info", "", params)
+		rawData, err := c.sendAuthorizedRequest(http.MethodGet, "/api/v1/file/download_info", params)
 		if err != nil {
 			return "", err
 		}

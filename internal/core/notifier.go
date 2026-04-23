@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/go-resty/resty/v2"
 	"github.com/rs/zerolog/log"
+	"time"
 )
 
 type NotifyEvent string
@@ -82,11 +83,12 @@ func SendTestNotification(req map[string]string) error {
 	}
 }
 
+var restyClient = resty.New().SetTimeout(10 * time.Second)
+
 func sendWebhookNotification(webhookURL, title, message string) error {
 	if webhookURL == "" {
 		return nil
 	}
-	client := resty.New()
 	payload := map[string]interface{}{
 		"msg_type": "post",
 		"content": map[string]interface{}{
@@ -100,7 +102,7 @@ func sendWebhookNotification(webhookURL, title, message string) error {
 			},
 		},
 	}
-	resp, err := client.R().SetHeader("Content-Type", "application/json").SetBody(payload).Post(webhookURL)
+	resp, err := restyClient.R().SetHeader("Content-Type", "application/json").SetBody(payload).Post(webhookURL)
 	if err != nil || !resp.IsSuccess() {
 		statusCode := 0
 		bodyString := ""
@@ -121,14 +123,13 @@ func sendTelegramNotification(token, chatID, title, message string) error {
 	if token == "" || chatID == "" {
 		return nil
 	}
-	client := resty.New()
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
 	payload := map[string]string{
 		"chat_id":    chatID,
 		"text":       fmt.Sprintf("*%s*\n\n%s", title, message),
 		"parse_mode": "Markdown",
 	}
-	resp, err := client.R().SetFormData(payload).Post(url)
+	resp, err := restyClient.R().SetFormData(payload).Post(url)
 	if err != nil || !resp.IsSuccess() {
 		statusCode := 0
 		bodyString := ""
