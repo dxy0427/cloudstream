@@ -99,7 +99,6 @@ func InitRouter() *gin.Engine {
 	v1.Any("/ms/:id/*path", handlers.MediaServerProxyHandler)
 
 	r.Static("/assets", "./public/assets")
-	r.StaticFile("/favicon.ico", "./public/favicon.ico")
 
 	r.NoRoute(func(c *gin.Context) {
 		path := c.Request.URL.Path
