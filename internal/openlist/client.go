@@ -9,6 +9,8 @@ import (
 	"github.com/rs/zerolog/log"
 	"io"
 	"net/http"
+	"path"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,14 +26,42 @@ var (
 	cacheMutex       sync.RWMutex
 )
 
+type dirCacheEntry struct {
+	Data      []FileInfo
+	ExpiresAt time.Time
+}
+
+var (
+	dirCache      = make(map[string]*dirCacheEntry)
+	dirCacheMutex sync.RWMutex
+)
+
+func init() {
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			dirCacheMutex.Lock()
+			now := time.Now()
+			for k, v := range dirCache {
+				if now.After(v.ExpiresAt) {
+					delete(dirCache, k)
+				}
+			}
+			dirCacheMutex.Unlock()
+		}
+	}()
+}
+
 type Client struct {
-	AccountID      uint
-	BaseURL        string
-	StaticToken    string
-	Username       string
-	Password       string
-	CacheTTL       int // 目录缓存时间(分钟)
-	HTTPClient     *http.Client
+	AccountID          uint
+	BaseURL            string
+	StaticToken        string
+	Username           string
+	Password           string
+	CacheTTL           int
+	CustomCachePolicies string
+	HTTPClient         *http.Client
 }
 
 func NewClient(account models.Account) *Client {
@@ -42,13 +72,14 @@ func NewClient(account models.Account) *Client {
 	base = strings.TrimRight(base, "/")
 
 	return &Client{
-		AccountID:      account.ID,
-		BaseURL:        base,
-		StaticToken:    strings.TrimSpace(account.OpenListToken),
-		Username:       strings.TrimSpace(account.OpenListUsername),
-		Password:       strings.TrimSpace(account.OpenListPassword),
-		CacheTTL:       account.CacheTTL,
-		HTTPClient:     &http.Client{Timeout: 30 * time.Second},
+		AccountID:          account.ID,
+		BaseURL:            base,
+		StaticToken:        strings.TrimSpace(account.OpenListToken),
+		Username:           strings.TrimSpace(account.OpenListUsername),
+		Password:           strings.TrimSpace(account.OpenListPassword),
+		CacheTTL:           account.CacheTTL,
+		CustomCachePolicies: account.CustomCachePolicies,
+		HTTPClient:         &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -250,12 +281,49 @@ func (c *Client) doPostJSON(apiPath string, body any, out any) error {
 	return fmt.Errorf("OpenList 请求失败：重试次数耗尽")
 }
 
+// getCacheTTL 根据自定义缓存策略返回指定路径的 TTL（分钟）
+func getCacheTTL(policies string, defaultTTL int, dirPath string) int {
+	if policies == "" {
+		return defaultTTL
+	}
+	for _, line := range strings.Split(policies, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		pattern, ttlStr, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		if matched, _ := path.Match(pattern, dirPath); matched {
+			if ttl, err := strconv.Atoi(strings.TrimSpace(ttlStr)); err == nil {
+				return ttl
+			}
+		}
+	}
+	return defaultTTL
+}
+
 func (c *Client) ListDirectory(pathStr string, refresh bool) ([]FileInfo, error) {
 	if pathStr == "" {
 		pathStr = "/"
 	}
 	if !strings.HasPrefix(pathStr, "/") {
 		pathStr = "/" + pathStr
+	}
+
+	cacheTTL := getCacheTTL(c.CustomCachePolicies, c.CacheTTL, pathStr)
+	cacheKey := fmt.Sprintf("openlist:%d:%s", c.AccountID, pathStr)
+
+	if cacheTTL > 0 && !refresh {
+		dirCacheMutex.RLock()
+		if item, ok := dirCache[cacheKey]; ok {
+			if time.Now().Before(item.ExpiresAt) {
+				dirCacheMutex.RUnlock()
+				return item.Data, nil
+			}
+		}
+		dirCacheMutex.RUnlock()
 	}
 
 	body := map[string]any{
@@ -272,6 +340,15 @@ func (c *Client) ListDirectory(pathStr string, refresh bool) ([]FileInfo, error)
 	}
 	if res.Code != 200 {
 		return nil, fmt.Errorf("OpenList 列表失败(code=%d): %s", res.Code, res.Message)
+	}
+
+	if cacheTTL > 0 {
+		dirCacheMutex.Lock()
+		dirCache[cacheKey] = &dirCacheEntry{
+			Data:      res.Data.Content,
+			ExpiresAt: time.Now().Add(time.Duration(cacheTTL) * time.Minute),
+		}
+		dirCacheMutex.Unlock()
 	}
 
 	return res.Data.Content, nil

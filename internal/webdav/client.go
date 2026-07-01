@@ -4,19 +4,58 @@ import (
 	"cloudstream/internal/models"
 	"fmt"
 	"net/http"
+	"path"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/studio-b12/gowebdav"
 )
 
 type Client struct {
-	AccountID  uint
-	BaseURL    string
-	Username   string
-	Password   string
-	HTTPClient *http.Client
-	client     *gowebdav.Client
+	AccountID          uint
+	BaseURL            string
+	Username           string
+	Password           string
+	CacheTTL           int
+	CustomCachePolicies string
+	HTTPClient         *http.Client
+	client             *gowebdav.Client
+}
+
+type FileInfo struct {
+	Name     string
+	Size     int64
+	IsDir    bool
+	Modified time.Time
+}
+
+type dirCacheEntry struct {
+	Data      []FileInfo
+	ExpiresAt time.Time
+}
+
+var (
+	dirCache      = make(map[string]*dirCacheEntry)
+	dirCacheMutex sync.RWMutex
+)
+
+func init() {
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			dirCacheMutex.Lock()
+			now := time.Now()
+			for k, v := range dirCache {
+				if now.After(v.ExpiresAt) {
+					delete(dirCache, k)
+				}
+			}
+			dirCacheMutex.Unlock()
+		}
+	}()
 }
 
 func NewClient(account models.Account) *Client {
@@ -27,10 +66,12 @@ func NewClient(account models.Account) *Client {
 	base = strings.TrimRight(base, "/")
 
 	c := &Client{
-		AccountID: account.ID,
-		BaseURL:   base,
-		Username:  strings.TrimSpace(account.WebDAVUsername),
-		Password:  strings.TrimSpace(account.WebDAVPassword),
+		AccountID:          account.ID,
+		BaseURL:            base,
+		Username:           strings.TrimSpace(account.WebDAVUsername),
+		Password:           strings.TrimSpace(account.WebDAVPassword),
+		CacheTTL:           account.CacheTTL,
+		CustomCachePolicies: account.CustomCachePolicies,
 		HTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -39,11 +80,27 @@ func NewClient(account models.Account) *Client {
 	return c
 }
 
-type FileInfo struct {
-	Name     string
-	Size     int64
-	IsDir    bool
-	Modified time.Time
+// getCacheTTL 根据自定义缓存策略返回指定路径的 TTL（分钟）
+func getCacheTTL(policies string, defaultTTL int, dirPath string) int {
+	if policies == "" {
+		return defaultTTL
+	}
+	for _, line := range strings.Split(policies, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		pattern, ttlStr, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		if matched, _ := path.Match(pattern, dirPath); matched {
+			if ttl, err := strconv.Atoi(strings.TrimSpace(ttlStr)); err == nil {
+				return ttl
+			}
+		}
+	}
+	return defaultTTL
 }
 
 // ListDirectory 列出目录内容，使用 PROPFIND
@@ -53,6 +110,20 @@ func (c *Client) ListDirectory(dirPath string) ([]FileInfo, error) {
 	}
 	if !strings.HasPrefix(dirPath, "/") {
 		dirPath = "/" + dirPath
+	}
+
+	cacheTTL := getCacheTTL(c.CustomCachePolicies, c.CacheTTL, dirPath)
+	cacheKey := fmt.Sprintf("webdav:%d:%s", c.AccountID, dirPath)
+
+	if cacheTTL > 0 {
+		dirCacheMutex.RLock()
+		if item, ok := dirCache[cacheKey]; ok {
+			if time.Now().Before(item.ExpiresAt) {
+				dirCacheMutex.RUnlock()
+				return item.Data, nil
+			}
+		}
+		dirCacheMutex.RUnlock()
 	}
 
 	files, err := c.client.ReadDir(dirPath)
@@ -69,11 +140,20 @@ func (c *Client) ListDirectory(dirPath string) ([]FileInfo, error) {
 			Modified: f.ModTime(),
 		})
 	}
+
+	if cacheTTL > 0 {
+		dirCacheMutex.Lock()
+		dirCache[cacheKey] = &dirCacheEntry{
+			Data:      result,
+			ExpiresAt: time.Now().Add(time.Duration(cacheTTL) * time.Minute),
+		}
+		dirCacheMutex.Unlock()
+	}
+
 	return result, nil
 }
 
 // GetDownloadURL 获取文件的下载 URL
-// WebDAV 的 GET 请求就是下载，URL 带 Basic Auth
 func (c *Client) GetDownloadURL(filePath string) (string, error) {
 	if filePath == "" {
 		return "", fmt.Errorf("path 不能为空")
@@ -82,17 +162,13 @@ func (c *Client) GetDownloadURL(filePath string) (string, error) {
 		filePath = "/" + filePath
 	}
 
-	// 验证文件存在
 	_, err := c.client.Stat(filePath)
 	if err != nil {
 		return "", fmt.Errorf("WebDAV 文件不存在: %w", err)
 	}
 
-	// 构建带认证的下载 URL
-	// 格式: http://user:pass@host/path
 	url := c.BaseURL + filePath
 	if c.Username != "" && c.Password != "" {
-		// 在 URL 中嵌入 Basic Auth（部分播放器支持）
 		url = fmt.Sprintf("%s://%s:%s@%s%s",
 			getScheme(c.BaseURL),
 			c.Username, c.Password,
