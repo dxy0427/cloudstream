@@ -225,7 +225,7 @@ func VerifyStreamSign(signStr string) (uint, uint, string, error) {
 	if err != nil {
 		return 0, 0, "", fmt.Errorf("invalid expiry")
 	}
-	if time.Now().Unix() > expiry {
+	if expiry != 0 && time.Now().Unix() > expiry {
 		return 0, 0, "", fmt.Errorf("link expired")
 	}
 
