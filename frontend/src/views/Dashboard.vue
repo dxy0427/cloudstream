@@ -193,7 +193,7 @@ const connectLogStream = () => {
   eventSource.onmessage = (event) => {
     if (event.data) {
       logs.value.push(event.data)
-      if (logs.value.length > 400) logs.value = logs.value.slice(-400)
+      if (logs.value.length > 200) logs.value = logs.value.slice(-200)
       if (canRenderLogs.value) ensureScrollToBottom()
     }
   }
