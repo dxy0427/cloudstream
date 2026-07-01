@@ -55,6 +55,17 @@ func init() {
 				}
 			}
 			listCacheMutex.Unlock()
+
+			mapMutex.Lock()
+			for k, v := range tokenCaches {
+				v.RLock()
+				expired := now.After(v.ExpiresAt)
+				v.RUnlock()
+				if expired {
+					delete(tokenCaches, k)
+				}
+			}
+			mapMutex.Unlock()
 		}
 	}()
 }
