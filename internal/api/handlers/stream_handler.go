@@ -9,64 +9,10 @@ import (
 	"cloudstream/internal/webdav"
 	"fmt"
 	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
 	"net/http"
 	"strconv"
 	"strings"
 )
-
-// verifyStreamJWT 校验无签名模式下的 JWT Token
-func verifyStreamJWT(c *gin.Context) bool {
-	var tokenString string
-
-	authHeader := c.GetHeader("Authorization")
-	if authHeader != "" {
-		fmt.Sscanf(authHeader, "Bearer %s", &tokenString)
-	}
-	if tokenString == "" {
-		if cookieToken, err := c.Cookie("cloudstream_token"); err == nil {
-			tokenString = cookieToken
-		}
-	}
-	if tokenString == "" {
-		tokenString = c.Query("token")
-	}
-	if tokenString == "" {
-		return false
-	}
-
-	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, fmt.Errorf("unexpected signing method")
-		}
-		return auth.GetJWTSecret(), nil
-	})
-	if err != nil || !token.Valid {
-		return false
-	}
-
-	claims, ok := token.Claims.(jwt.MapClaims)
-	if !ok {
-		return false
-	}
-
-	username, _ := claims["username"].(string)
-	version, _ := claims["version"].(float64)
-	if username == "" {
-		return false
-	}
-
-	var user models.User
-	if err := database.DB.Where("username = ?", username).First(&user).Error; err != nil {
-		return false
-	}
-	if int(version) != user.TokenVersion {
-		return false
-	}
-
-	c.Set("username", username)
-	return true
-}
 
 func UnifiedStreamHandler(c *gin.Context) {
 	rawPath := c.Param("path")
@@ -113,12 +59,6 @@ func UnifiedStreamHandler(c *gin.Context) {
 			}
 		}
 	} else {
-		// 无签名：必须通过 JWT 认证
-		if !verifyStreamJWT(c) {
-			c.String(http.StatusUnauthorized, "Authentication required: provide a valid sign or JWT token")
-			return
-		}
-
 		trimmedPath := strings.TrimPrefix(rawPath, "/")
 		parts := strings.Split(trimmedPath, "/")
 
