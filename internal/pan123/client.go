@@ -3,15 +3,14 @@ package pan123
 import (
 	"bytes"
 	"cloudstream/internal/models"
+	"cloudstream/internal/utils"
 	"encoding/json"
 	"fmt"
 	"github.com/rs/zerolog/log"
 	"io"
 	"net/http"
 	"net/url"
-	"path"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 )
@@ -60,30 +59,6 @@ func init() {
 	}()
 }
 
-// getCacheTTL 根据自定义缓存策略返回指定路径的 TTL（分钟）
-// 格式：每行一条 "glob模式:分钟"，如 /tv/*:10
-// 匹配到第一条即返回，未匹配则用默认 CacheTTL
-func getCacheTTL(policies string, defaultTTL int, dirPath string) int {
-	if policies == "" {
-		return defaultTTL
-	}
-	for _, line := range strings.Split(policies, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		pattern, ttlStr, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
-		}
-		if matched, _ := path.Match(pattern, dirPath); matched {
-			if ttl, err := strconv.Atoi(strings.TrimSpace(ttlStr)); err == nil {
-				return ttl
-			}
-		}
-	}
-	return defaultTTL
-}
 
 type Client struct {
 	HTTPClient *http.Client
@@ -276,7 +251,7 @@ func (c *Client) sendAuthorizedRequest(method, endpoint string, queryParams map[
 func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, parentPath string) ([]FileInfo, int64, error) {
 	if c.Account.Type == models.AccountType123Pan {
 		cacheKey := fmt.Sprintf("list:%d:%d:%d", c.Account.ID, parentFileId, lastFileId)
-		cacheTTL := getCacheTTL(c.Account.CustomCachePolicies, c.Account.CacheTTL, parentPath)
+		cacheTTL := utils.GetCacheTTL(c.Account.CustomCachePolicies, c.Account.CacheTTL, parentPath)
  
 		if cacheTTL > 0 {
 			listCacheMutex.RLock()

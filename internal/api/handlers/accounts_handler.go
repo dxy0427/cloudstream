@@ -149,6 +149,7 @@ func UpdateAccountHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "更新账户失败: " + err.Error()})
 		return
 	}
+	InvalidateStreamClient(account.ID)
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": account})
 }
 
@@ -183,6 +184,7 @@ func DeleteAccountHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "删除账户失败: " + err.Error()})
 		return
 	}
+	InvalidateStreamClient(accountID)
 	core.RefreshScheduler()
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "账户及关联任务已删除"})
 }

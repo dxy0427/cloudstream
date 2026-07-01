@@ -23,11 +23,6 @@ import (
 
 var jwtSecret []byte
 
-// GetJWTSecret 返回 JWT 密钥，供其他包使用
-func GetJWTSecret() []byte {
-	return jwtSecret
-}
-
 const secretFileName = ".jwt_secret"
 const secretDirPath = "./data/"
 

@@ -3,14 +3,13 @@ package openlist
 import (
 	"bytes"
 	"cloudstream/internal/models"
+	"cloudstream/internal/utils"
 	"encoding/json"
 	"fmt"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/rs/zerolog/log"
 	"io"
 	"net/http"
-	"path"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -281,28 +280,6 @@ func (c *Client) doPostJSON(apiPath string, body any, out any) error {
 	return fmt.Errorf("OpenList 请求失败：重试次数耗尽")
 }
 
-// getCacheTTL 根据自定义缓存策略返回指定路径的 TTL（分钟）
-func getCacheTTL(policies string, defaultTTL int, dirPath string) int {
-	if policies == "" {
-		return defaultTTL
-	}
-	for _, line := range strings.Split(policies, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		pattern, ttlStr, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
-		}
-		if matched, _ := path.Match(pattern, dirPath); matched {
-			if ttl, err := strconv.Atoi(strings.TrimSpace(ttlStr)); err == nil {
-				return ttl
-			}
-		}
-	}
-	return defaultTTL
-}
 
 func (c *Client) ListDirectory(pathStr string, refresh bool) ([]FileInfo, error) {
 	if pathStr == "" {
@@ -312,7 +289,7 @@ func (c *Client) ListDirectory(pathStr string, refresh bool) ([]FileInfo, error)
 		pathStr = "/" + pathStr
 	}
 
-	cacheTTL := getCacheTTL(c.CustomCachePolicies, c.CacheTTL, pathStr)
+	cacheTTL := utils.GetCacheTTL(c.CustomCachePolicies, c.CacheTTL, pathStr)
 	cacheKey := fmt.Sprintf("openlist:%d:%s", c.AccountID, pathStr)
 
 	if cacheTTL > 0 && !refresh {

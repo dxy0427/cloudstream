@@ -2,10 +2,9 @@ package webdav
 
 import (
 	"cloudstream/internal/models"
+	"cloudstream/internal/utils"
 	"fmt"
 	"net/http"
-	"path"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -80,28 +79,6 @@ func NewClient(account models.Account) *Client {
 	return c
 }
 
-// getCacheTTL 根据自定义缓存策略返回指定路径的 TTL（分钟）
-func getCacheTTL(policies string, defaultTTL int, dirPath string) int {
-	if policies == "" {
-		return defaultTTL
-	}
-	for _, line := range strings.Split(policies, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		pattern, ttlStr, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
-		}
-		if matched, _ := path.Match(pattern, dirPath); matched {
-			if ttl, err := strconv.Atoi(strings.TrimSpace(ttlStr)); err == nil {
-				return ttl
-			}
-		}
-	}
-	return defaultTTL
-}
 
 // ListDirectory 列出目录内容，使用 PROPFIND
 func (c *Client) ListDirectory(dirPath string) ([]FileInfo, error) {
@@ -112,7 +89,7 @@ func (c *Client) ListDirectory(dirPath string) ([]FileInfo, error) {
 		dirPath = "/" + dirPath
 	}
 
-	cacheTTL := getCacheTTL(c.CustomCachePolicies, c.CacheTTL, dirPath)
+	cacheTTL := utils.GetCacheTTL(c.CustomCachePolicies, c.CacheTTL, dirPath)
 	cacheKey := fmt.Sprintf("webdav:%d:%s", c.AccountID, dirPath)
 
 	if cacheTTL > 0 {

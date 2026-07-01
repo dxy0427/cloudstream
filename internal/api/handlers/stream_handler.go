@@ -12,7 +12,41 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 )
+
+// 客户端缓存，避免每次请求都新建
+var (
+	streamClientCache sync.Map // map[uint]interface{} — accountID → client
+)
+
+type cachedOpenListClient struct{ *openlist.Client }
+type cachedWebDAVClient struct{ *webdav.Client }
+type cachedPan123Client struct{ *pan123.Client }
+
+func getStreamClient(account models.Account) interface{} {
+	if cached, ok := streamClientCache.Load(account.ID); ok {
+		return cached
+	}
+
+	var client interface{}
+	switch account.Type {
+	case models.AccountTypeOpenList:
+		client = &cachedOpenListClient{openlist.NewClient(account)}
+	case models.AccountTypeWebDAV:
+		client = &cachedWebDAVClient{webdav.NewClient(account)}
+	default:
+		client = &cachedPan123Client{pan123.NewClient(account)}
+	}
+
+	streamClientCache.Store(account.ID, client)
+	return client
+}
+
+// InvalidateStreamClient 缓存失效（账户更新/删除时调用）
+func InvalidateStreamClient(accountID uint) {
+	streamClientCache.Delete(accountID)
+}
 
 func UnifiedStreamHandler(c *gin.Context) {
 	rawPath := c.Param("path")
@@ -93,30 +127,28 @@ func UnifiedStreamHandler(c *gin.Context) {
 		}
 	}
 
-	// 根据账户类型选择客户端获取下载链接
+	// 从缓存获取客户端
 	var downloadURL string
 	var err error
 
-	switch account.Type {
-	case models.AccountTypeOpenList:
-		client := openlist.NewClient(account)
+	client := getStreamClient(account)
+	switch cl := client.(type) {
+	case *cachedOpenListClient:
 		pathStr, ok := identifier.(string)
 		if !ok {
 			c.String(http.StatusBadRequest, "OpenList requires path identifier")
 			return
 		}
-		downloadURL, err = client.GetRawURL(pathStr)
-	case models.AccountTypeWebDAV:
-		client := webdav.NewClient(account)
+		downloadURL, err = cl.GetRawURL(pathStr)
+	case *cachedWebDAVClient:
 		pathStr, ok := identifier.(string)
 		if !ok {
 			c.String(http.StatusBadRequest, "WebDAV requires path identifier")
 			return
 		}
-		downloadURL, err = client.GetDownloadURL(pathStr)
-	default:
-		client := pan123.NewClient(account)
-		downloadURL, err = client.GetDownloadURL(identifier)
+		downloadURL, err = cl.GetDownloadURL(pathStr)
+	case *cachedPan123Client:
+		downloadURL, err = cl.GetDownloadURL(identifier)
 	}
 
 	if err != nil {
