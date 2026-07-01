@@ -6,6 +6,7 @@ import (
 	"cloudstream/internal/models"
 	"cloudstream/internal/openlist"
 	"cloudstream/internal/pan123"
+	"cloudstream/internal/utils"
 	"cloudstream/internal/webdav"
 	"context"
 	"fmt"
@@ -445,7 +446,7 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, openList
 			if accountType == models.AccountType123Pan {
 				nextFolderID = strconv.FormatInt(currentItem.FileId, 10)
 			} else {
-				nextFolderID = joinOpenListPath(folderID, currentItem.FileName)
+				nextFolderID = utils.JoinPath(folderID, currentItem.FileName)
 			}
 
 			wg.Add(1)
@@ -484,7 +485,7 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, openList
 				} else if metaExtMap[ext] {
 					var downloadIdentity interface{}
 					if accountType == models.AccountTypeOpenList || accountType == models.AccountTypeWebDAV {
-						downloadIdentity = joinOpenListPath(folderID, fileToProcess.FileName)
+						downloadIdentity = utils.JoinPath(folderID, fileToProcess.FileName)
 					} else {
 						downloadIdentity = fileToProcess.FileId
 					}
@@ -517,7 +518,7 @@ func createStrmFile(client *pan123.Client, openListClient *openlist.Client, webD
 
 	var realIdentity string
 	if accountType == models.AccountTypeOpenList || accountType == models.AccountTypeWebDAV {
-		realIdentity = joinOpenListPath(task.SourceFolderID, cloudRelPath)
+		realIdentity = utils.JoinPath(task.SourceFolderID, cloudRelPath)
 	} else {
 		realIdentity = strconv.FormatInt(file.FileId, 10)
 	}
@@ -660,29 +661,4 @@ func parseExtensions(extStr string) map[string]bool {
 		}
 	}
 	return extMap
-}
-
-func joinOpenListPath(parts ...string) string {
-	cleaned := make([]string, 0, len(parts))
-	for i, p := range parts {
-		p = strings.TrimSpace(p)
-		if p == "" || p == "0" {
-			continue
-		}
-		if i == 0 {
-			if p == "/" {
-				cleaned = append(cleaned, "")
-				continue
-			}
-			p = "/" + strings.TrimLeft(p, "/")
-		} else {
-			p = strings.Trim(p, "/")
-		}
-		cleaned = append(cleaned, p)
-	}
-	result := path.Join(cleaned...)
-	if !strings.HasPrefix(result, "/") {
-		result = "/" + result
-	}
-	return result
 }

@@ -4,13 +4,13 @@ import (
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
 	"cloudstream/internal/openlist"
+	"cloudstream/internal/utils"
 	"cloudstream/internal/pan123"
 	"cloudstream/internal/webdav"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"net/http"
 	"strconv"
-	"strings"
 )
 
 type CloudFileDTO struct {
@@ -57,7 +57,7 @@ func FileBrowserHandler(c *gin.Context) {
 		}
 
 		for _, item := range items {
-			childPath := joinOpenListPath(parentPath, item.Name)
+			childPath := utils.JoinPath(parentPath, item.Name)
 			t := 0
 			if item.IsDir {
 				t = 1
@@ -84,7 +84,7 @@ func FileBrowserHandler(c *gin.Context) {
 		}
 
 		for _, item := range items {
-			childPath := joinOpenListPath(parentPath, item.Name)
+			childPath := utils.JoinPath(parentPath, item.Name)
 			t := 0
 			if item.IsDir {
 				t = 1
@@ -134,14 +134,4 @@ func FileBrowserHandler(c *gin.Context) {
 			"lastFileId": -1,
 		},
 	})
-}
-
-func joinOpenListPath(parent, name string) string {
-	if parent == "" || parent == "/" {
-		return "/" + name
-	}
-	if strings.HasSuffix(parent, "/") {
-		return parent + name
-	}
-	return parent + "/" + name
 }
