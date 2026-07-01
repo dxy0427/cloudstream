@@ -7,6 +7,7 @@ import (
 const (
 	AccountType123Pan   = "123pan"
 	AccountTypeOpenList = "openlist"
+	AccountTypeWebDAV   = "webdav"
 
 	NotifyTypeWebhook  = "webhook"
 	NotifyTypeTelegram = "telegram"
@@ -48,8 +49,13 @@ type Account struct {
 	OpenListUsername string `json:"OpenListUsername"`
 	OpenListPassword string `json:"OpenListPassword"`
 
+	WebDAVURL      string `json:"WebDAVURL"`
+	WebDAVUsername string `json:"WebDAVUsername"`
+	WebDAVPassword string `json:"WebDAVPassword"`
+
 	StrmBaseURL string `json:"StrmBaseURL"`
-	CacheTTL    int    `gorm:"default:1" json:"CacheTTL"`
+	CacheTTL    int    `gorm:"default:30" json:"CacheTTL"`
+	CustomCachePolicies string `gorm:"type:text" json:"CustomCachePolicies"`
 }
 
 type Task struct {
@@ -63,6 +69,7 @@ type Task struct {
 	Overwrite      bool   `gorm:"default:false" json:"Overwrite"`
 	SyncDelete     bool   `gorm:"default:false" json:"SyncDelete"`
 	EncodePath     bool   `gorm:"default:false" json:"EncodePath"`
+	SignExpireHours int   `gorm:"default:0" json:"SignExpireHours"` // 签名有效期(小时)，0=永不过期
 	StrmExtensions string `gorm:"default:'mp4,mkv,ts,iso'" json:"StrmExtensions"`
 	MetaExtensions string `gorm:"default:'jpg,jpeg,png,webp,srt,ass,sub'" json:"MetaExtensions"`
 	Threads        int    `gorm:"default:4" json:"Threads"`

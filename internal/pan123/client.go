@@ -3,14 +3,15 @@ package pan123
 import (
 	"bytes"
 	"cloudstream/internal/models"
-	"cloudstream/internal/openlist"
 	"encoding/json"
 	"fmt"
 	"github.com/rs/zerolog/log"
 	"io"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -59,21 +60,41 @@ func init() {
 	}()
 }
 
+// getCacheTTL 根据自定义缓存策略返回指定路径的 TTL（分钟）
+// 格式：每行一条 "glob模式:分钟"，如 /tv/*:10
+// 匹配到第一条即返回，未匹配则用默认 CacheTTL
+func getCacheTTL(policies string, defaultTTL int, dirPath string) int {
+	if policies == "" {
+		return defaultTTL
+	}
+	for _, line := range strings.Split(policies, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		pattern, ttlStr, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		if matched, _ := path.Match(pattern, dirPath); matched {
+			if ttl, err := strconv.Atoi(strings.TrimSpace(ttlStr)); err == nil {
+				return ttl
+			}
+		}
+	}
+	return defaultTTL
+}
+
 type Client struct {
-	HTTPClient     *http.Client
-	Account        models.Account
-	OpenListClient *openlist.Client
+	HTTPClient *http.Client
+	Account    models.Account
 }
 
 func NewClient(account models.Account) *Client {
-	client := &Client{
+	return &Client{
 		HTTPClient: &http.Client{Timeout: Timeout},
 		Account:    account,
 	}
-	if account.Type == models.AccountTypeOpenList {
-		client.OpenListClient = openlist.NewClient(account)
-	}
-	return client
 }
 
 func (c *Client) getAccessToken() (string, error) {
@@ -255,8 +276,9 @@ func (c *Client) sendAuthorizedRequest(method, endpoint string, queryParams map[
 func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, parentPath string) ([]FileInfo, int64, error) {
 	if c.Account.Type == models.AccountType123Pan {
 		cacheKey := fmt.Sprintf("list:%d:%d:%d", c.Account.ID, parentFileId, lastFileId)
+		cacheTTL := getCacheTTL(c.Account.CustomCachePolicies, c.Account.CacheTTL, parentPath)
  
-		if c.Account.CacheTTL > 0 {
+		if cacheTTL > 0 {
 			listCacheMutex.RLock()
 			if item, ok := listCache[cacheKey]; ok {
 				if time.Now().Before(item.ExpiresAt) {
@@ -290,12 +312,12 @@ func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, pare
 			return nil, 0, fmt.Errorf("解析文件列表数据失败: %w", err)
 		}
 
-		if c.Account.CacheTTL > 0 {
+		if cacheTTL > 0 {
 			listCacheMutex.Lock()
 			listCache[cacheKey] = &listCacheItem{
 				Data:       listData.FileList,
 				NextFileId: listData.LastFileId,
-				ExpiresAt:  time.Now().Add(time.Duration(c.Account.CacheTTL) * time.Minute),
+				ExpiresAt:  time.Now().Add(time.Duration(cacheTTL) * time.Minute),
 			}
 			listCacheMutex.Unlock()
 		}
@@ -305,102 +327,36 @@ func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, pare
 	return []FileInfo{}, -1, nil
 }
 
-func (c *Client) ListOpenListDirectory(parentPath string) ([]FileInfo, error) {
-	if c.OpenListClient == nil {
-		return nil, fmt.Errorf("OpenList 客户端未初始化")
-	}
-
-	cacheKey := fmt.Sprintf("list:%d:%s", c.Account.ID, parentPath)
-
-	if c.Account.CacheTTL > 0 {
-		listCacheMutex.RLock()
-		if item, ok := listCache[cacheKey]; ok {
-			if time.Now().Before(item.ExpiresAt) {
-				listCacheMutex.RUnlock()
-				return item.Data, nil
-			}
-		}
-		listCacheMutex.RUnlock()
-	}
-
-	openListFiles, err := c.OpenListClient.ListDirectory(parentPath, false)
-	if err != nil {
-		return nil, fmt.Errorf("OpenList 列表失败: %w", err)
-	}
-
-	var files []FileInfo
-	for _, item := range openListFiles {
-		fileType := 0
-		if item.IsDir {
-			fileType = 1
-		}
-		files = append(files, FileInfo{
-			FileId:   0,
-			FileName: item.Name,
-			FileType: fileType,
-			Size:     item.Size,
-			Trashed:  0,
-		})
-	}
-
-	if c.Account.CacheTTL > 0 {
-		listCacheMutex.Lock()
-		listCache[cacheKey] = &listCacheItem{
-			Data:      files,
-			ExpiresAt: time.Now().Add(time.Duration(c.Account.CacheTTL) * time.Minute),
-		}
-		listCacheMutex.Unlock()
-	}
-
-	return files, nil
-}
-
 func (c *Client) GetDownloadURL(identifier interface{}) (string, error) {
-	var finalURL string
-	var err error
-
-	if c.Account.Type == models.AccountTypeOpenList {
-		if c.OpenListClient == nil {
-			return "", fmt.Errorf("OpenList 客户端未初始化")
+	var fileID int64
+	switch v := identifier.(type) {
+	case int64:
+		fileID = v
+	case string:
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+			fileID = id
+		} else {
+			return "", fmt.Errorf("无效的 FileID: %s", v)
 		}
-		pathStr, ok := identifier.(string)
-		if !ok {
-			return "", fmt.Errorf("OpenList 需要路径参数")
-		}
-		finalURL, err = c.OpenListClient.GetRawURL(pathStr)
-	} else {
-		var fileID int64
-		switch v := identifier.(type) {
-		case int64:
-			fileID = v
-		case string:
-			if id, err := strconv.ParseInt(v, 10, 64); err == nil {
-				fileID = id
-			} else {
-				return "", fmt.Errorf("无效的 FileID: %s", v)
-			}
-		default:
-			return "", fmt.Errorf("123Pan ID 类型错误")
-		}
-
-		params := map[string]interface{}{"fileId": strconv.FormatInt(fileID, 10)}
-		rawData, err := c.sendAuthorizedRequest(http.MethodGet, "/api/v1/file/download_info", params)
-		if err != nil {
-			return "", err
-		}
-		var downloadInfo struct {
-			DownloadURL string `json:"downloadUrl"`
-		}
-		if err := json.Unmarshal(rawData, &downloadInfo); err != nil {
-			return "", fmt.Errorf("解析下载链接失败: %w", err)
-		}
-		if downloadInfo.DownloadURL == "" {
-			return "", fmt.Errorf("API 未返回下载链接")
-		}
-		finalURL = downloadInfo.DownloadURL
+	default:
+		return "", fmt.Errorf("123Pan ID 类型错误")
 	}
 
-	return finalURL, err
+	params := map[string]interface{}{"fileId": strconv.FormatInt(fileID, 10)}
+	rawData, err := c.sendAuthorizedRequest(http.MethodGet, "/api/v1/file/download_info", params)
+	if err != nil {
+		return "", err
+	}
+	var downloadInfo struct {
+		DownloadURL string `json:"downloadUrl"`
+	}
+	if err := json.Unmarshal(rawData, &downloadInfo); err != nil {
+		return "", fmt.Errorf("解析下载链接失败: %w", err)
+	}
+	if downloadInfo.DownloadURL == "" {
+		return "", fmt.Errorf("API 未返回下载链接")
+	}
+	return downloadInfo.DownloadURL, nil
 }
 
 func (c *Client) GetAccessTokenForTest() (string, error) {

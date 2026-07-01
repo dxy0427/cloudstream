@@ -56,7 +56,7 @@
    </n-form-item>
   </template>
 
-  <template v-else>
+  <template v-else-if="form.Type === 'openlist'">
    <n-form-item label="URL 地址">
    <n-input v-model:value="form.OpenListURL" placeholder="http://192.168.1.5:5244" />
    </n-form-item>
@@ -79,14 +79,29 @@
     </n-tab-pane>
    </n-tabs>
   </template>
+
+  <template v-else-if="form.Type === 'webdav'">
+   <n-form-item label="WebDAV 地址">
+   <n-input v-model:value="form.WebDAVURL" placeholder="http://192.168.1.5:5244/dav" />
+   </n-form-item>
+   <n-form-item label="用户名">
+   <n-input v-model:value="form.WebDAVUsername" placeholder="admin" />
+   </n-form-item>
+   <n-form-item label="密码">
+   <n-input type="password" show-password-on="click" v-model:value="form.WebDAVPassword" placeholder="password" />
+   </n-form-item>
+  </template>
   
   <n-divider />
   
   <n-form-item label="目录缓存时间 (分钟)">
     <n-input-number v-model:value="form.CacheTTL" :min="0" placeholder="0 表示不缓存" />
-    <template #feedback>
-      0 表示不缓存；建议设置 1-5 分钟，避免重复扫描或浏览目录时触发风控。
-    </template>
+    <template #feedback>0 表示不缓存；此存储的缓存过期时间</template>
+  </n-form-item>
+
+  <n-form-item label="自定义目录缓存策略">
+    <n-input v-model:value="form.CustomCachePolicies" type="textarea" :rows="3" placeholder="" />
+    <template #feedback>此存储的缓存过期时间，每行一条，格式：路径模式:分钟，如:/tv/*:10</template>
   </n-form-item>
 
   <n-form-item label="STRM Base URL">
@@ -117,13 +132,16 @@ const form = reactive({
     ClientID: '', ClientSecret: '', 
     OpenListURL: '', OpenListToken: '', 
     OpenListUsername: '', OpenListPassword: '',
+    WebDAVURL: '', WebDAVUsername: '', WebDAVPassword: '',
     StrmBaseURL: '',
-    CacheTTL: 1
+    CacheTTL: 30,
+    CustomCachePolicies: ''
 })
 
 const typeOptions = [
  { label: '123 云盘开放平台', value: '123pan' },
- { label: 'OpenList (Alist)', value: 'openlist' }
+ { label: 'OpenList (Alist)', value: 'openlist' },
+ { label: 'WebDAV', value: 'webdav' }
 ]
 
 const columns = [
@@ -159,8 +177,10 @@ const openModal = (row) => {
     ClientID: '', ClientSecret: '', 
     OpenListURL: '', OpenListToken: '', 
     OpenListUsername: '', OpenListPassword: '',
+    WebDAVURL: '', WebDAVUsername: '', WebDAVPassword: '',
     StrmBaseURL: '',
-    CacheTTL: 1
+    CacheTTL: 30,
+    CustomCachePolicies: ''
  })
  showModal.value = true
 }

@@ -59,6 +59,9 @@
             <n-checkbox v-model:checked="form.EncodePath">签名</n-checkbox>
           </n-space>
         </n-form-item>
+        <n-form-item label="直链有效期(小时)">
+          <n-input-number v-model:value="form.SignExpireHours" :min="0" :max="87600" style="width: 200px" />
+        </n-form-item>
         <n-form-item label="并发线程"><n-input-number v-model:value="form.Threads" :min="1" :max="8" /></n-form-item>
         <n-space justify="end">
           <n-button @click="showModal = false">取消</n-button>
@@ -90,7 +93,7 @@ let eventSource = null
 let reconnectTimer = null
 
 const defaultForm = {
-  ID: 0, Name: '', AccountID: null, SourceFolderID: '0', LocalPath: '/app/strm/', Cron: '0 */2 * * *', Overwrite: false, SyncDelete: false, EncodePath: false, Threads: 4,
+  ID: 0, Name: '', AccountID: null, SourceFolderID: '0', LocalPath: '/app/strm/', Cron: '0 */2 * * *', Overwrite: false, SyncDelete: false, EncodePath: false, SignExpireHours: 0, Threads: 4,
   StrmExtensions: 'mp4,mkv,ts,iso,mov,avi', MetaExtensions: 'jpg,jpeg,png,nfo,srt,ass,sub'
 }
 const form = reactive({ ...defaultForm })

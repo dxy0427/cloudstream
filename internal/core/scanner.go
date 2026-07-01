@@ -4,7 +4,9 @@ import (
 	"cloudstream/internal/auth"
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
+	"cloudstream/internal/openlist"
 	"cloudstream/internal/pan123"
+	"cloudstream/internal/webdav"
 	"context"
 	"fmt"
 	"github.com/rs/zerolog/log"
@@ -128,6 +130,13 @@ func RunScanTask(ctx context.Context, task models.Task, mode RunMode) {
 
 	log.Info().Str("任务", task.Name).Str("账户", account.Name).Int("线程数", threads).Str("运行模式", string(mode)).Msg("开始执行任务")
 	client := pan123.NewClient(account)
+	var openListClient *openlist.Client
+	var webDavClient *webdav.Client
+	if account.Type == models.AccountTypeOpenList {
+		openListClient = openlist.NewClient(account)
+	} else if account.Type == models.AccountTypeWebDAV {
+		webDavClient = webdav.NewClient(account)
+	}
 	strmExtMap := parseExtensions(task.StrmExtensions)
 	metaExtMap := parseExtensions(task.MetaExtensions)
 
@@ -157,11 +166,11 @@ func RunScanTask(ctx context.Context, task models.Task, mode RunMode) {
 	}()
 
 	startFolderID := task.SourceFolderID
-	if account.Type == models.AccountTypeOpenList && (startFolderID == "0" || startFolderID == "") {
+	if (account.Type == models.AccountTypeOpenList || account.Type == models.AccountTypeWebDAV) && (startFolderID == "0" || startFolderID == "") {
 		startFolderID = "/"
 	}
 
-	scanDirectoryRecursive(ctx, client, task, account.Type, startFolderID, "", task.LocalPath, strmExtMap, metaExtMap, &wg, workerPool, rateLimiter, tracker, stats, &hasError)
+	scanDirectoryRecursive(ctx, client, openListClient, webDavClient, task, account.Type, startFolderID, "", task.LocalPath, strmExtMap, metaExtMap, &wg, workerPool, rateLimiter, tracker, stats, &hasError)
 
 	wg.Wait()
 	progressTicker.Stop()
@@ -324,7 +333,7 @@ func performSafeSyncDeleteOptimized(taskID uint, currentScanTracker *FileTracker
 	return deletedCount
 }
 
-func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task models.Task, accountType, folderID, currentCloudPath, localBasePath string, strmExtMap, metaExtMap map[string]bool, wg *sync.WaitGroup, pool chan struct{}, limiter *time.Ticker, tracker *FileTracker, stats *ScanStats, hasError *atomic.Bool) {
+func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, openListClient *openlist.Client, webDavClient *webdav.Client, task models.Task, accountType, folderID, currentCloudPath, localBasePath string, strmExtMap, metaExtMap map[string]bool, wg *sync.WaitGroup, pool chan struct{}, limiter *time.Ticker, tracker *FileTracker, stats *ScanStats, hasError *atomic.Bool) {
 	if hasError.Load() {
 		return
 	}
@@ -383,10 +392,38 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 				break
 			}
 			lastFileId = nextLastFileId
-		} else if accountType == models.AccountTypeOpenList {
-			files, err := client.ListOpenListDirectory(folderID)
+		} else if accountType == models.AccountTypeOpenList || accountType == models.AccountTypeWebDAV {
+			var files []pan123.FileInfo
+			var err error
+			if accountType == models.AccountTypeWebDAV && webDavClient != nil {
+				wFiles, wErr := webDavClient.ListDirectory(folderID)
+				if wErr != nil {
+					err = wErr
+				} else {
+					for _, f := range wFiles {
+						ft := 0
+						if f.IsDir {
+							ft = 1
+						}
+						files = append(files, pan123.FileInfo{FileName: f.Name, FileType: ft, Size: f.Size})
+					}
+				}
+			} else if openListClient != nil {
+				oFiles, oErr := openListClient.ListDirectory(folderID, false)
+				if oErr != nil {
+					err = oErr
+				} else {
+					for _, f := range oFiles {
+						ft := 0
+						if f.IsDir {
+							ft = 1
+						}
+						files = append(files, pan123.FileInfo{FileName: f.Name, FileType: ft, Size: f.Size})
+					}
+				}
+			}
 			if err != nil {
-				log.Error().Err(err).Str("任务", task.Name).Str("路径", folderID).Msg("扫描目录失败（OpenList）")
+				log.Error().Err(err).Str("任务", task.Name).Str("路径", folderID).Msg("扫描目录失败")
 				hasError.Store(true)
 				return
 			}
@@ -420,7 +457,7 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 				case pool <- struct{}{}:
 				}
 				defer func() { <-pool }()
-				scanDirectoryRecursive(ctx, client, task, accountType, nextFolderID, itemCloudPath, nextLocalPath, strmExtMap, metaExtMap, wg, pool, limiter, tracker, stats, hasError)
+				scanDirectoryRecursive(ctx, client, openListClient, webDavClient, task, accountType, nextFolderID, itemCloudPath, nextLocalPath, strmExtMap, metaExtMap, wg, pool, limiter, tracker, stats, hasError)
 			}()
 		} else {
 			wg.Add(1)
@@ -443,22 +480,22 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, task mod
 
 				ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(fileToProcess.FileName), "."))
 				if strmExtMap[ext] {
-					createStrmFile(client, task, fileToProcess, cloudRelPath, localBasePath, tracker, stats)
+					createStrmFile(client, openListClient, webDavClient, accountType, task, fileToProcess, cloudRelPath, localBasePath, tracker, stats)
 				} else if metaExtMap[ext] {
 					var downloadIdentity interface{}
-					if accountType == models.AccountTypeOpenList {
+					if accountType == models.AccountTypeOpenList || accountType == models.AccountTypeWebDAV {
 						downloadIdentity = joinOpenListPath(folderID, fileToProcess.FileName)
 					} else {
 						downloadIdentity = fileToProcess.FileId
 					}
-					downloadAndSaveMetaFile(client, task, downloadIdentity, fileToProcess.FileName, localBasePath, tracker, stats)
+					downloadAndSaveMetaFile(client, openListClient, webDavClient, accountType, task, downloadIdentity, fileToProcess.FileName, localBasePath, tracker, stats)
 				}
 			}(currentItem, itemCloudPath)
 		}
 	}
 }
 
-func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInfo, cloudRelPath string, localBasePath string, tracker *FileTracker, stats *ScanStats) {
+func createStrmFile(client *pan123.Client, openListClient *openlist.Client, webDavClient *webdav.Client, accountType string, task models.Task, file pan123.FileInfo, cloudRelPath string, localBasePath string, tracker *FileTracker, stats *ScanStats) {
 	fileNameWithoutExt := strings.TrimSuffix(file.FileName, filepath.Ext(file.FileName))
 	strmFileName := fileNameWithoutExt + ".strm"
 	localFilePath := filepath.Join(localBasePath, strmFileName)
@@ -479,7 +516,7 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 	}
 
 	var realIdentity string
-	if client.Account.Type == models.AccountTypeOpenList {
+	if accountType == models.AccountTypeOpenList || accountType == models.AccountTypeWebDAV {
 		realIdentity = joinOpenListPath(task.SourceFolderID, cloudRelPath)
 	} else {
 		realIdentity = strconv.FormatInt(file.FileId, 10)
@@ -487,7 +524,7 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 
 	var streamURL string
 	if task.EncodePath {
-		sign, err := auth.SignStreamURL(task.ID, task.AccountID, realIdentity)
+		sign, err := auth.SignStreamURL(task.ID, task.AccountID, realIdentity, task.SignExpireHours)
 		if err != nil {
 			log.Error().Err(err).Msg("生成签名失败")
 			return
@@ -504,7 +541,7 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 		encodedPath := strings.Join(encodedParts, "/")
 		streamURL = fmt.Sprintf("%s/api/v1/stream/s%s?sign=%s", baseURL, encodedPath, sign)
 	} else {
-		if client.Account.Type == models.AccountTypeOpenList {
+		if accountType == models.AccountTypeOpenList || accountType == models.AccountTypeWebDAV {
 			realParts := strings.Split(realIdentity, "/")
 			encRealParts := make([]string, len(realParts))
 			for i, p := range realParts {
@@ -542,7 +579,7 @@ func createStrmFile(client *pan123.Client, task models.Task, file pan123.FileInf
 	log.Info().Str("文件", strmFileName).Msg("已生成 STRM 文件")
 }
 
-func downloadAndSaveMetaFile(client *pan123.Client, task models.Task, identity interface{}, fileName string, localBasePath string, tracker *FileTracker, stats *ScanStats) {
+func downloadAndSaveMetaFile(client *pan123.Client, openListClient *openlist.Client, webDavClient *webdav.Client, accountType string, task models.Task, identity interface{}, fileName string, localBasePath string, tracker *FileTracker, stats *ScanStats) {
 	localFilePath := filepath.Join(localBasePath, fileName)
 	tracker.Add(localFilePath)
 	_, statErr := os.Stat(localFilePath)
@@ -550,7 +587,21 @@ func downloadAndSaveMetaFile(client *pan123.Client, task models.Task, identity i
 	if !task.Overwrite && existedBefore {
 		return
 	}
-	downloadURL, err := client.GetDownloadURL(identity)
+	var downloadURL string
+	var err error
+	if accountType == models.AccountTypeOpenList && openListClient != nil {
+		pathStr, ok := identity.(string)
+		if ok {
+			downloadURL, err = openListClient.GetRawURL(pathStr)
+		}
+	} else if accountType == models.AccountTypeWebDAV && webDavClient != nil {
+		pathStr, ok := identity.(string)
+		if ok {
+			downloadURL, err = webDavClient.GetDownloadURL(pathStr)
+		}
+	} else {
+		downloadURL, err = client.GetDownloadURL(identity)
+	}
 	if err != nil {
 		log.Error().Err(err).Str("文件", fileName).Msg("获取元数据链接失败")
 		return

@@ -17,7 +17,7 @@ var (
 )
 
 func InitScheduler() {
-	MainScheduler = gocron.NewScheduler(time.UTC)
+	MainScheduler = gocron.NewScheduler(time.Local)
 	log.Info().Msg("定时任务调度器已初始化")
 	RefreshScheduler()
 	MainScheduler.StartAsync()

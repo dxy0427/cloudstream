@@ -23,6 +23,11 @@ import (
 
 var jwtSecret []byte
 
+// GetJWTSecret 返回 JWT 密钥，供其他包使用
+func GetJWTSecret() []byte {
+	return jwtSecret
+}
+
 const secretFileName = ".jwt_secret"
 const secretDirPath = "./data/"
 
@@ -85,7 +90,9 @@ func LoginHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法生成 Token"})
 		return
 	}
-	c.SetCookie("cloudstream_token", tokenString, 7*24*3600, "/", "", false, true)
+	c.SetSameSite(http.SameSiteStrictMode)
+	secure := c.Request.TLS != nil
+	c.SetCookie("cloudstream_token", tokenString, 7*24*3600, "/", "", secure, true)
 	c.JSON(http.StatusOK, gin.H{
 		"code":                  0,
 		"needsPasswordReminder": user.NeedsPasswordReminder,
@@ -153,7 +160,7 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 	}
 }
 
-func SignStreamURL(taskID uint, accountID uint, realIdentity string) (string, error) {
+func SignStreamURL(taskID uint, accountID uint, realIdentity string, expireHours int) (string, error) {
 	if len(jwtSecret) == 0 {
 		return "", fmt.Errorf("secret not initialized")
 	}
@@ -164,7 +171,12 @@ func SignStreamURL(taskID uint, accountID uint, realIdentity string) (string, er
 	accStr := strconv.FormatUint(uint64(accountID), 10)
 	accB64 := base64.RawURLEncoding.EncodeToString([]byte(accStr))
 
-	expiry := time.Now().Add(100 * 365 * 24 * time.Hour).Unix()
+	var expiry int64
+	if expireHours == 0 {
+		expiry = 0 // 0 = 永不过期，与 OpenList 默认行为一致
+	} else {
+		expiry = time.Now().Add(time.Duration(expireHours) * time.Hour).Unix()
+	}
 	expStr := strconv.FormatInt(expiry, 10)
 
 	realIDB64 := base64.RawURLEncoding.EncodeToString([]byte(realIdentity))

@@ -4,6 +4,7 @@ import (
 	"cloudstream/internal/models"
 	"cloudstream/internal/openlist"
 	"cloudstream/internal/pan123"
+	"cloudstream/internal/webdav"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"net/http"
@@ -25,6 +26,12 @@ func TestAccountConnectionHandler(c *gin.Context) {
 		client := openlist.NewClient(account)
 		if err := client.TestConnection(); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": fmt.Sprintf("OpenList 连接失败: %s", err.Error())})
+			return
+		}
+	case models.AccountTypeWebDAV:
+		client := webdav.NewClient(account)
+		if err := client.TestConnection(); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": fmt.Sprintf("WebDAV 连接失败: %s", err.Error())})
 			return
 		}
 	default: // 123 云盘开放平台

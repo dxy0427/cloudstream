@@ -36,6 +36,10 @@ func validateAccount(a *models.Account) (ok bool, msg string) {
 		if a.Name == "" || a.OpenListURL == "" {
 			return false, "OpenList 账户名称和地址不能为空"
 		}
+	case models.AccountTypeWebDAV:
+		if a.Name == "" || a.WebDAVURL == "" {
+			return false, "WebDAV 账户名称和地址不能为空"
+		}
 	default:
 		return false, "不支持的云账户类型"
 	}
@@ -70,8 +74,12 @@ type accountUpdateRequest struct {
 	OpenListToken    *string `json:"OpenListToken"`
 	OpenListUsername *string `json:"OpenListUsername"`
 	OpenListPassword *string `json:"OpenListPassword"`
-	StrmBaseURL      *string `json:"StrmBaseURL"`
-	CacheTTL         *int    `json:"CacheTTL"`
+	WebDAVURL        *string `json:"WebDAVURL"`
+	WebDAVUsername   *string `json:"WebDAVUsername"`
+	WebDAVPassword   *string `json:"WebDAVPassword"`
+	StrmBaseURL         *string `json:"StrmBaseURL"`
+	CacheTTL            *int    `json:"CacheTTL"`
+	CustomCachePolicies *string `json:"CustomCachePolicies"`
 }
 
 func UpdateAccountHandler(c *gin.Context) {
@@ -113,11 +121,23 @@ func UpdateAccountHandler(c *gin.Context) {
 	if req.OpenListPassword != nil {
 		account.OpenListPassword = *req.OpenListPassword
 	}
+	if req.WebDAVURL != nil {
+		account.WebDAVURL = *req.WebDAVURL
+	}
+	if req.WebDAVUsername != nil {
+		account.WebDAVUsername = *req.WebDAVUsername
+	}
+	if req.WebDAVPassword != nil {
+		account.WebDAVPassword = *req.WebDAVPassword
+	}
 	if req.StrmBaseURL != nil {
 		account.StrmBaseURL = *req.StrmBaseURL
 	}
 	if req.CacheTTL != nil {
 		account.CacheTTL = *req.CacheTTL
+	}
+	if req.CustomCachePolicies != nil {
+		account.CustomCachePolicies = *req.CustomCachePolicies
 	}
 
 	if ok, msg := validateAccount(&account); !ok {

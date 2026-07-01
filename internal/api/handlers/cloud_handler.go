@@ -5,6 +5,7 @@ import (
 	"cloudstream/internal/models"
 	"cloudstream/internal/openlist"
 	"cloudstream/internal/pan123"
+	"cloudstream/internal/webdav"
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"net/http"
@@ -52,6 +53,33 @@ func FileBrowserHandler(c *gin.Context) {
 		items, err := client.ListDirectory(parentPath, false)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": fmt.Sprintf("获取 OpenList 文件列表失败: %s", err.Error())})
+			return
+		}
+
+		for _, item := range items {
+			childPath := joinOpenListPath(parentPath, item.Name)
+			t := 0
+			if item.IsDir {
+				t = 1
+			}
+			fileList = append(fileList, CloudFileDTO{
+				FileId:   childPath,
+				FileName: item.Name,
+				Type:     t,
+			})
+		}
+
+	case models.AccountTypeWebDAV:
+		// WebDAV 使用 path
+		parentPath := parentParam
+		if parentPath == "" || parentPath == "0" {
+			parentPath = "/"
+		}
+
+		client := webdav.NewClient(account)
+		items, err := client.ListDirectory(parentPath)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": fmt.Sprintf("获取 WebDAV 文件列表失败: %s", err.Error())})
 			return
 		}
 

@@ -46,6 +46,7 @@ func buildTaskList() ([]gin.H, error) {
 			"Overwrite":      task.Overwrite,
 			"SyncDelete":     task.SyncDelete,
 			"EncodePath":     task.EncodePath,
+			"SignExpireHours": task.SignExpireHours,
 			"StrmExtensions": task.StrmExtensions,
 			"MetaExtensions": task.MetaExtensions,
 			"Threads":        task.Threads,
@@ -126,6 +127,7 @@ type taskUpdateRequest struct {
 	Overwrite      *bool   `json:"Overwrite"`
 	SyncDelete     *bool   `json:"SyncDelete"`
 	EncodePath     *bool   `json:"EncodePath"`
+	SignExpireHours *int   `json:"SignExpireHours"`
 	StrmExtensions *string `json:"StrmExtensions"`
 	MetaExtensions *string `json:"MetaExtensions"`
 	Threads        *int    `json:"Threads"`
@@ -160,6 +162,7 @@ func UpdateTaskHandler(c *gin.Context) {
 	if req.Overwrite != nil { task.Overwrite = *req.Overwrite }
 	if req.SyncDelete != nil { task.SyncDelete = *req.SyncDelete }
 	if req.EncodePath != nil { task.EncodePath = *req.EncodePath }
+	if req.SignExpireHours != nil { task.SignExpireHours = *req.SignExpireHours }
 	if req.StrmExtensions != nil { task.StrmExtensions = *req.StrmExtensions }
 	if req.MetaExtensions != nil { task.MetaExtensions = *req.MetaExtensions }
 	if req.Threads != nil { task.Threads = *req.Threads }
