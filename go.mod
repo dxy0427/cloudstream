@@ -1,8 +1,8 @@
 module cloudstream
 
-go 1.23.0
+go 1.26.0
 
-toolchain go1.24.4
+toolchain go1.26.4
 
 require (
 	github.com/gin-contrib/gzip v1.0.1
