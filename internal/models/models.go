@@ -45,6 +45,7 @@ type Account struct {
 	ClientSecret string `json:"ClientSecret"`
 
 	OpenListURL      string `json:"OpenListURL"`
+	OpenListAuthMode string `json:"OpenListAuthMode"`
 	OpenListToken    string `json:"OpenListToken"`
 	OpenListUsername string `json:"OpenListUsername"`
 	OpenListPassword string `json:"OpenListPassword"`

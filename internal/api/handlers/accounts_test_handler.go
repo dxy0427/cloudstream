@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"cloudstream/internal/database"
 	"cloudstream/internal/models"
 	"cloudstream/internal/openlist"
 	"cloudstream/internal/pan123"
@@ -19,6 +20,14 @@ func TestAccountConnectionHandler(c *gin.Context) {
 
 	if account.Type == "" {
 		account.Type = models.AccountType123Pan
+	}
+	if account.ID != 0 {
+		var stored models.Account
+		if err := database.DB.First(&stored, account.ID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "账户未找到"})
+			return
+		}
+		mergeStoredAccountSecrets(&account, stored)
 	}
 
 	switch account.Type {
@@ -43,4 +52,21 @@ func TestAccountConnectionHandler(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "连接成功！"})
+}
+
+func mergeStoredAccountSecrets(account *models.Account, stored models.Account) {
+	if account.Type == models.AccountType123Pan && account.ClientSecret == "" {
+		account.ClientSecret = stored.ClientSecret
+	}
+	if account.Type == models.AccountTypeOpenList {
+		if normalizeOpenListAuthMode(account) == "token" && account.OpenListToken == "" {
+			account.OpenListToken = stored.OpenListToken
+		}
+		if account.OpenListAuthMode == "password" && account.OpenListPassword == "" {
+			account.OpenListPassword = stored.OpenListPassword
+		}
+	}
+	if account.Type == models.AccountTypeWebDAV && account.WebDAVPassword == "" {
+		account.WebDAVPassword = stored.WebDAVPassword
+	}
 }

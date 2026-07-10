@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -69,7 +70,6 @@ func init() {
 		}
 	}()
 }
-
 
 type Client struct {
 	HTTPClient *http.Client
@@ -263,7 +263,7 @@ func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, pare
 	if c.Account.Type == models.AccountType123Pan {
 		cacheKey := fmt.Sprintf("list:%d:%d:%d", c.Account.ID, parentFileId, lastFileId)
 		cacheTTL := utils.GetCacheTTL(c.Account.CustomCachePolicies, c.Account.CacheTTL, parentPath)
- 
+
 		if cacheTTL > 0 {
 			listCacheMutex.RLock()
 			if item, ok := listCache[cacheKey]; ok {
@@ -276,10 +276,10 @@ func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, pare
 		}
 
 		params := map[string]interface{}{
-			"parentFileId": parentFileId,
-			"limit":        limit,
-			"trashed":      0,
-			"orderBy":      "fileId",
+			"parentFileId":   parentFileId,
+			"limit":          limit,
+			"trashed":        0,
+			"orderBy":        "fileId",
 			"orderDirection": "asc",
 		}
 		if lastFileId > 0 {
@@ -291,7 +291,7 @@ func (c *Client) ListFiles(parentFileId int64, limit int, lastFileId int64, pare
 			return nil, 0, err
 		}
 		var listData struct {
-			FileList    []FileInfo `json:"fileList"`
+			FileList   []FileInfo `json:"fileList"`
 			LastFileId int64      `json:"lastFileId"`
 		}
 		if err := json.Unmarshal(rawData, &listData); err != nil {
@@ -346,5 +346,21 @@ func (c *Client) GetDownloadURL(identifier interface{}) (string, error) {
 }
 
 func (c *Client) GetAccessTokenForTest() (string, error) {
+	c.invalidateToken()
 	return c.getAccessToken()
+}
+
+func InvalidateAccountCache(accountID uint) {
+	mapMutex.Lock()
+	delete(tokenCaches, accountID)
+	mapMutex.Unlock()
+
+	prefix := fmt.Sprintf("list:%d:", accountID)
+	listCacheMutex.Lock()
+	for key := range listCache {
+		if strings.HasPrefix(key, prefix) {
+			delete(listCache, key)
+		}
+	}
+	listCacheMutex.Unlock()
 }

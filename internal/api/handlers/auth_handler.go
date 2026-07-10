@@ -10,6 +10,10 @@ import (
 
 // LogoutHandler 退出登录，使当前 Token 失效
 func LogoutHandler(c *gin.Context) {
+	c.SetSameSite(http.SameSiteStrictMode)
+	secure := c.Request.TLS != nil
+	c.SetCookie("cloudstream_token", "", -1, "/", "", secure, true)
+
 	username, exists := c.Get("username")
 	if !exists {
 		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "退出成功"})
@@ -17,7 +21,10 @@ func LogoutHandler(c *gin.Context) {
 	}
 
 	// 递增 TokenVersion 使所有已签发的 Token 失效
-	database.DB.Model(&models.User{}).Where("username = ?", username).Update("token_version", gorm.Expr("token_version + 1"))
+	if err := database.DB.Model(&models.User{}).Where("username = ?", username).Update("token_version", gorm.Expr("token_version + 1")).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "退出失败"})
+		return
+	}
 
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "退出成功"})
 }

@@ -9,6 +9,7 @@ import (
 	"cloudstream/internal/webdav"
 	"fmt"
 	"github.com/gin-gonic/gin"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -146,7 +147,8 @@ func UnifiedStreamHandler(c *gin.Context) {
 			c.String(http.StatusBadRequest, "WebDAV requires path identifier")
 			return
 		}
-		downloadURL, err = cl.GetDownloadURL(pathStr)
+		proxyWebDAVDownload(c, cl.Client, pathStr)
+		return
 	case *cachedPan123Client:
 		downloadURL, err = cl.GetDownloadURL(identifier)
 	}
@@ -156,4 +158,36 @@ func UnifiedStreamHandler(c *gin.Context) {
 		return
 	}
 	c.Redirect(http.StatusFound, downloadURL)
+}
+
+func proxyWebDAVDownload(c *gin.Context, client *webdav.Client, pathStr string) {
+	req, err := client.NewDownloadRequest(c.Request.Method, pathStr, nil)
+	if err != nil {
+		c.String(http.StatusInternalServerError, fmt.Sprintf("Failed to get link: %v", err))
+		return
+	}
+
+	for _, name := range []string{"Range", "If-Range", "If-Modified-Since", "If-None-Match", "User-Agent"} {
+		if value := c.GetHeader(name); value != "" {
+			req.Header.Set(name, value)
+		}
+	}
+
+	resp, err := client.HTTPClient.Do(req)
+	if err != nil {
+		c.String(http.StatusBadGateway, "WebDAV request failed: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	for key, values := range resp.Header {
+		for _, value := range values {
+			c.Writer.Header().Add(key, value)
+		}
+	}
+	c.Status(resp.StatusCode)
+	if c.Request.Method == http.MethodHead {
+		return
+	}
+	_, _ = io.Copy(c.Writer, resp.Body)
 }

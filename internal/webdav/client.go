@@ -4,7 +4,10 @@ import (
 	"cloudstream/internal/models"
 	"cloudstream/internal/utils"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
+	"path"
 	"strings"
 	"sync"
 	"time"
@@ -13,14 +16,15 @@ import (
 )
 
 type Client struct {
-	AccountID          uint
-	BaseURL            string
-	Username           string
-	Password           string
-	CacheTTL           int
+	AccountID           uint
+	BaseURL             string
+	Username            string
+	Password            string
+	CacheTTL            int
 	CustomCachePolicies string
-	HTTPClient         *http.Client
-	client             *gowebdav.Client
+	HTTPClient          *http.Client
+	MetadataHTTPClient  *http.Client
+	client              *gowebdav.Client
 }
 
 type FileInfo struct {
@@ -65,20 +69,21 @@ func NewClient(account models.Account) *Client {
 	base = strings.TrimRight(base, "/")
 
 	c := &Client{
-		AccountID:          account.ID,
-		BaseURL:            base,
-		Username:           strings.TrimSpace(account.WebDAVUsername),
-		Password:           strings.TrimSpace(account.WebDAVPassword),
-		CacheTTL:           account.CacheTTL,
+		AccountID:           account.ID,
+		BaseURL:             base,
+		Username:            strings.TrimSpace(account.WebDAVUsername),
+		Password:            strings.TrimSpace(account.WebDAVPassword),
+		CacheTTL:            account.CacheTTL,
 		CustomCachePolicies: account.CustomCachePolicies,
-		HTTPClient: &http.Client{
+		HTTPClient:          &http.Client{},
+		MetadataHTTPClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 	}
 	c.client = gowebdav.NewClient(base, c.Username, c.Password)
+	c.client.SetTimeout(30 * time.Second)
 	return c
 }
-
 
 // ListDirectory 列出目录内容，使用 PROPFIND
 func (c *Client) ListDirectory(dirPath string) ([]FileInfo, error) {
@@ -132,29 +137,40 @@ func (c *Client) ListDirectory(dirPath string) ([]FileInfo, error) {
 
 // GetDownloadURL 获取文件的下载 URL
 func (c *Client) GetDownloadURL(filePath string) (string, error) {
+	return c.buildFileURL(filePath)
+}
+
+func (c *Client) NewDownloadRequest(method, filePath string, body io.Reader) (*http.Request, error) {
+	fileURL, err := c.buildFileURL(filePath)
+	if err != nil {
+		return nil, err
+	}
+	req, err := http.NewRequest(method, fileURL, body)
+	if err != nil {
+		return nil, err
+	}
+	if c.Username != "" || c.Password != "" {
+		req.SetBasicAuth(c.Username, c.Password)
+	}
+	return req, nil
+}
+
+func (c *Client) buildFileURL(filePath string) (string, error) {
 	if filePath == "" {
 		return "", fmt.Errorf("path 不能为空")
 	}
-	if !strings.HasPrefix(filePath, "/") {
-		filePath = "/" + filePath
-	}
-
-	_, err := c.client.Stat(filePath)
+	baseURL, err := url.Parse(c.BaseURL)
 	if err != nil {
-		return "", fmt.Errorf("WebDAV 文件不存在: %w", err)
+		return "", fmt.Errorf("WebDAV 地址无效: %w", err)
 	}
-
-	url := c.BaseURL + filePath
-	if c.Username != "" && c.Password != "" {
-		url = fmt.Sprintf("%s://%s:%s@%s%s",
-			getScheme(c.BaseURL),
-			c.Username, c.Password,
-			getHost(c.BaseURL),
-			filePath,
-		)
+	cleanPath := path.Clean("/" + strings.TrimLeft(filePath, "/"))
+	if cleanPath == "/" {
+		return "", fmt.Errorf("path 必须指向文件")
 	}
+	baseURL.RawPath = ""
+	baseURL.Path = path.Join(baseURL.Path, strings.TrimPrefix(cleanPath, "/"))
 
-	return url, nil
+	return baseURL.String(), nil
 }
 
 // TestConnection 测试 WebDAV 连接
@@ -166,19 +182,13 @@ func (c *Client) TestConnection() error {
 	return nil
 }
 
-func getScheme(rawURL string) string {
-	if strings.HasPrefix(rawURL, "https://") {
-		return "https"
+func InvalidateAccountCache(accountID uint) {
+	prefix := fmt.Sprintf("webdav:%d:", accountID)
+	dirCacheMutex.Lock()
+	for key := range dirCache {
+		if strings.HasPrefix(key, prefix) {
+			delete(dirCache, key)
+		}
 	}
-	return "http"
-}
-
-func getHost(rawURL string) string {
-	s := rawURL
-	s = strings.TrimPrefix(s, "http://")
-	s = strings.TrimPrefix(s, "https://")
-	if idx := strings.Index(s, "/"); idx >= 0 {
-		return s[:idx]
-	}
-	return s
+	dirCacheMutex.Unlock()
 }

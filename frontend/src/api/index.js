@@ -3,6 +3,11 @@ import { createDiscreteApi } from 'naive-ui'
 
 const { message } = createDiscreteApi(['message'])
 
+let authenticated = false
+export const hasAuthenticatedSession = () => authenticated
+export const markAuthenticatedSession = () => { authenticated = true }
+export const clearAuthenticatedSession = () => { authenticated = false }
+
 const api = axios.create({
   baseURL: '/api/v1',
   timeout: 60000,
@@ -14,8 +19,11 @@ api.interceptors.response.use(
   err => {
     const status = err.response?.status
     const data = err.response?.data
+	const skipAuthRedirect = err.config?.skipAuthRedirect === true
+	const skipErrorToast = err.config?.skipErrorToast === true
 
-    if (status === 401) {
+    if (status === 401 && !skipAuthRedirect) {
+	  clearAuthenticatedSession()
       if (!window.location.pathname.includes('/login')) {
         window.location.href = '/login'
       }
@@ -37,7 +45,7 @@ api.interceptors.response.use(
     } else if (status === 500) {
       msg = '服务器错误，请稍后重试'
     } else if (status === 502 || status === 503 || status === 504) {
-      msg = '服务暂时不可用，请稍后重试'
+      msg = data?.message || data?.error || '服务暂时不可用，请稍后重试'
     } else if (data?.message) {
       msg = data.message
     } else if (data?.error) {
@@ -46,7 +54,7 @@ api.interceptors.response.use(
       msg = err.message
     }
 
-    message.error(msg)
+	if (!skipErrorToast) message.error(msg)
     return Promise.reject(err)
   }
 )

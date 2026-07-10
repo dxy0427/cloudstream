@@ -55,7 +55,7 @@
   </n-form-item>
 
   <n-form-item label="API Key" path="APIKey">
-   <n-input type="password" show-password-on="click" v-model:value="form.APIKey" placeholder="Emby/Jellyfin API Key" />
+    <n-input type="password" show-password-on="click" v-model:value="form.APIKey" :placeholder="form.ID && form.HasAPIKey ? '已配置，留空不修改' : 'Emby/Jellyfin API Key'" />
   </n-form-item>
 
   <n-divider />
@@ -147,7 +147,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, h, computed } from 'vue'
+import { ref, reactive, onMounted, h } from 'vue'
 import { NButton, NSpace, NTag, useMessage, useDialog } from 'naive-ui'
 import api from '../api'
 
@@ -156,6 +156,8 @@ const dialog = useDialog()
 const data = ref([])
 const loading = ref(false)
 const showModal = ref(false)
+const clientListArray = ref([])
+const pathMappingsArray = ref([])
 const form = reactive({ 
  ID: 0, 
  Name: '', 
@@ -173,6 +175,7 @@ const form = reactive({
  ResolveStrmLinks: true,
  UaPassthrough: false,
  PathMappings: '[]',
+	HasAPIKey: false,
  Port: 8091
 })
 
@@ -186,31 +189,14 @@ const clientModeOptions = [
  { label: '黑名单', value: 'BlackList' }
 ]
 
-const clientListArray = computed({
- get: () => {
-  try {
-   return JSON.parse(form.ClientList || '[]')
-  } catch {
-   return []
-  }
- },
- set: (val) => {
-  form.ClientList = JSON.stringify(val)
+const parseArray = (value) => {
+ try {
+  const parsed = JSON.parse(value || '[]')
+  return Array.isArray(parsed) ? parsed : []
+ } catch {
+  return []
  }
-})
-
-const pathMappingsArray = computed({
- get: () => {
-  try {
-   return JSON.parse(form.PathMappings || '[]')
-  } catch {
-   return []
-  }
- },
- set: (val) => {
-  form.PathMappings = JSON.stringify(val)
- }
-})
+}
 
 const createPathMapping = () => ({ old: '', new: '' })
 
@@ -260,22 +246,33 @@ const openModal = (row) => {
   ResolveStrmLinks: true,
   UaPassthrough: false,
   PathMappings: '[]',
+	  HasAPIKey: false,
   Port: 8091
  })
+	form.APIKey = ''
+	clientListArray.value = parseArray(form.ClientList)
+	pathMappingsArray.value = parseArray(form.PathMappings)
  showModal.value = true
 }
 
+const preparePayload = () => ({
+	...form,
+	ClientList: JSON.stringify(clientListArray.value),
+	PathMappings: JSON.stringify(pathMappingsArray.value)
+})
+
 const testConnection = async () => {
  try { 
-  const res = await api.post('/mediaservers/test', form)
+   const res = await api.post('/mediaservers/test', preparePayload())
   message.success(res.message) 
  } catch (e) {}
 }
 
 const submit = async () => {
  try {
- if (form.ID) await api.put(`/mediaservers/${form.ID}`, form)
- else await api.post('/mediaservers', form)
+  const payload = preparePayload()
+  if (form.ID) await api.put(`/mediaservers/${form.ID}`, payload)
+  else await api.post('/mediaservers', payload)
  message.success('保存成功')
  showModal.value = false
  fetchData()

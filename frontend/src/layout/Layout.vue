@@ -52,7 +52,7 @@ import { h, ref, computed, onMounted, onUnmounted } from 'vue'
 import { NIcon, NText, useDialog } from 'naive-ui'
 import { useRoute, useRouter } from 'vue-router'
 import { useGlobalStore } from '../store/global'
-import api from '../api'
+import api, { clearAuthenticatedSession } from '../api'
 import {
   DashboardOutlined,
   CloudOutlined,
@@ -105,6 +105,7 @@ const showPasswordReminderIfNeeded = async () => {
 onMounted(() => {
   checkMobile()
   window.addEventListener('resize', checkMobile)
+	store.loadSettings()
   showPasswordReminderIfNeeded()
 })
 
@@ -138,8 +139,7 @@ function handleMenuClick(key) {
 async function logout() {
   try { await api.post('/logout') } catch (e) {}
   localStorage.removeItem('needs_password_reminder')
-  // HTTP-only Cookie 无法被 JS 删除，但后端 /logout 已使 Token 失效
-  // 重新加载后 401 拦截器会跳转到登录页
+	clearAuthenticatedSession()
   router.push('/login')
 }
 </script>

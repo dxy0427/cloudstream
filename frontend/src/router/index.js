@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import Layout from '../layout/Layout.vue'
+import api, { hasAuthenticatedSession, markAuthenticatedSession } from '../api'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -27,8 +28,16 @@ const router = createRouter({
 
 // 路由守卫：仅检查是否在登录页，实际认证由 API 拦截器处理
 // HTTP-only Cookie 不可被 JS 读取，无法在这里检查
-router.beforeEach((to, from, next) => {
-  next()
+router.beforeEach(async (to) => {
+	if (to.meta.noAuth) return true
+	if (hasAuthenticatedSession()) return true
+	try {
+		await api.get('/username', { skipAuthRedirect: true, skipErrorToast: true })
+		markAuthenticatedSession()
+		return true
+	} catch {
+		return { path: '/login', query: { redirect: to.fullPath } }
+	}
 })
 
 export default router

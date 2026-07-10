@@ -50,7 +50,7 @@ import { useMessage, NIcon } from 'naive-ui'
 import { UserOutlined, LockOutlined } from '@vicons/antd'
 import { useGlobalStore } from '../store/global'
 import { hashPassword } from '../utils/crypto'
-import api from '../api'
+import api, { markAuthenticatedSession } from '../api'
 
 const router = useRouter()
 const store = useGlobalStore()
@@ -75,7 +75,8 @@ const handleLogin = async () => {
     const res = await api.post('/login', {
       username: form.username,
       password: hashedPassword
-    })
+    }, { skipAuthRedirect: true, skipErrorToast: true })
+	markAuthenticatedSession()
     await store.loadSettings({ preserveTheme: true })
     if (res.needsPasswordReminder && !res.passwordReminderShown) {
       localStorage.setItem('needs_password_reminder', '1')
@@ -83,7 +84,8 @@ const handleLogin = async () => {
       localStorage.removeItem('needs_password_reminder')
     }
     message.success('登录成功')
-    router.push('/dashboard')
+	const redirect = router.currentRoute.value.query.redirect
+	router.push(typeof redirect === 'string' ? redirect : '/dashboard')
   } catch (error) {
     const msg = error?.response?.data?.message || error?.response?.data?.error || '用户名或密码错误'
     message.error(msg)

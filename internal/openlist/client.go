@@ -53,14 +53,14 @@ func init() {
 }
 
 type Client struct {
-	AccountID          uint
-	BaseURL            string
-	StaticToken        string
-	Username           string
-	Password           string
-	CacheTTL           int
+	AccountID           uint
+	BaseURL             string
+	StaticToken         string
+	Username            string
+	Password            string
+	CacheTTL            int
 	CustomCachePolicies string
-	HTTPClient         *http.Client
+	HTTPClient          *http.Client
 }
 
 func NewClient(account models.Account) *Client {
@@ -71,14 +71,14 @@ func NewClient(account models.Account) *Client {
 	base = strings.TrimRight(base, "/")
 
 	return &Client{
-		AccountID:          account.ID,
-		BaseURL:            base,
-		StaticToken:        strings.TrimSpace(account.OpenListToken),
-		Username:           strings.TrimSpace(account.OpenListUsername),
-		Password:           strings.TrimSpace(account.OpenListPassword),
-		CacheTTL:           account.CacheTTL,
+		AccountID:           account.ID,
+		BaseURL:             base,
+		StaticToken:         strings.TrimSpace(account.OpenListToken),
+		Username:            strings.TrimSpace(account.OpenListUsername),
+		Password:            strings.TrimSpace(account.OpenListPassword),
+		CacheTTL:            account.CacheTTL,
 		CustomCachePolicies: account.CustomCachePolicies,
-		HTTPClient:         &http.Client{Timeout: 30 * time.Second},
+		HTTPClient:          &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -153,7 +153,7 @@ func (c *Client) login() (string, error) {
 		"username": c.Username,
 		"password": c.Password,
 	}
-	
+
 	data, err := json.Marshal(body)
 	if err != nil {
 		return "", err
@@ -230,7 +230,7 @@ func (c *Client) doPostJSON(apiPath string, body any, out any) error {
 			resp, err = c.HTTPClient.Do(req)
 			if err != nil {
 				lastNetErr = err
-				continue 
+				continue
 			}
 
 			respBody, err = io.ReadAll(resp.Body)
@@ -279,7 +279,6 @@ func (c *Client) doPostJSON(apiPath string, body any, out any) error {
 
 	return fmt.Errorf("OpenList 请求失败：重试次数耗尽")
 }
-
 
 func (c *Client) ListDirectory(pathStr string, refresh bool) ([]FileInfo, error) {
 	if pathStr == "" {
@@ -361,4 +360,19 @@ func (c *Client) TestConnection() error {
 	c.invalidateCache()
 	_, err := c.ListDirectory("/", false)
 	return err
+}
+
+func InvalidateAccountCache(accountID uint) {
+	cacheMutex.Lock()
+	delete(globalTokenCache, accountID)
+	cacheMutex.Unlock()
+
+	prefix := fmt.Sprintf("openlist:%d:", accountID)
+	dirCacheMutex.Lock()
+	for key := range dirCache {
+		if strings.HasPrefix(key, prefix) {
+			delete(dirCache, key)
+		}
+	}
+	dirCacheMutex.Unlock()
 }

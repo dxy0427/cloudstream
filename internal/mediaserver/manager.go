@@ -109,8 +109,16 @@ func (m *Manager) GetFirstEnabledServerID() uint {
 
 // modelToConfig 将数据库模型转换为配置
 func (m *Manager) modelToConfig(server *models.MediaServer) *Config {
-	pathMappings, _ := ParsePathMappings(server.PathMappings)
-	clientList, _ := ParseClientList(server.ClientList)
+	pathMappings, err := ParsePathMappings(server.PathMappings)
+	if err != nil {
+		log.Warn().Err(err).Uint("id", server.ID).Str("name", server.Name).Msg("媒体服务器路径映射配置无效，已按空列表处理")
+		pathMappings = []PathMapping{}
+	}
+	clientList, err := ParseClientList(server.ClientList)
+	if err != nil {
+		log.Warn().Err(err).Uint("id", server.ID).Str("name", server.Name).Msg("媒体服务器客户端列表配置无效，已按空列表处理")
+		clientList = []string{}
+	}
 
 	return &Config{
 		Port: server.Port,
@@ -168,7 +176,7 @@ func (m *Manager) HandleProxy(c *gin.Context, serverID uint) {
 				break
 			}
 		}
-	
+
 		if cfg.Client.Mode == "WhiteList" {
 			if !allowed {
 				log.Warn().Str("mode", "WhiteList").Str("client_ip", c.ClientIP()).Str("user_agent", userAgent).Msg("客户端不在白名单中，拒绝访问")

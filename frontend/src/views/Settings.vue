@@ -56,13 +56,15 @@ const form = reactive({
 onMounted(async () => {
  try {
   const res = await api.get('/username')
-  username.value = res.username
+  username.value = res.data?.username || ''
  } catch (e) {}
 })
 
-const saveTitle = () => {
-  store.setSiteTitle(titleForm.title)
-  message.success('网站标题已更新')
+const saveTitle = async () => {
+  try {
+    await store.setSiteTitle(titleForm.title)
+    message.success('网站标题已更新')
+  } catch (e) {}
 }
 
 const submit = async () => {

@@ -5,6 +5,7 @@ import (
 	"cloudstream/internal/mediaserver"
 	"cloudstream/internal/models"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 	"net/http"
 	"strconv"
 )
@@ -15,7 +16,24 @@ func ListMediaServersHandler(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "获取媒体服务器列表失败: " + err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": servers})
+	data := make([]gin.H, 0, len(servers))
+	for _, server := range servers {
+		data = append(data, sanitizeMediaServer(server))
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": data})
+}
+
+func sanitizeMediaServer(server models.MediaServer) gin.H {
+	return gin.H{
+		"ID": server.ID, "CreatedAt": server.CreatedAt, "UpdatedAt": server.UpdatedAt,
+		"Name": server.Name, "ServerType": server.ServerType, "ServerAddr": server.ServerAddr,
+		"CacheEnable": server.CacheEnable, "HttpStrmTTL": server.HttpStrmTTL,
+		"ClientEnable": server.ClientEnable, "ClientMode": server.ClientMode, "ClientList": server.ClientList,
+		"HttpStrmEnable": server.HttpStrmEnable, "DisableTranscode": server.DisableTranscode,
+		"ResolveStrmLinks": server.ResolveStrmLinks, "UaPassthrough": server.UaPassthrough,
+		"PathMappings": server.PathMappings, "Enabled": server.Enabled, "Port": server.Port,
+		"HasAPIKey": server.APIKey != "",
+	}
 }
 
 func validateMediaServer(server *models.MediaServer) (bool, string) {
@@ -25,17 +43,44 @@ func validateMediaServer(server *models.MediaServer) (bool, string) {
 	if server.ServerType == "" {
 		server.ServerType = "Emby"
 	}
+	if server.ServerType != "Emby" && server.ServerType != "Jellyfin" {
+		return false, "服务器类型必须是 Emby 或 Jellyfin"
+	}
 	if server.ServerAddr == "" {
 		return false, "服务器地址不能为空"
 	}
 	if server.APIKey == "" {
 		return false, "API Key不能为空"
 	}
+	if server.HttpStrmTTL == 0 {
+		server.HttpStrmTTL = 1
+	}
+	if server.HttpStrmTTL < 1 {
+		return false, "HTTPStrm 缓存 TTL 必须大于 0"
+	}
+	if server.ClientMode == "" {
+		server.ClientMode = "BlackList"
+	}
+	if server.ClientMode != "" && server.ClientMode != "WhiteList" && server.ClientMode != "BlackList" {
+		return false, "客户端过滤模式必须是 WhiteList 或 BlackList"
+	}
+	if server.Port == 0 {
+		server.Port = 8091
+	}
+	if server.Port < 0 || server.Port > 65535 {
+		return false, "端口范围必须是 0 到 65535"
+	}
 	if server.PathMappings == "" {
 		server.PathMappings = "[]"
 	}
 	if server.ClientList == "" {
 		server.ClientList = "[]"
+	}
+	if _, err := mediaserver.ParsePathMappings(server.PathMappings); err != nil {
+		return false, "路径映射 JSON 格式错误"
+	}
+	if _, err := mediaserver.ParseClientList(server.ClientList); err != nil {
+		return false, "客户端列表 JSON 格式错误"
 	}
 	return true, ""
 }
@@ -52,13 +97,28 @@ func CreateMediaServerHandler(c *gin.Context) {
 		return
 	}
 
-	if err := database.DB.Create(&server).Error; err != nil {
+	requested := server
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&server).Error; err != nil {
+			return err
+		}
+		return tx.Model(&server).Updates(map[string]interface{}{
+			"cache_enable": requested.CacheEnable, "http_strm_enable": requested.HttpStrmEnable,
+			"disable_transcode": requested.DisableTranscode, "resolve_strm_links": requested.ResolveStrmLinks,
+			"enabled": requested.Enabled,
+		}).Error
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "创建媒体服务器失败: " + err.Error()})
 		return
 	}
+	server.CacheEnable = requested.CacheEnable
+	server.HttpStrmEnable = requested.HttpStrmEnable
+	server.DisableTranscode = requested.DisableTranscode
+	server.ResolveStrmLinks = requested.ResolveStrmLinks
+	server.Enabled = requested.Enabled
 
 	mediaserver.GetManager().ReloadServer(server.ID)
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": server})
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": sanitizeMediaServer(server)})
 }
 
 type mediaServerUpdateRequest struct {
@@ -104,7 +164,7 @@ func UpdateMediaServerHandler(c *gin.Context) {
 	if req.ServerAddr != nil {
 		server.ServerAddr = *req.ServerAddr
 	}
-	if req.APIKey != nil {
+	if req.APIKey != nil && *req.APIKey != "" {
 		server.APIKey = *req.APIKey
 	}
 	if req.CacheEnable != nil {
@@ -155,7 +215,7 @@ func UpdateMediaServerHandler(c *gin.Context) {
 	}
 
 	mediaserver.GetManager().ReloadServer(server.ID)
-	c.JSON(http.StatusOK, gin.H{"code": 0, "data": server})
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": sanitizeMediaServer(server)})
 }
 
 func DeleteMediaServerHandler(c *gin.Context) {
@@ -182,6 +242,14 @@ func TestMediaServerConnectionHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": err.Error()})
 		return
 	}
+	if server.ID != 0 && server.APIKey == "" {
+		var stored models.MediaServer
+		if err := database.DB.First(&stored, server.ID).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "媒体服务器未找到"})
+			return
+		}
+		server.APIKey = stored.APIKey
+	}
 
 	if ok, msg := validateMediaServer(&server); !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": msg})
@@ -189,7 +257,7 @@ func TestMediaServerConnectionHandler(c *gin.Context) {
 	}
 
 	if err := mediaserver.TestConnection(&server); err != nil {
-		c.JSON(http.StatusOK, gin.H{"code": 1, "message": err.Error()})
+		c.JSON(http.StatusBadGateway, gin.H{"code": 1, "message": err.Error()})
 		return
 	}
 

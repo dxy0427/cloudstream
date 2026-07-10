@@ -54,6 +54,7 @@
         <n-form-item label="元数据 扩展名"><n-input v-model:value="form.MetaExtensions" placeholder="jpg,jpeg,png,nfo" /></n-form-item>
         <n-form-item label="选项">
           <n-space vertical>
+            <n-checkbox v-model:checked="form.Enabled">启用定时任务</n-checkbox>
             <n-checkbox v-model:checked="form.Overwrite">覆盖模式</n-checkbox>
             <n-checkbox v-model:checked="form.SyncDelete">同步删除</n-checkbox>
             <n-checkbox v-model:checked="form.EncodePath">签名</n-checkbox>
@@ -62,7 +63,7 @@
         <n-form-item label="直链有效期(小时)">
           <n-input-number v-model:value="form.SignExpireHours" :min="0" :max="87600" style="width: 200px" />
         </n-form-item>
-        <n-form-item label="并发线程"><n-input-number v-model:value="form.Threads" :min="1" :max="8" /></n-form-item>
+        <n-form-item label="并发线程"><n-input-number v-model:value="form.Threads" :min="1" :max="16" /></n-form-item>
         <n-space justify="end">
           <n-button @click="showModal = false">取消</n-button>
           <n-button type="primary" @click="submit">保存</n-button>
@@ -93,7 +94,7 @@ let eventSource = null
 let reconnectTimer = null
 
 const defaultForm = {
-  ID: 0, Name: '', AccountID: null, SourceFolderID: '0', LocalPath: '/app/strm/', Cron: '0 */2 * * *', Overwrite: false, SyncDelete: false, EncodePath: false, SignExpireHours: 0, Threads: 4,
+  ID: 0, Name: '', AccountID: null, SourceFolderID: '0', LocalPath: '/app/strm/', Cron: '0 */2 * * *', Enabled: true, Overwrite: false, SyncDelete: false, EncodePath: false, SignExpireHours: 0, Threads: 4,
   StrmExtensions: 'mp4,mkv,ts,iso,mov,avi', MetaExtensions: 'jpg,jpeg,png,nfo,srt,ass,sub'
 }
 const form = reactive({ ...defaultForm })
@@ -154,9 +155,12 @@ onUnmounted(() => {
 })
 
 const openModal = (row) => {
-  if (row) Object.assign(form, row)
-  else {
-    Object.assign(form, defaultForm)
+  Object.assign(form, defaultForm)
+  if (row) {
+    for (const key of Object.keys(defaultForm)) {
+      if (row[key] !== undefined) form[key] = row[key]
+    }
+  } else {
     if (accountOptions.value.length > 0) form.AccountID = accountOptions.value[0].value
   }
   showModal.value = true
@@ -173,8 +177,13 @@ const submit = async () => {
       message.warning('请填写完整的任务信息')
       return
     }
-    if (form.ID) await api.put(`/tasks/${form.ID}`, form)
-    else await api.post('/tasks', form)
+    if (!form.LocalPath.startsWith('/')) {
+      message.warning('本地路径必须是绝对路径')
+      return
+    }
+    const payload = Object.fromEntries(Object.keys(defaultForm).map(key => [key, form[key]]))
+    if (form.ID) await api.put(`/tasks/${form.ID}`, payload)
+    else await api.post('/tasks', payload)
     message.success('保存成功')
     showModal.value = false
     await loadData()

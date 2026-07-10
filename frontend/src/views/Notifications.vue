@@ -13,13 +13,13 @@
 
         <template v-if="form.notifyType === 'webhook'">
           <n-form-item label="Webhook URL">
-            <n-input v-model:value="form.webhookUrl" placeholder="请输入机器人 Webhook 地址" />
+             <n-input v-model:value="form.webhookUrl" :placeholder="stored.hasWebhookUrl ? '已配置，留空不修改' : '请输入机器人 Webhook 地址'" />
           </n-form-item>
         </template>
 
         <template v-else>
           <n-form-item label="Telegram Bot Token">
-            <n-input v-model:value="form.telegramToken" placeholder="请输入 Bot Token" />
+             <n-input type="password" show-password-on="click" v-model:value="form.telegramToken" :placeholder="stored.hasTelegramToken ? '已配置，留空不修改' : '请输入 Bot Token'" />
           </n-form-item>
           <n-form-item label="Telegram Chat ID">
             <n-input v-model:value="form.telegramChatId" placeholder="请输入 Chat ID" />
@@ -59,27 +59,35 @@ const form = reactive({
   notifyOnStop: true,
   notifyOnManual: true,
 })
+const stored = reactive({ hasWebhookUrl: false, hasTelegramToken: false })
 
 const load = async () => {
   try {
-    // /username 接口同时返回通知配置字段，且 api 拦截器已 unwrap res.data
+    // /username 接口同时返回通知配置字段，业务数据在 res.data 内
     const res = await api.get('/username')
+    const settings = res.data || {}
     Object.assign(form, {
-      notifyType: res.notifyType || 'webhook',
-      webhookUrl: res.webhookUrl || '',
-      telegramToken: res.telegramToken || '',
-      telegramChatId: res.telegramChatId || '',
-      notifyOnComplete: res.notifyOnComplete !== false,
-      notifyOnError: res.notifyOnError !== false,
-      notifyOnStop: res.notifyOnStop !== false,
-      notifyOnManual: res.notifyOnManual !== false,
+      notifyType: settings.notifyType || 'webhook',
+      webhookUrl: '',
+      telegramToken: '',
+      telegramChatId: settings.telegramChatId || '',
+      notifyOnComplete: settings.notifyOnComplete !== false,
+      notifyOnError: settings.notifyOnError !== false,
+      notifyOnStop: settings.notifyOnStop !== false,
+      notifyOnManual: settings.notifyOnManual !== false,
     })
+    stored.hasWebhookUrl = settings.hasWebhookUrl === true
+    stored.hasTelegramToken = settings.hasTelegramToken === true
   } catch (e) {}
 }
 
 const save = async () => {
   try {
     await api.post('/notifications', form)
+    if (form.webhookUrl) stored.hasWebhookUrl = true
+    if (form.telegramToken) stored.hasTelegramToken = true
+    form.webhookUrl = ''
+    form.telegramToken = ''
     message.success('通知设置已保存')
   } catch (e) {}
 }

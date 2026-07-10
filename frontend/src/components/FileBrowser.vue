@@ -8,6 +8,7 @@
     {{ item.name }}
    </n-breadcrumb-item>
   </n-breadcrumb>
+	<n-button size="small" secondary style="margin-top: 10px; align-self: flex-start" @click="selectCurrent">选择当前目录</n-button>
 
   <div style="flex: 1; overflow-y: auto; margin-top: 10px; border: 1px solid #333; padding: 5px;">
    <n-spin :show="loading">
@@ -77,5 +78,10 @@ const jumpTo = (idx) => {
  const target = pathStack.value[idx]
  pathStack.value = pathStack.value.slice(0, idx + 1)
  loadFiles(target.id)
+}
+
+const selectCurrent = () => {
+	const current = pathStack.value[pathStack.value.length - 1]
+	emit('select', current?.id || '0')
 }
 </script>

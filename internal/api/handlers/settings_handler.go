@@ -5,9 +5,9 @@ import (
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
 	"cloudstream/internal/utils"
-	"fmt"
 	"github.com/gin-gonic/gin"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -27,9 +27,9 @@ func GetUsernameHandler(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": gin.H{
 		"username":              username,
 		"notifyType":            notifyType,
-		"webhookUrl":            user.WebhookURL,
-		"telegramToken":         user.TelegramToken,
 		"telegramChatId":        user.TelegramChatID,
+		"hasWebhookUrl":         user.WebhookURL != "",
+		"hasTelegramToken":      user.TelegramToken != "",
 		"notifyOnComplete":      user.NotifyOnComplete,
 		"notifyOnError":         user.NotifyOnError,
 		"notifyOnStop":          user.NotifyOnStop,
@@ -94,7 +94,7 @@ func StreamSystemLogsHandler(c *gin.Context) {
 	logs, offset, err := core.ReadRecentLogsWithOffset()
 	if err == nil && len(logs) > 0 {
 		for _, line := range logs {
-			fmt.Fprintf(c.Writer, "data: %s\n\n", line)
+			c.SSEvent("", line)
 		}
 		flusher.Flush()
 	}
@@ -109,7 +109,7 @@ func StreamSystemLogsHandler(c *gin.Context) {
 			if err == nil {
 				offset = newOffset
 				for _, line := range lines {
-					fmt.Fprintf(c.Writer, "data: %s\n\n", line)
+					c.SSEvent("", line)
 				}
 				if len(lines) > 0 {
 					lastHeartbeat = time.Now()
@@ -118,7 +118,7 @@ func StreamSystemLogsHandler(c *gin.Context) {
 				}
 			}
 			if time.Since(lastHeartbeat) >= 15*time.Second {
-				fmt.Fprintf(c.Writer, ": ping\n\n")
+				_, _ = c.Writer.Write([]byte(": ping\n\n"))
 				lastHeartbeat = time.Now()
 				flusher.Flush()
 			}
@@ -132,6 +132,21 @@ func TestWebhookHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "参数错误"})
 		return
 	}
+	username, _ := c.Get("username")
+	var user models.User
+	if err := database.DB.Where("username = ?", username).First(&user).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "用户未找到"})
+		return
+	}
+	if req["webhookUrl"] == "" {
+		req["webhookUrl"] = user.WebhookURL
+	}
+	if req["telegramToken"] == "" {
+		req["telegramToken"] = user.TelegramToken
+	}
+	if req["telegramChatId"] == "" {
+		req["telegramChatId"] = user.TelegramChatID
+	}
 	if err := core.SendTestNotification(req); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "测试发送失败: " + err.Error()})
 		return
@@ -141,14 +156,16 @@ func TestWebhookHandler(c *gin.Context) {
 
 func UpdateNotificationHandler(c *gin.Context) {
 	var req struct {
-		NotifyType       string `json:"notifyType"`
-		WebhookURL       string `json:"webhookUrl"`
-		TelegramToken    string `json:"telegramToken"`
-		TelegramChatID   string `json:"telegramChatId"`
-		NotifyOnComplete *bool  `json:"notifyOnComplete"`
-		NotifyOnError    *bool  `json:"notifyOnError"`
-		NotifyOnStop     *bool  `json:"notifyOnStop"`
-		NotifyOnManual   *bool  `json:"notifyOnManual"`
+		NotifyType         string `json:"notifyType"`
+		WebhookURL         string `json:"webhookUrl"`
+		TelegramToken      string `json:"telegramToken"`
+		TelegramChatID     string `json:"telegramChatId"`
+		NotifyOnComplete   *bool  `json:"notifyOnComplete"`
+		NotifyOnError      *bool  `json:"notifyOnError"`
+		NotifyOnStop       *bool  `json:"notifyOnStop"`
+		NotifyOnManual     *bool  `json:"notifyOnManual"`
+		ClearWebhookURL    bool   `json:"clearWebhookUrl"`
+		ClearTelegramToken bool   `json:"clearTelegramToken"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "参数错误"})
@@ -162,10 +179,24 @@ func UpdateNotificationHandler(c *gin.Context) {
 		return
 	}
 
+	if req.NotifyType != models.NotifyTypeWebhook && req.NotifyType != models.NotifyTypeTelegram {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "不支持的通知类型"})
+		return
+	}
 	user.NotifyType = req.NotifyType
-	user.WebhookURL = req.WebhookURL
-	user.TelegramToken = req.TelegramToken
-	user.TelegramChatID = req.TelegramChatID
+	if req.ClearWebhookURL {
+		user.WebhookURL = ""
+	} else if strings.TrimSpace(req.WebhookURL) != "" {
+		user.WebhookURL = strings.TrimSpace(req.WebhookURL)
+	}
+	if req.ClearTelegramToken {
+		user.TelegramToken = ""
+	} else if strings.TrimSpace(req.TelegramToken) != "" {
+		user.TelegramToken = strings.TrimSpace(req.TelegramToken)
+	}
+	if strings.TrimSpace(req.TelegramChatID) != "" {
+		user.TelegramChatID = strings.TrimSpace(req.TelegramChatID)
+	}
 	if req.NotifyOnComplete != nil {
 		user.NotifyOnComplete = *req.NotifyOnComplete
 	}
@@ -207,7 +238,7 @@ func UpdateCredentialsHandler(c *gin.Context) {
 
 	matched, needsUpgrade, upgradeHash := utils.CheckAndUpgradePassword(req.CurrentPassword, user.PasswordHash)
 	if !matched {
-		c.JSON(http.StatusUnauthorized, gin.H{"code": 1, "message": "当前密码不正确"})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "当前密码不正确"})
 		return
 	}
 	if needsUpgrade && upgradeHash != "" {

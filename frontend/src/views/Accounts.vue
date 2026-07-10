@@ -20,7 +20,7 @@
      <n-thing :title="row.Name">
       <template #description>
        <n-tag :type="row.Type === '123pan' ? 'info' : 'success'" size="small" style="margin-right: 5px">
-        {{ row.Type === '123pan' ? '123云盘' : 'OpenList' }}
+         {{ typeLabels[row.Type] || row.Type }}
        </n-tag>
        <span style="font-size: 12px; color: #888">缓存: {{ row.CacheTTL }}分</span>
       </template>
@@ -52,7 +52,7 @@
    <n-input v-model:value="form.ClientID" />
    </n-form-item>
    <n-form-item label="Client Secret">
-   <n-input type="password" show-password-on="click" v-model:value="form.ClientSecret" />
+    <n-input type="password" show-password-on="click" v-model:value="form.ClientSecret" :placeholder="form.ID && form.HasClientSecret ? '已配置，留空不修改' : ''" />
    </n-form-item>
   </template>
 
@@ -63,18 +63,18 @@
    
    <n-divider dashed>认证方式 (二选一)</n-divider>
    
-   <n-tabs type="segment">
+    <n-tabs v-model:value="form.OpenListAuthMode" type="segment">
     <n-tab-pane name="password" tab="账号密码">
       <n-form-item label="用户名">
         <n-input v-model:value="form.OpenListUsername" placeholder="admin" />
       </n-form-item>
       <n-form-item label="密码">
-        <n-input type="password" show-password-on="click" v-model:value="form.OpenListPassword" placeholder="password" />
+         <n-input type="password" show-password-on="click" v-model:value="form.OpenListPassword" :placeholder="form.ID && form.HasOpenListPassword ? '已配置，留空不修改' : 'password'" />
       </n-form-item>
     </n-tab-pane>
     <n-tab-pane name="token" tab="Token">
       <n-form-item label="Token (长期令牌)">
-        <n-input type="password" show-password-on="click" v-model:value="form.OpenListToken" placeholder="eyJhbGciOi..." />
+         <n-input type="password" show-password-on="click" v-model:value="form.OpenListToken" :placeholder="form.ID && form.HasOpenListToken ? '已配置，留空不修改' : 'eyJhbGciOi...'" />
       </n-form-item>
     </n-tab-pane>
    </n-tabs>
@@ -88,7 +88,7 @@
    <n-input v-model:value="form.WebDAVUsername" placeholder="admin" />
    </n-form-item>
    <n-form-item label="密码">
-   <n-input type="password" show-password-on="click" v-model:value="form.WebDAVPassword" placeholder="password" />
+    <n-input type="password" show-password-on="click" v-model:value="form.WebDAVPassword" :placeholder="form.ID && form.HasWebDAVPassword ? '已配置，留空不修改' : 'password'" />
    </n-form-item>
   </template>
   
@@ -130,7 +130,7 @@ const showModal = ref(false)
 const form = reactive({ 
     ID: 0, Name: '', Type: '123pan', 
     ClientID: '', ClientSecret: '', 
-    OpenListURL: '', OpenListToken: '', 
+    OpenListURL: '', OpenListAuthMode: 'password', OpenListToken: '',
     OpenListUsername: '', OpenListPassword: '',
     WebDAVURL: '', WebDAVUsername: '', WebDAVPassword: '',
     StrmBaseURL: '',
@@ -143,11 +143,12 @@ const typeOptions = [
  { label: 'OpenList (Alist)', value: 'openlist' },
  { label: 'WebDAV', value: 'webdav' }
 ]
+const typeLabels = { '123pan': '123云盘', openlist: 'OpenList', webdav: 'WebDAV' }
 
 const columns = [
  { title: 'ID', key: 'ID', width: 50 },
  { title: '名称', key: 'Name' },
- { title: '类型', key: 'Type', width: 100, render(row) { return h(NTag, { type: row.Type === '123pan' ? 'info' : 'success', size: 'small' }, { default: () => row.Type }) } },
+  { title: '类型', key: 'Type', width: 100, render(row) { return h(NTag, { type: row.Type === '123pan' ? 'info' : 'success', size: 'small' }, { default: () => typeLabels[row.Type] || row.Type }) } },
  { title: '缓存', key: 'CacheTTL', width: 80, render(row) { return row.CacheTTL > 0 ? row.CacheTTL + '分' : '无' } },
  { title: '操作', key: 'actions', width: 140, render(row) {
   return h(NSpace, { size: 'small' }, { default: () => [
@@ -171,11 +172,11 @@ const fetchData = async () => {
 }
 
 const openModal = (row) => {
- if (row) Object.assign(form, row)
+ if (row) Object.assign(form, row, { ClientSecret: '', OpenListToken: '', OpenListPassword: '', WebDAVPassword: '' })
  else Object.assign(form, { 
     ID: 0, Name: '', Type: '123pan', 
     ClientID: '', ClientSecret: '', 
-    OpenListURL: '', OpenListToken: '', 
+     OpenListURL: '', OpenListAuthMode: 'password', OpenListToken: '',
     OpenListUsername: '', OpenListPassword: '',
     WebDAVURL: '', WebDAVUsername: '', WebDAVPassword: '',
     StrmBaseURL: '',

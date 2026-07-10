@@ -198,7 +198,15 @@ func RunScanTask(ctx context.Context, task models.Task, mode RunMode) {
 		} else {
 			deletedCount := 0
 			if task.SyncDelete {
-				deletedCount = performSafeSyncDeleteOptimized(task.ID, tracker)
+				var err error
+				deletedCount, err = performSafeSyncDeleteOptimized(task.ID, tracker)
+				if err != nil {
+					message := "同步删除未完全成功，失败文件已保留历史记录供下次重试"
+					log.Error().Err(err).Str("任务", task.Name).Msg(message)
+					updateTaskStatus(task.ID, "同步删除失败", tracker.Count())
+					SendNotificationByEvent("任务异常", message, NotifyEventError)
+					return
+				}
 				cleanEmptyDirs(task.LocalPath)
 			}
 
@@ -291,19 +299,19 @@ func updateFileRecordsOptimized(taskID uint, tracker *FileTracker) error {
 	})
 }
 
-func performSafeSyncDeleteOptimized(taskID uint, currentScanTracker *FileTracker) int {
+func performSafeSyncDeleteOptimized(taskID uint, currentScanTracker *FileTracker) (int, error) {
 	log.Info().Uint("taskID", taskID).Msg("开始执行安全清理...")
 
 	deletedCount := 0
 	dbDeletedCount := 0
 	var lastID uint = 0
 	batchSize := 1000
+	var firstDeleteErr error
 
 	for {
 		var historyFiles []models.TaskFile
 		if err := database.DB.Where("task_id = ? AND id > ?", taskID, lastID).Order("id asc").Limit(batchSize).Find(&historyFiles).Error; err != nil {
-			log.Error().Err(err).Msg("查询历史记录失败")
-			break
+			return deletedCount, fmt.Errorf("查询历史记录失败: %w", err)
 		}
 		if len(historyFiles) == 0 {
 			break
@@ -313,25 +321,33 @@ func performSafeSyncDeleteOptimized(taskID uint, currentScanTracker *FileTracker
 		for _, record := range historyFiles {
 			lastID = record.ID
 			if !currentScanTracker.Has(record.FilePath) {
-				if err := os.Remove(record.FilePath); err == nil || os.IsNotExist(err) {
+				if err := os.Remove(record.FilePath); err == nil {
 					log.Info().Str("文件", record.FilePath).Msg("同步删除本地失效文件")
 					deletedCount++
+					idsToDelete = append(idsToDelete, record.ID)
+				} else if os.IsNotExist(err) {
+					idsToDelete = append(idsToDelete, record.ID)
+				} else {
+					log.Error().Err(err).Str("文件", record.FilePath).Msg("同步删除失败，保留历史记录")
+					if firstDeleteErr == nil {
+						firstDeleteErr = err
+					}
 				}
-				idsToDelete = append(idsToDelete, record.ID)
 			}
 		}
 
 		if len(idsToDelete) > 0 {
-			if err := database.DB.Delete(&models.TaskFile{}, idsToDelete).Error; err == nil {
-				dbDeletedCount += len(idsToDelete)
+			if err := database.DB.Delete(&models.TaskFile{}, idsToDelete).Error; err != nil {
+				return deletedCount, fmt.Errorf("删除历史记录失败: %w", err)
 			}
+			dbDeletedCount += len(idsToDelete)
 		}
 	}
 
 	if deletedCount > 0 {
 		log.Info().Int("删除文件数", deletedCount).Int("删除记录数", dbDeletedCount).Msg("清理完成")
 	}
-	return deletedCount
+	return deletedCount, firstDeleteErr
 }
 
 func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, openListClient *openlist.Client, webDavClient *webdav.Client, task models.Task, accountType, folderID, currentCloudPath, localBasePath string, strmExtMap, metaExtMap map[string]bool, wg *sync.WaitGroup, pool chan struct{}, limiter *time.Ticker, tracker *FileTracker, stats *ScanStats, hasError *atomic.Bool) {
@@ -438,6 +454,11 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, openList
 			return
 		}
 		currentItem := item
+		if currentItem.FileName == "" || filepath.Base(currentItem.FileName) != currentItem.FileName || currentItem.FileName == "." || currentItem.FileName == ".." {
+			log.Error().Str("文件", currentItem.FileName).Str("任务", task.Name).Msg("云端文件名包含非法路径片段")
+			hasError.Store(true)
+			return
+		}
 		itemCloudPath := path.Join(currentCloudPath, currentItem.FileName)
 		nextLocalPath := filepath.Join(localBasePath, currentItem.FileName)
 
@@ -481,7 +502,10 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, openList
 
 				ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(fileToProcess.FileName), "."))
 				if strmExtMap[ext] {
-					createStrmFile(client, openListClient, webDavClient, accountType, task, fileToProcess, cloudRelPath, localBasePath, tracker, stats)
+					if err := createStrmFile(client, openListClient, webDavClient, accountType, task, fileToProcess, cloudRelPath, localBasePath, tracker, stats); err != nil {
+						log.Error().Err(err).Str("文件", fileToProcess.FileName).Msg("生成 STRM 失败")
+						hasError.Store(true)
+					}
 				} else if metaExtMap[ext] {
 					var downloadIdentity interface{}
 					if accountType == models.AccountTypeOpenList || accountType == models.AccountTypeWebDAV {
@@ -489,23 +513,26 @@ func scanDirectoryRecursive(ctx context.Context, client *pan123.Client, openList
 					} else {
 						downloadIdentity = fileToProcess.FileId
 					}
-					downloadAndSaveMetaFile(client, openListClient, webDavClient, accountType, task, downloadIdentity, fileToProcess.FileName, localBasePath, tracker, stats)
+					if err := downloadAndSaveMetaFile(client, openListClient, webDavClient, accountType, task, downloadIdentity, fileToProcess.FileName, localBasePath, tracker, stats); err != nil {
+						log.Error().Err(err).Str("文件", fileToProcess.FileName).Msg("下载元数据失败")
+						hasError.Store(true)
+					}
 				}
 			}(currentItem, itemCloudPath)
 		}
 	}
 }
 
-func createStrmFile(client *pan123.Client, openListClient *openlist.Client, webDavClient *webdav.Client, accountType string, task models.Task, file pan123.FileInfo, cloudRelPath string, localBasePath string, tracker *FileTracker, stats *ScanStats) {
+func createStrmFile(client *pan123.Client, openListClient *openlist.Client, webDavClient *webdav.Client, accountType string, task models.Task, file pan123.FileInfo, cloudRelPath string, localBasePath string, tracker *FileTracker, stats *ScanStats) error {
 	fileNameWithoutExt := strings.TrimSuffix(file.FileName, filepath.Ext(file.FileName))
 	strmFileName := fileNameWithoutExt + ".strm"
 	localFilePath := filepath.Join(localBasePath, strmFileName)
 
-	tracker.Add(localFilePath)
 	_, statErr := os.Stat(localFilePath)
 	existedBefore := statErr == nil
 	if !task.Overwrite && existedBefore {
-		return
+		tracker.Add(localFilePath)
+		return nil
 	}
 
 	baseURL := client.Account.StrmBaseURL
@@ -527,8 +554,7 @@ func createStrmFile(client *pan123.Client, openListClient *openlist.Client, webD
 	if task.EncodePath {
 		sign, err := auth.SignStreamURL(task.ID, task.AccountID, realIdentity, task.SignExpireHours)
 		if err != nil {
-			log.Error().Err(err).Msg("生成签名失败")
-			return
+			return fmt.Errorf("生成签名失败: %w", err)
 		}
 		displayPath := cloudRelPath
 		if !strings.HasPrefix(displayPath, "/") {
@@ -567,75 +593,89 @@ func createStrmFile(client *pan123.Client, openListClient *openlist.Client, webD
 	}
 
 	if err := os.MkdirAll(filepath.Dir(localFilePath), 0755); err != nil {
-		log.Error().Err(err).Str("文件", strmFileName).Msg("创建目录失败")
-		return
+		return fmt.Errorf("创建目录失败: %w", err)
 	}
 	if err := os.WriteFile(localFilePath, []byte(streamURL), 0644); err != nil {
-		log.Error().Err(err).Str("文件", strmFileName).Msg("写入STRM文件失败")
-		return
+		return fmt.Errorf("写入 STRM 文件失败: %w", err)
 	}
+	tracker.Add(localFilePath)
 	if !existedBefore {
 		stats.newStrmCount.Add(1)
 	}
 	log.Info().Str("文件", strmFileName).Msg("已生成 STRM 文件")
+	return nil
 }
 
-func downloadAndSaveMetaFile(client *pan123.Client, openListClient *openlist.Client, webDavClient *webdav.Client, accountType string, task models.Task, identity interface{}, fileName string, localBasePath string, tracker *FileTracker, stats *ScanStats) {
+func downloadAndSaveMetaFile(client *pan123.Client, openListClient *openlist.Client, webDavClient *webdav.Client, accountType string, task models.Task, identity interface{}, fileName string, localBasePath string, tracker *FileTracker, stats *ScanStats) error {
 	localFilePath := filepath.Join(localBasePath, fileName)
-	tracker.Add(localFilePath)
 	_, statErr := os.Stat(localFilePath)
 	existedBefore := statErr == nil
 	if !task.Overwrite && existedBefore {
-		return
+		tracker.Add(localFilePath)
+		return nil
 	}
 	var downloadURL string
 	var err error
+	var resp *http.Response
 	if accountType == models.AccountTypeOpenList && openListClient != nil {
 		pathStr, ok := identity.(string)
-		if ok {
-			downloadURL, err = openListClient.GetRawURL(pathStr)
+		if !ok {
+			return fmt.Errorf("OpenList 元数据路径类型错误")
 		}
+		downloadURL, err = openListClient.GetRawURL(pathStr)
 	} else if accountType == models.AccountTypeWebDAV && webDavClient != nil {
 		pathStr, ok := identity.(string)
-		if ok {
-			downloadURL, err = webDavClient.GetDownloadURL(pathStr)
+		if !ok {
+			return fmt.Errorf("WebDAV 元数据路径类型错误")
 		}
+		req, reqErr := webDavClient.NewDownloadRequest(http.MethodGet, pathStr, nil)
+		if reqErr != nil {
+			return fmt.Errorf("创建 WebDAV 下载请求失败: %w", reqErr)
+		}
+		resp, err = webDavClient.MetadataHTTPClient.Do(req)
 	} else {
 		downloadURL, err = client.GetDownloadURL(identity)
 	}
 	if err != nil {
-		log.Error().Err(err).Str("文件", fileName).Msg("获取元数据链接失败")
-		return
+		return fmt.Errorf("获取元数据链接失败: %w", err)
 	}
-	httpClient := &http.Client{Timeout: 30 * time.Second}
-	resp, err := httpClient.Get(downloadURL)
-	if err != nil {
-		log.Error().Err(err).Str("文件", fileName).Msg("下载元数据失败")
-		return
+	if resp == nil {
+		httpClient := &http.Client{Timeout: 30 * time.Second}
+		resp, err = httpClient.Get(downloadURL)
+		if err != nil {
+			return fmt.Errorf("下载元数据失败: %w", err)
+		}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		log.Warn().Str("文件", fileName).Int("status", resp.StatusCode).Msg("下载元数据返回非200")
-		return
+		return fmt.Errorf("下载元数据返回非200: %d", resp.StatusCode)
 	}
-	if err := os.MkdirAll(filepath.Dir(localFilePath), 0755); err != nil {
-		log.Error().Err(err).Str("文件", fileName).Msg("创建目录失败")
-		return
+	dir := filepath.Dir(localFilePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("创建目录失败: %w", err)
 	}
-	outFile, err := os.Create(localFilePath)
+	outFile, err := os.CreateTemp(dir, "."+filepath.Base(fileName)+".tmp-*")
 	if err != nil {
-		log.Error().Err(err).Str("文件", fileName).Msg("创建文件失败")
-		return
+		return fmt.Errorf("创建临时文件失败: %w", err)
 	}
-	defer outFile.Close()
+	tmpPath := outFile.Name()
+	defer os.Remove(tmpPath)
 	if _, err := io.Copy(outFile, resp.Body); err != nil {
-		log.Error().Err(err).Str("文件", fileName).Msg("写入文件失败")
-		return
+		_ = outFile.Close()
+		return fmt.Errorf("写入文件失败: %w", err)
 	}
+	if err := outFile.Close(); err != nil {
+		return fmt.Errorf("关闭临时文件失败: %w", err)
+	}
+	if err := os.Rename(tmpPath, localFilePath); err != nil {
+		return fmt.Errorf("替换元数据文件失败: %w", err)
+	}
+	tracker.Add(localFilePath)
 	if !existedBefore {
 		stats.newMetaCount.Add(1)
 	}
 	log.Info().Str("文件", fileName).Msg("已下载元数据文件")
+	return nil
 }
 
 func countTrackedOutputs(tracker *FileTracker) (int, int) {

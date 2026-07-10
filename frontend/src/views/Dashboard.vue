@@ -210,7 +210,7 @@ const startStatsRefresh = () => {
   if (statsTimer) return
   statsTimer = setInterval(() => {
     loadStats().catch(() => {})
-  }, 10000)
+  }, 30000)
 }
 
 const stopStatsRefresh = () => {
@@ -242,6 +242,11 @@ onActivated(() => {
 })
 
 onDeactivated(() => {
+	stopStatsRefresh()
+	if (eventSource) {
+		eventSource.close()
+		eventSource = null
+	}
   if (reconnectTimer) {
     clearTimeout(reconnectTimer)
     reconnectTimer = null
