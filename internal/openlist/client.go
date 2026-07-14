@@ -4,25 +4,35 @@ import (
 	"bytes"
 	"cloudstream/internal/models"
 	"cloudstream/internal/utils"
+	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/rs/zerolog/log"
 	"io"
 	"net/http"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/rs/zerolog/log"
+)
+
+const (
+	openListPageSize           = 500
+	maxControlResponseBodySize = int64(4 << 20)
 )
 
 type tokenCacheItem struct {
+	mu        sync.RWMutex
 	Token     string
 	ExpiresAt time.Time
 }
 
 var (
-	globalTokenCache = make(map[uint]*tokenCacheItem)
-	cacheMutex       sync.RWMutex
+	globalTokenCache  = make(map[string]*tokenCacheItem)
+	tokenRefreshLocks = make(map[uint]chan struct{})
+	cacheMutex        sync.RWMutex
 )
 
 type dirCacheEntry struct {
@@ -40,8 +50,19 @@ func init() {
 		ticker := time.NewTicker(5 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			dirCacheMutex.Lock()
 			now := time.Now()
+			cacheMutex.Lock()
+			for key, item := range globalTokenCache {
+				item.mu.RLock()
+				expired := item.ExpiresAt.IsZero() || !now.Before(item.ExpiresAt)
+				item.mu.RUnlock()
+				if expired {
+					delete(globalTokenCache, key)
+				}
+			}
+			cacheMutex.Unlock()
+
+			dirCacheMutex.Lock()
 			for k, v := range dirCache {
 				if now.After(v.ExpiresAt) {
 					delete(dirCache, k)
@@ -55,6 +76,7 @@ func init() {
 type Client struct {
 	AccountID           uint
 	BaseURL             string
+	AuthMode            string
 	StaticToken         string
 	Username            string
 	Password            string
@@ -69,49 +91,115 @@ func NewClient(account models.Account) *Client {
 		base = "http://" + base
 	}
 	base = strings.TrimRight(base, "/")
+	authMode := strings.TrimSpace(account.OpenListAuthMode)
+	if authMode != "token" && authMode != "password" {
+		if strings.TrimSpace(account.OpenListToken) != "" {
+			authMode = "token"
+		} else {
+			authMode = "password"
+		}
+	}
 
-	return &Client{
+	client := &Client{
 		AccountID:           account.ID,
 		BaseURL:             base,
-		StaticToken:         strings.TrimSpace(account.OpenListToken),
-		Username:            strings.TrimSpace(account.OpenListUsername),
-		Password:            strings.TrimSpace(account.OpenListPassword),
+		AuthMode:            authMode,
 		CacheTTL:            account.CacheTTL,
 		CustomCachePolicies: account.CustomCachePolicies,
 		HTTPClient:          &http.Client{Timeout: 30 * time.Second},
 	}
+
+	switch authMode {
+	case "token":
+		client.StaticToken = strings.TrimSpace(account.OpenListToken)
+	case "password":
+		client.Username = strings.TrimSpace(account.OpenListUsername)
+		client.Password = strings.TrimSpace(account.OpenListPassword)
+	}
+
+	return client
 }
 
 // 获取有效 Token (带自动登录、JWT解析和缓存)
 func (c *Client) getToken() (string, error) {
-	if c.StaticToken != "" {
-		return c.StaticToken, nil
+	return c.getTokenContext(context.Background(), c.cacheFingerprint())
+}
+
+func (c *Client) getTokenContext(ctx context.Context, fingerprint string) (string, error) {
+	if ctx == nil {
+		return "", fmt.Errorf("context 不能为空")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
 	}
 
-	if c.Username == "" || c.Password == "" {
-		return "", fmt.Errorf("未配置 Token 且未配置用户名/密码")
-	}
-
-	cacheMutex.RLock()
-	if item, exists := globalTokenCache[c.AccountID]; exists {
-		if time.Now().Before(item.ExpiresAt.Add(-5 * time.Minute)) {
-			token := item.Token
-			cacheMutex.RUnlock()
-			return token, nil
+	switch c.AuthMode {
+	case "token":
+		if c.StaticToken == "" {
+			return "", fmt.Errorf("OpenList Token 未配置")
 		}
+		return c.StaticToken, nil
+	case "password":
+		if c.Username == "" || c.Password == "" {
+			return "", fmt.Errorf("OpenList 用户名或密码未配置")
+		}
+	default:
+		return "", fmt.Errorf("OpenList 认证模式无效")
 	}
-	cacheMutex.RUnlock()
+
+	if c.AccountID == 0 {
+		return c.loginContext(ctx)
+	}
+
+	cacheKey := c.tokenCacheKey(fingerprint)
+	cacheMutex.Lock()
+	item, exists := globalTokenCache[cacheKey]
+	if !exists {
+		item = &tokenCacheItem{}
+		globalTokenCache[cacheKey] = item
+	}
+	refresh, exists := tokenRefreshLocks[c.AccountID]
+	if !exists {
+		refresh = make(chan struct{}, 1)
+		tokenRefreshLocks[c.AccountID] = refresh
+	}
+	cacheMutex.Unlock()
+
+	item.mu.RLock()
+	if item.Token != "" && time.Now().Before(item.ExpiresAt.Add(-5*time.Minute)) {
+		token := item.Token
+		item.mu.RUnlock()
+		return token, nil
+	}
+	item.mu.RUnlock()
+
+	select {
+	case refresh <- struct{}{}:
+		defer func() { <-refresh }()
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 
 	cacheMutex.Lock()
-	defer cacheMutex.Unlock()
-
-	if item, exists := globalTokenCache[c.AccountID]; exists {
-		if time.Now().Before(item.ExpiresAt.Add(-5 * time.Minute)) {
-			return item.Token, nil
-		}
+	item, exists = globalTokenCache[cacheKey]
+	if !exists {
+		item = &tokenCacheItem{}
+		globalTokenCache[cacheKey] = item
 	}
+	cacheMutex.Unlock()
 
-	token, err := c.login()
+	item.mu.RLock()
+	if item.Token != "" && time.Now().Before(item.ExpiresAt.Add(-5*time.Minute)) {
+		token := item.Token
+		item.mu.RUnlock()
+		return token, nil
+	}
+	item.mu.RUnlock()
+
+	token, err := c.loginContext(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -132,22 +220,45 @@ func (c *Client) getToken() (string, error) {
 		log.Warn().Err(err).Msg("解析 OpenList JWT 失败，将使用默认过期时间")
 	}
 
-	globalTokenCache[c.AccountID] = &tokenCacheItem{
-		Token:     token,
-		ExpiresAt: expiration,
+	cacheMutex.Lock()
+	currentItem, exists := globalTokenCache[cacheKey]
+	if exists && currentItem == item {
+		item.mu.Lock()
+		item.Token = token
+		item.ExpiresAt = expiration
+		item.mu.Unlock()
 	}
+	cacheMutex.Unlock()
 
 	return token, nil
 }
 
 func (c *Client) invalidateCache() {
+	c.invalidateCacheFingerprint(c.cacheFingerprint())
+}
+
+func (c *Client) invalidateCacheFingerprint(fingerprint string) {
+	if c.AccountID == 0 {
+		return
+	}
 	cacheMutex.Lock()
-	delete(globalTokenCache, c.AccountID)
+	delete(globalTokenCache, c.tokenCacheKey(fingerprint))
 	cacheMutex.Unlock()
 	log.Warn().Uint("accountID", c.AccountID).Msg("OpenList Token 已被标记为失效，下次请求将重新登录")
 }
 
 func (c *Client) login() (string, error) {
+	return c.loginContext(context.Background())
+}
+
+func (c *Client) loginContext(ctx context.Context) (string, error) {
+	if ctx == nil {
+		return "", fmt.Errorf("context 不能为空")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+
 	apiPath := "/api/auth/login"
 	body := map[string]string{
 		"username": c.Username,
@@ -159,7 +270,7 @@ func (c *Client) login() (string, error) {
 		return "", err
 	}
 
-	req, err := http.NewRequest(http.MethodPost, c.BaseURL+apiPath, bytes.NewReader(data))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+apiPath, bytes.NewReader(data))
 	if err != nil {
 		return "", err
 	}
@@ -170,6 +281,10 @@ func (c *Client) login() (string, error) {
 		return "", fmt.Errorf("登录请求失败: %w", err)
 	}
 	defer resp.Body.Close()
+	respBody, err := readControlResponseBody(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("读取登录响应失败: %w", err)
+	}
 
 	var res struct {
 		Code    int    `json:"code"`
@@ -179,7 +294,7 @@ func (c *Client) login() (string, error) {
 		} `json:"data"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
+	if err := json.Unmarshal(respBody, &res); err != nil {
 		return "", fmt.Errorf("解析登录响应失败: %w", err)
 	}
 
@@ -191,6 +306,16 @@ func (c *Client) login() (string, error) {
 }
 
 func (c *Client) doPostJSON(apiPath string, body any, out any) error {
+	return c.doPostJSONContext(context.Background(), apiPath, body, out, c.cacheFingerprint())
+}
+
+func (c *Client) doPostJSONContext(ctx context.Context, apiPath string, body any, out any, fingerprint string) error {
+	if ctx == nil {
+		return fmt.Errorf("context 不能为空")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if c.BaseURL == "" {
 		return fmt.Errorf("OpenList 地址未配置")
 	}
@@ -202,8 +327,11 @@ func (c *Client) doPostJSON(apiPath string, body any, out any) error {
 
 	maxAuthRetries := 2
 	for authAttempt := 0; authAttempt < maxAuthRetries; authAttempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 
-		token, err := c.getToken()
+		token, err := c.getTokenContext(ctx, fingerprint)
 		if err != nil {
 			return err
 		}
@@ -215,10 +343,12 @@ func (c *Client) doPostJSON(apiPath string, body any, out any) error {
 
 		for i := 0; i < maxNetRetries; i++ {
 			if i > 0 {
-				time.Sleep(time.Duration(1<<uint(i-1)) * time.Second)
+				if err := sleepContext(ctx, time.Duration(1<<uint(i-1))*time.Second); err != nil {
+					return err
+				}
 			}
 
-			req, err := http.NewRequest(http.MethodPost, c.BaseURL+apiPath, bytes.NewReader(jsonData))
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+apiPath, bytes.NewReader(jsonData))
 			if err != nil {
 				return err
 			}
@@ -229,13 +359,19 @@ func (c *Client) doPostJSON(apiPath string, body any, out any) error {
 
 			resp, err = c.HTTPClient.Do(req)
 			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				lastNetErr = err
 				continue
 			}
 
-			respBody, err = io.ReadAll(resp.Body)
+			respBody, err = readControlResponseBody(resp.Body)
 			resp.Body.Close()
 			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
 				lastNetErr = err
 				continue
 			}
@@ -249,8 +385,8 @@ func (c *Client) doPostJSON(apiPath string, body any, out any) error {
 		}
 
 		if resp.StatusCode == 401 || resp.StatusCode == 403 {
-			if authAttempt == 0 && c.StaticToken == "" {
-				c.invalidateCache()
+			if authAttempt == 0 && c.AuthMode == "password" {
+				c.invalidateCacheFingerprint(fingerprint)
 				continue
 			}
 			return fmt.Errorf("OpenList 鉴权失败 (HTTP %d)", resp.StatusCode)
@@ -262,8 +398,8 @@ func (c *Client) doPostJSON(apiPath string, body any, out any) error {
 		}
 		if err := json.Unmarshal(respBody, &tempRes); err == nil {
 			if tempRes.Code == 401 {
-				if authAttempt == 0 && c.StaticToken == "" {
-					c.invalidateCache()
+				if authAttempt == 0 && c.AuthMode == "password" {
+					c.invalidateCacheFingerprint(fingerprint)
 					continue
 				}
 				return fmt.Errorf("OpenList 鉴权失败 (Business Code 401)")
@@ -281,6 +417,16 @@ func (c *Client) doPostJSON(apiPath string, body any, out any) error {
 }
 
 func (c *Client) ListDirectory(pathStr string, refresh bool) ([]FileInfo, error) {
+	return c.ListDirectoryContext(context.Background(), pathStr, refresh)
+}
+
+func (c *Client) ListDirectoryContext(ctx context.Context, pathStr string, refresh bool) ([]FileInfo, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("context 不能为空")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if pathStr == "" {
 		pathStr = "/"
 	}
@@ -288,10 +434,11 @@ func (c *Client) ListDirectory(pathStr string, refresh bool) ([]FileInfo, error)
 		pathStr = "/" + pathStr
 	}
 
+	fingerprint := c.cacheFingerprint()
 	cacheTTL := utils.GetCacheTTL(c.CustomCachePolicies, c.CacheTTL, pathStr)
-	cacheKey := fmt.Sprintf("openlist:%d:%s", c.AccountID, pathStr)
+	cacheKey := c.directoryCacheKey(fingerprint, pathStr)
 
-	if cacheTTL > 0 && !refresh {
+	if c.AccountID != 0 && cacheTTL > 0 && !refresh {
 		dirCacheMutex.RLock()
 		if item, ok := dirCache[cacheKey]; ok {
 			if time.Now().Before(item.ExpiresAt) {
@@ -302,35 +449,71 @@ func (c *Client) ListDirectory(pathStr string, refresh bool) ([]FileInfo, error)
 		dirCacheMutex.RUnlock()
 	}
 
-	body := map[string]any{
-		"path":     pathStr,
-		"password": "",
-		"page":     1,
-		"per_page": 0,
-		"refresh":  refresh,
-	}
+	content := make([]FileInfo, 0)
+	expectedTotal := -1
+	for page := 1; ; page++ {
+		body := map[string]any{
+			"path":     pathStr,
+			"password": "",
+			"page":     page,
+			"per_page": openListPageSize,
+			"refresh":  refresh,
+		}
 
-	var res listResponse
-	if err := c.doPostJSON("/api/fs/list", body, &res); err != nil {
+		var res listResponse
+		if err := c.doPostJSONContext(ctx, "/api/fs/list", body, &res, fingerprint); err != nil {
+			return nil, err
+		}
+		if res.Code != 200 {
+			return nil, fmt.Errorf("OpenList 列表失败(code=%d): %s", res.Code, res.Message)
+		}
+
+		if expectedTotal < 0 || res.Data.Total > expectedTotal {
+			expectedTotal = res.Data.Total
+		}
+		pageContent := res.Data.Content
+		content = append(content, pageContent...)
+
+		if expectedTotal > 0 {
+			if len(content) >= expectedTotal {
+				break
+			}
+			if len(pageContent) == 0 {
+				return nil, fmt.Errorf("OpenList 列表分页不完整: 已获取 %d/%d 项", len(content), expectedTotal)
+			}
+			continue
+		}
+		if len(pageContent) < openListPageSize {
+			break
+		}
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if res.Code != 200 {
-		return nil, fmt.Errorf("OpenList 列表失败(code=%d): %s", res.Code, res.Message)
-	}
 
-	if cacheTTL > 0 {
+	if c.AccountID != 0 && cacheTTL > 0 {
 		dirCacheMutex.Lock()
 		dirCache[cacheKey] = &dirCacheEntry{
-			Data:      res.Data.Content,
+			Data:      content,
 			ExpiresAt: time.Now().Add(time.Duration(cacheTTL) * time.Minute),
 		}
 		dirCacheMutex.Unlock()
 	}
 
-	return res.Data.Content, nil
+	return content, nil
 }
 
 func (c *Client) GetRawURL(pathStr string) (string, error) {
+	return c.GetRawURLContext(context.Background(), pathStr)
+}
+
+func (c *Client) GetRawURLContext(ctx context.Context, pathStr string) (string, error) {
+	if ctx == nil {
+		return "", fmt.Errorf("context 不能为空")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if pathStr == "" {
 		return "", fmt.Errorf("path 不能为空")
 	}
@@ -344,7 +527,7 @@ func (c *Client) GetRawURL(pathStr string) (string, error) {
 	}
 
 	var res getResponse
-	if err := c.doPostJSON("/api/fs/get", body, &res); err != nil {
+	if err := c.doPostJSONContext(ctx, "/api/fs/get", body, &res, c.cacheFingerprint()); err != nil {
 		return "", err
 	}
 	if res.Code != 200 {
@@ -357,17 +540,99 @@ func (c *Client) GetRawURL(pathStr string) (string, error) {
 }
 
 func (c *Client) TestConnection() error {
-	c.invalidateCache()
-	_, err := c.ListDirectory("/", false)
+	return c.TestConnectionContext(context.Background())
+}
+
+func (c *Client) TestConnectionContext(ctx context.Context) error {
+	testClient := *c
+	testClient.AccountID = 0
+	testClient.CacheTTL = 0
+	testClient.CustomCachePolicies = ""
+	if testClient.AuthMode == "password" {
+		token, err := testClient.loginContext(ctx)
+		if err != nil {
+			return err
+		}
+		testClient.AuthMode = "token"
+		testClient.StaticToken = token
+		testClient.Username = ""
+		testClient.Password = ""
+	}
+	_, err := testClient.ListDirectoryContext(ctx, "/", false)
 	return err
 }
 
+func readControlResponseBody(body io.Reader) ([]byte, error) {
+	data, err := io.ReadAll(io.LimitReader(body, maxControlResponseBodySize+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxControlResponseBodySize {
+		return nil, fmt.Errorf("响应超过 %d 字节限制", maxControlResponseBodySize)
+	}
+	return data, nil
+}
+
+func (c *Client) cacheFingerprint() string {
+	secret := c.Password
+	if c.AuthMode == "token" {
+		secret = c.StaticToken
+	}
+	h := sha256.New()
+	for _, part := range []string{
+		fmt.Sprintf("%d", c.AccountID),
+		c.BaseURL,
+		"",
+		c.AuthMode,
+		c.Username,
+		secret,
+	} {
+		_, _ = fmt.Fprintf(h, "%d:", len(part))
+		_, _ = h.Write([]byte(part))
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func (c *Client) tokenCacheKey(fingerprint string) string {
+	return fmt.Sprintf("openlist:%d:%s", c.AccountID, fingerprint)
+}
+
+func (c *Client) directoryCacheKey(fingerprint, pathStr string) string {
+	h := sha256.New()
+	for _, part := range []string{
+		fingerprint,
+		fmt.Sprintf("%d", c.CacheTTL),
+		c.CustomCachePolicies,
+		pathStr,
+	} {
+		_, _ = fmt.Fprintf(h, "%d:", len(part))
+		_, _ = h.Write([]byte(part))
+	}
+	return fmt.Sprintf("openlist:%d:dir:%x", c.AccountID, h.Sum(nil))
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 func InvalidateAccountCache(accountID uint) {
+	prefix := fmt.Sprintf("openlist:%d:", accountID)
 	cacheMutex.Lock()
-	delete(globalTokenCache, accountID)
+	for key := range globalTokenCache {
+		if strings.HasPrefix(key, prefix) {
+			delete(globalTokenCache, key)
+		}
+	}
+	delete(tokenRefreshLocks, accountID)
 	cacheMutex.Unlock()
 
-	prefix := fmt.Sprintf("openlist:%d:", accountID)
 	dirCacheMutex.Lock()
 	for key := range dirCache {
 		if strings.HasPrefix(key, prefix) {

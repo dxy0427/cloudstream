@@ -2,6 +2,7 @@ package core
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,35 +15,44 @@ import (
 // LogFilePath 与 internal/logger/logger.go 中保持一致
 const LogFilePath = "./data/cloudstream.log"
 
-func tailLines(path string, maxLines int) ([]string, int64, error) {
+const maxLogLineBytes = 256 * 1024
+
+type LogCursor struct {
+	Offset   int64
+	FileInfo os.FileInfo
+}
+
+func tailLines(path string, maxLines int) ([]string, LogCursor, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []string{}, 0, nil
+			return []string{}, LogCursor{}, nil
 		}
-		return nil, 0, err
+		return nil, LogCursor{}, err
 	}
 	defer file.Close()
 
 	lines := make([]string, 0, maxLines)
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		formatted := normalizeLogLine(scanner.Text())
+	if err := readLogLines(file, func(line string) {
+		formatted := normalizeLogLine(line)
 		if formatted != "" {
 			lines = append(lines, formatted)
 		}
 		if len(lines) > maxLines {
 			lines = lines[1:]
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, 0, err
+	}); err != nil {
+		return nil, LogCursor{}, err
 	}
 	offset, err := file.Seek(0, io.SeekEnd)
 	if err != nil {
-		offset = 0
+		return nil, LogCursor{}, err
 	}
-	return lines, offset, nil
+	info, err := file.Stat()
+	if err != nil {
+		return nil, LogCursor{}, err
+	}
+	return lines, LogCursor{Offset: offset, FileInfo: info}, nil
 }
 
 func ReadRecentLogs() ([]string, error) {
@@ -50,47 +60,86 @@ func ReadRecentLogs() ([]string, error) {
 	return lines, err
 }
 
-func ReadRecentLogsWithOffset() ([]string, int64, error) {
+func ReadRecentLogsWithCursor() ([]string, LogCursor, error) {
 	return tailLines(LogFilePath, 300)
 }
 
-func ReadLogFromOffset(offset int64) ([]string, int64, error) {
+func ReadLogsFromCursor(cursor LogCursor) ([]string, LogCursor, error) {
 	file, err := os.Open(LogFilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []string{}, 0, nil
+			return []string{}, LogCursor{}, nil
 		}
-		return nil, offset, err
+		return nil, cursor, err
 	}
 	defer file.Close()
 
 	info, err := file.Stat()
 	if err != nil {
-		return nil, offset, err
+		return nil, cursor, err
 	}
-	if offset > info.Size() {
-		offset = info.Size()
+	offset := cursor.Offset
+	if cursor.FileInfo == nil || !os.SameFile(cursor.FileInfo, info) || offset > info.Size() {
+		offset = 0
 	}
 	if _, err := file.Seek(offset, io.SeekStart); err != nil {
-		return nil, offset, err
+		return nil, cursor, err
 	}
 
 	lines := []string{}
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		formatted := normalizeLogLine(scanner.Text())
+	if err := readLogLines(file, func(line string) {
+		formatted := normalizeLogLine(line)
 		if formatted != "" {
 			lines = append(lines, formatted)
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, offset, err
+	}); err != nil {
+		return nil, cursor, err
 	}
 	newOffset, err := file.Seek(0, io.SeekCurrent)
 	if err != nil {
-		return lines, offset, nil
+		return lines, cursor, err
 	}
-	return lines, newOffset, nil
+	return lines, LogCursor{Offset: newOffset, FileInfo: info}, nil
+}
+
+func readLogLines(reader io.Reader, handle func(string)) error {
+	buffered := bufio.NewReaderSize(reader, 64*1024)
+	for {
+		line, err := readBoundedLogLine(buffered)
+		if len(line) > 0 {
+			handle(string(bytes.TrimSuffix(line, []byte{'\r'})))
+		}
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func readBoundedLogLine(reader *bufio.Reader) ([]byte, error) {
+	line := make([]byte, 0, 64*1024)
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		fragment = bytes.TrimSuffix(fragment, []byte{'\n'})
+		remaining := maxLogLineBytes - len(line)
+		if remaining > 0 {
+			if len(fragment) > remaining {
+				fragment = fragment[:remaining]
+			}
+			line = append(line, fragment...)
+		}
+		if err == nil {
+			return line, nil
+		}
+		if err == io.EOF {
+			return line, io.EOF
+		}
+		if err != bufio.ErrBufferFull {
+			return nil, err
+		}
+	}
 }
 
 var (

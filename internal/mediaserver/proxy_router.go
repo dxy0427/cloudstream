@@ -17,13 +17,7 @@ func InitProxyRouter() *gin.Engine {
 			return
 		}
 
-		// WebSocket 请求走专用代理
-		if isWebSocketRequest(c) {
-			handleWebSocket(c, serverID)
-			return
-		}
-
-		GetManager().HandleProxy(c, serverID)
+		GetManager().HandleProxy(c, serverID, c.Request.URL.EscapedPath())
 	})
 
 	return r

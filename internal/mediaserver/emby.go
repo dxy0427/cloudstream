@@ -3,9 +3,10 @@ package mediaserver
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/go-resty/resty/v2"
 	"strings"
 	"time"
+
+	"github.com/go-resty/resty/v2"
 )
 
 type EmbyClient struct {
@@ -23,11 +24,8 @@ func NewEmbyClient(host, apiKey string) *EmbyClient {
 }
 
 func (e *EmbyClient) Ping() error {
-	url := fmt.Sprintf("%s/System/Info/Public", e.host)
-	req := e.client.R()
-	if e.apiKey != "" {
-		req.SetQueryParam("api_key", e.apiKey)
-	}
+	url := fmt.Sprintf("%s/System/Info", e.host)
+	req := e.authenticatedRequest()
 	resp, err := req.Get(url)
 	if err != nil {
 		return err
@@ -44,9 +42,8 @@ func (e *EmbyClient) GetItemInfo(itemId string, mediaSourceId string) (string, e
 		SetQueryParam("Ids", itemId).
 		SetQueryParam("Fields", "Path,MediaSources").
 		SetQueryParam("Limit", "1")
-
 	if e.apiKey != "" {
-		req.SetQueryParam("api_key", e.apiKey)
+		req.SetHeader("X-Emby-Token", e.apiKey)
 	}
 
 	resp, err := req.Get(url)
@@ -63,4 +60,16 @@ func (e *EmbyClient) GetItemInfo(itemId string, mediaSourceId string) (string, e
 	}
 
 	return commonGetItemPath(res, mediaSourceId)
+}
+
+func (e *EmbyClient) authenticatedRequest() *resty.Request {
+	req := e.client.R()
+	if e.apiKey != "" {
+		req.SetHeader("X-Emby-Token", e.apiKey)
+	}
+	return req
+}
+
+func (e *EmbyClient) Close() {
+	e.client.GetClient().CloseIdleConnections()
 }

@@ -3,10 +3,14 @@ package core
 import (
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
+	"errors"
 	"fmt"
+	"net/url"
+	"strings"
+	"time"
+
 	"github.com/go-resty/resty/v2"
 	"github.com/rs/zerolog/log"
-	"time"
 )
 
 type NotifyEvent string
@@ -83,7 +87,14 @@ func SendTestNotification(req map[string]string) error {
 	}
 }
 
-var restyClient = resty.New().SetTimeout(10 * time.Second)
+const (
+	notificationResponseLimit = 64 * 1024
+	notificationLogLimit      = 2 * 1024
+)
+
+var restyClient = resty.New().
+	SetTimeout(10 * time.Second).
+	SetResponseBodyLimit(notificationResponseLimit)
 
 func sendWebhookNotification(webhookURL, title, message string) error {
 	if webhookURL == "" {
@@ -103,14 +114,14 @@ func sendWebhookNotification(webhookURL, title, message string) error {
 		},
 	}
 	resp, err := restyClient.R().SetHeader("Content-Type", "application/json").SetBody(payload).Post(webhookURL)
-	if err != nil || !resp.IsSuccess() {
+	if err != nil || resp == nil || !resp.IsSuccess() {
 		statusCode := 0
 		bodyString := ""
 		if resp != nil {
 			statusCode = resp.StatusCode()
-			bodyString = resp.String()
+			bodyString = truncateForLog(resp.String(), notificationLogLimit)
 		}
-		log.Error().Err(err).Int("statusCode", statusCode).Str("response", bodyString).Msg("Webhook通知发送失败")
+		log.Error().Str("error", notificationErrorForLog(err)).Int("statusCode", statusCode).Str("response", bodyString).Msg("Webhook通知发送失败")
 		if err != nil {
 			return err
 		}
@@ -130,18 +141,38 @@ func sendTelegramNotification(token, chatID, title, message string) error {
 		"parse_mode": "Markdown",
 	}
 	resp, err := restyClient.R().SetFormData(payload).Post(url)
-	if err != nil || !resp.IsSuccess() {
+	if err != nil || resp == nil || !resp.IsSuccess() {
 		statusCode := 0
 		bodyString := ""
 		if resp != nil {
 			statusCode = resp.StatusCode()
-			bodyString = resp.String()
+			bodyString = truncateForLog(resp.String(), notificationLogLimit)
 		}
-		log.Error().Err(err).Int("statusCode", statusCode).Str("response", bodyString).Msg("Telegram通知发送失败")
+		log.Error().Str("error", notificationErrorForLog(err)).Int("statusCode", statusCode).Str("response", bodyString).Msg("Telegram通知发送失败")
 		if err != nil {
 			return err
 		}
 		return fmt.Errorf("telegram 返回状态异常: %d", statusCode)
 	}
 	return nil
+}
+
+func truncateForLog(value string, maxBytes int) string {
+	value = strings.ReplaceAll(value, "\r", "\\r")
+	value = strings.ReplaceAll(value, "\n", "\\n")
+	if len(value) <= maxBytes {
+		return value
+	}
+	return value[:maxBytes] + "...<truncated>"
+}
+
+func notificationErrorForLog(err error) string {
+	if err == nil {
+		return ""
+	}
+	var urlError *url.Error
+	if errors.As(err, &urlError) && urlError.Err != nil {
+		err = urlError.Err
+	}
+	return truncateForLog(err.Error(), notificationLogLimit)
 }

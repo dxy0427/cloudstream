@@ -5,17 +5,24 @@ import (
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
 	"cloudstream/internal/utils"
-	"github.com/gin-gonic/gin"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func GetUsernameHandler(c *gin.Context) {
 	username, _ := c.Get("username")
 	var user models.User
 	if err := database.DB.Where("username = ?", username).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "用户不存在"})
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "用户不存在"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取用户设置失败"})
+		}
 		return
 	}
 
@@ -91,7 +98,7 @@ func StreamSystemLogsHandler(c *gin.Context) {
 		return
 	}
 
-	logs, offset, err := core.ReadRecentLogsWithOffset()
+	logs, cursor, err := core.ReadRecentLogsWithCursor()
 	if err == nil && len(logs) > 0 {
 		for _, line := range logs {
 			c.SSEvent("", line)
@@ -99,29 +106,28 @@ func StreamSystemLogsHandler(c *gin.Context) {
 		flusher.Flush()
 	}
 
-	lastHeartbeat := time.Now()
+	pollTicker := time.NewTicker(2 * time.Second)
+	heartbeatTicker := time.NewTicker(15 * time.Second)
+	defer pollTicker.Stop()
+	defer heartbeatTicker.Stop()
 	for {
 		select {
 		case <-c.Request.Context().Done():
 			return
-		case <-time.After(2 * time.Second):
-			lines, newOffset, err := core.ReadLogFromOffset(offset)
+		case <-pollTicker.C:
+			lines, newCursor, err := core.ReadLogsFromCursor(cursor)
 			if err == nil {
-				offset = newOffset
+				cursor = newCursor
 				for _, line := range lines {
 					c.SSEvent("", line)
 				}
 				if len(lines) > 0 {
-					lastHeartbeat = time.Now()
 					flusher.Flush()
-					continue
 				}
 			}
-			if time.Since(lastHeartbeat) >= 15*time.Second {
-				_, _ = c.Writer.Write([]byte(": ping\n\n"))
-				lastHeartbeat = time.Now()
-				flusher.Flush()
-			}
+		case <-heartbeatTicker.C:
+			_, _ = c.Writer.Write([]byte(": ping\n\n"))
+			flusher.Flush()
 		}
 	}
 }
@@ -135,7 +141,11 @@ func TestWebhookHandler(c *gin.Context) {
 	username, _ := c.Get("username")
 	var user models.User
 	if err := database.DB.Where("username = ?", username).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "用户未找到"})
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "用户未找到"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取通知设置失败"})
+		}
 		return
 	}
 	if req["webhookUrl"] == "" {
@@ -148,7 +158,7 @@ func TestWebhookHandler(c *gin.Context) {
 		req["telegramChatId"] = user.TelegramChatID
 	}
 	if err := core.SendTestNotification(req); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "测试发送失败: " + err.Error()})
+		c.JSON(http.StatusBadGateway, gin.H{"code": 1, "message": "测试通知发送失败"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "测试消息发送成功！"})
@@ -156,16 +166,16 @@ func TestWebhookHandler(c *gin.Context) {
 
 func UpdateNotificationHandler(c *gin.Context) {
 	var req struct {
-		NotifyType         string `json:"notifyType"`
-		WebhookURL         string `json:"webhookUrl"`
-		TelegramToken      string `json:"telegramToken"`
-		TelegramChatID     string `json:"telegramChatId"`
-		NotifyOnComplete   *bool  `json:"notifyOnComplete"`
-		NotifyOnError      *bool  `json:"notifyOnError"`
-		NotifyOnStop       *bool  `json:"notifyOnStop"`
-		NotifyOnManual     *bool  `json:"notifyOnManual"`
-		ClearWebhookURL    bool   `json:"clearWebhookUrl"`
-		ClearTelegramToken bool   `json:"clearTelegramToken"`
+		NotifyType         string  `json:"notifyType"`
+		WebhookURL         *string `json:"webhookUrl"`
+		TelegramToken      *string `json:"telegramToken"`
+		TelegramChatID     *string `json:"telegramChatId"`
+		NotifyOnComplete   *bool   `json:"notifyOnComplete"`
+		NotifyOnError      *bool   `json:"notifyOnError"`
+		NotifyOnStop       *bool   `json:"notifyOnStop"`
+		NotifyOnManual     *bool   `json:"notifyOnManual"`
+		ClearWebhookURL    bool    `json:"clearWebhookUrl"`
+		ClearTelegramToken bool    `json:"clearTelegramToken"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "参数错误"})
@@ -175,7 +185,11 @@ func UpdateNotificationHandler(c *gin.Context) {
 	currentUsername, _ := c.Get("username")
 	var user models.User
 	if err := database.DB.Where("username = ?", currentUsername).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "用户未找到"})
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "用户未找到"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取通知设置失败"})
+		}
 		return
 	}
 
@@ -183,35 +197,100 @@ func UpdateNotificationHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "不支持的通知类型"})
 		return
 	}
-	user.NotifyType = req.NotifyType
+	effectiveWebhookURL := user.WebhookURL
+	effectiveTelegramToken := user.TelegramToken
+	effectiveTelegramChatID := user.TelegramChatID
+	effectiveNotifyOnComplete := user.NotifyOnComplete
+	effectiveNotifyOnError := user.NotifyOnError
+	effectiveNotifyOnStop := user.NotifyOnStop
+	effectiveNotifyOnManual := user.NotifyOnManual
+
 	if req.ClearWebhookURL {
-		user.WebhookURL = ""
-	} else if strings.TrimSpace(req.WebhookURL) != "" {
-		user.WebhookURL = strings.TrimSpace(req.WebhookURL)
+		effectiveWebhookURL = ""
+	} else if req.WebhookURL != nil && strings.TrimSpace(*req.WebhookURL) != "" {
+		effectiveWebhookURL = strings.TrimSpace(*req.WebhookURL)
 	}
 	if req.ClearTelegramToken {
-		user.TelegramToken = ""
-	} else if strings.TrimSpace(req.TelegramToken) != "" {
-		user.TelegramToken = strings.TrimSpace(req.TelegramToken)
+		effectiveTelegramToken = ""
+	} else if req.TelegramToken != nil && strings.TrimSpace(*req.TelegramToken) != "" {
+		effectiveTelegramToken = strings.TrimSpace(*req.TelegramToken)
 	}
-	if strings.TrimSpace(req.TelegramChatID) != "" {
-		user.TelegramChatID = strings.TrimSpace(req.TelegramChatID)
+	if req.TelegramChatID != nil {
+		effectiveTelegramChatID = strings.TrimSpace(*req.TelegramChatID)
 	}
 	if req.NotifyOnComplete != nil {
-		user.NotifyOnComplete = *req.NotifyOnComplete
+		effectiveNotifyOnComplete = *req.NotifyOnComplete
 	}
 	if req.NotifyOnError != nil {
-		user.NotifyOnError = *req.NotifyOnError
+		effectiveNotifyOnError = *req.NotifyOnError
 	}
 	if req.NotifyOnStop != nil {
-		user.NotifyOnStop = *req.NotifyOnStop
+		effectiveNotifyOnStop = *req.NotifyOnStop
 	}
 	if req.NotifyOnManual != nil {
-		user.NotifyOnManual = *req.NotifyOnManual
+		effectiveNotifyOnManual = *req.NotifyOnManual
 	}
 
-	if err := database.DB.Save(&user).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "保存失败: " + err.Error()})
+	notificationsEnabled := effectiveNotifyOnComplete || effectiveNotifyOnError || effectiveNotifyOnStop || effectiveNotifyOnManual
+	if notificationsEnabled {
+		switch req.NotifyType {
+		case models.NotifyTypeWebhook:
+			if effectiveWebhookURL == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "启用 Webhook 通知时必须配置 Webhook URL"})
+				return
+			}
+		case models.NotifyTypeTelegram:
+			if effectiveTelegramToken == "" || effectiveTelegramChatID == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "启用 Telegram 通知时必须配置 Token 和 Chat ID"})
+				return
+			}
+		}
+	}
+
+	updates := map[string]interface{}{
+		"notify_type": req.NotifyType,
+	}
+	conditions := database.DB.Where(
+		"id = ? AND notify_type = ? AND webhook_url = ? AND telegram_token = ? AND telegram_chat_id = ? AND notify_on_complete = ? AND notify_on_error = ? AND notify_on_stop = ? AND notify_on_manual = ?",
+		user.ID,
+		user.NotifyType,
+		user.WebhookURL,
+		user.TelegramToken,
+		user.TelegramChatID,
+		user.NotifyOnComplete,
+		user.NotifyOnError,
+		user.NotifyOnStop,
+		user.NotifyOnManual,
+	)
+	if req.ClearWebhookURL || (req.WebhookURL != nil && strings.TrimSpace(*req.WebhookURL) != "") {
+		updates["webhook_url"] = effectiveWebhookURL
+	}
+	if req.ClearTelegramToken || (req.TelegramToken != nil && strings.TrimSpace(*req.TelegramToken) != "") {
+		updates["telegram_token"] = effectiveTelegramToken
+	}
+	if req.TelegramChatID != nil {
+		updates["telegram_chat_id"] = effectiveTelegramChatID
+	}
+	if req.NotifyOnComplete != nil {
+		updates["notify_on_complete"] = effectiveNotifyOnComplete
+	}
+	if req.NotifyOnError != nil {
+		updates["notify_on_error"] = effectiveNotifyOnError
+	}
+	if req.NotifyOnStop != nil {
+		updates["notify_on_stop"] = effectiveNotifyOnStop
+	}
+	if req.NotifyOnManual != nil {
+		updates["notify_on_manual"] = effectiveNotifyOnManual
+	}
+
+	result := conditions.Model(&models.User{}).Updates(updates)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "保存通知设置失败"})
+		return
+	}
+	if result.RowsAffected != 1 {
+		c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "通知设置已发生变化，请重试"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "通知设置已保存"})
@@ -232,7 +311,11 @@ func UpdateCredentialsHandler(c *gin.Context) {
 	currentUsername, _ := c.Get("username")
 	var user models.User
 	if err := database.DB.Where("username = ?", currentUsername).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "用户不存在"})
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "用户不存在"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取用户凭证失败"})
+		}
 		return
 	}
 
@@ -241,24 +324,15 @@ func UpdateCredentialsHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "当前密码不正确"})
 		return
 	}
-	if needsUpgrade && upgradeHash != "" {
-		database.DB.Model(&user).Updates(map[string]interface{}{
-			"password_hash":    upgradeHash,
-			"password_version": 1,
-		})
-		user.PasswordHash = upgradeHash
-	}
-
-	changed := false
+	updates := make(map[string]interface{})
 	passwordChanged := false
+	req.NewUsername = strings.TrimSpace(req.NewUsername)
 	if req.NewUsername != "" && req.NewUsername != user.Username {
-		var existingUser models.User
-		if database.DB.Where("username = ?", req.NewUsername).First(&existingUser).Error == nil {
-			c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "新用户名已被占用"})
+		if len([]rune(req.NewUsername)) > 64 {
+			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "用户名不能超过 64 个字符"})
 			return
 		}
-		user.Username = req.NewUsername
-		changed = true
+		updates["username"] = req.NewUsername
 	}
 
 	if req.NewPassword != "" {
@@ -271,41 +345,65 @@ func UpdateCredentialsHandler(c *gin.Context) {
 			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "密码加密失败"})
 			return
 		}
-		user.PasswordHash = newPasswordHash
-		user.PasswordVersion = 1
-		user.NeedsPasswordReminder = false
-		user.PasswordReminderShown = true
+		updates["password_hash"] = newPasswordHash
+		updates["password_version"] = 1
+		updates["needs_password_reminder"] = false
+		updates["password_reminder_shown"] = true
 		passwordChanged = true
-		changed = true
+	}
+	if needsUpgrade && upgradeHash != "" && !passwordChanged {
+		updates["password_hash"] = upgradeHash
+		updates["password_version"] = 1
 	}
 
-	if changed {
-		user.TokenVersion++
-		if err := database.DB.Save(&user).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "更新凭证失败: " + err.Error()})
-			return
-		}
-		if passwordChanged {
-			c.JSON(http.StatusOK, gin.H{"code": 0, "message": "凭证更新成功，请重新登录", "data": gin.H{"needsPasswordReminder": false, "passwordReminderShown": true}})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "凭证更新成功，请重新登录"})
-	} else {
+	if len(updates) == 0 {
 		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "未做任何修改"})
+		return
 	}
+
+	updates["token_version"] = gorm.Expr("token_version + 1")
+	result := database.DB.Model(&models.User{}).
+		Where("id = ? AND username = ? AND password_hash = ? AND token_version = ?", user.ID, user.Username, user.PasswordHash, user.TokenVersion).
+		Updates(updates)
+	if result.Error != nil {
+		if isUniqueConstraintError(result.Error) {
+			c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "新用户名已被占用"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "更新凭证失败"})
+		}
+		return
+	}
+	if result.RowsAffected != 1 {
+		c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "凭证已发生变化，请重新登录"})
+		return
+	}
+	if passwordChanged {
+		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "凭证更新成功，请重新登录", "data": gin.H{"needsPasswordReminder": false, "passwordReminderShown": true}})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "凭证更新成功，请重新登录"})
 }
 
 func DismissPasswordReminderHandler(c *gin.Context) {
 	currentUsername, _ := c.Get("username")
-	var user models.User
-	if err := database.DB.Where("username = ?", currentUsername).First(&user).Error; err != nil {
+	result := database.DB.Model(&models.User{}).
+		Where("username = ?", currentUsername).
+		UpdateColumn("password_reminder_shown", true)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "更新提醒状态失败"})
+		return
+	}
+	if result.RowsAffected != 1 {
 		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "用户未找到"})
 		return
 	}
-	user.PasswordReminderShown = true
-	if err := database.DB.Model(&user).Update("password_reminder_shown", true).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "更新提醒状态失败: " + err.Error()})
-		return
-	}
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "已忽略提醒"})
+}
+
+func isUniqueConstraintError(err error) bool {
+	if errors.Is(err, gorm.ErrDuplicatedKey) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "unique constraint") || strings.Contains(message, "duplicate")
 }

@@ -50,13 +50,14 @@ import { useMessage, NIcon } from 'naive-ui'
 import { UserOutlined, LockOutlined } from '@vicons/antd'
 import { useGlobalStore } from '../store/global'
 import { hashPassword } from '../utils/crypto'
-import api, { markAuthenticatedSession } from '../api'
+import api, { markAuthenticatedSession, clearAuthenticatedSession, sanitizeInternalRedirect } from '../api'
 
 const router = useRouter()
 const store = useGlobalStore()
 const message = useMessage()
 const form = reactive({ username: '', password: '' })
 const loading = ref(false)
+const formRef = ref(null)
 
 const rules = {
   username: { required: true, message: '请输入用户名', trigger: 'blur' },
@@ -64,6 +65,11 @@ const rules = {
 }
 
 const handleLogin = async () => {
+  try {
+    await formRef.value?.validate()
+  } catch {
+    return
+  }
   if (!form.username || !form.password) {
     message.warning('请输入完整信息')
     return
@@ -76,16 +82,25 @@ const handleLogin = async () => {
       username: form.username,
       password: hashedPassword
     }, { skipAuthRedirect: true, skipErrorToast: true })
-	markAuthenticatedSession()
-    await store.loadSettings({ preserveTheme: true })
+    if (res?.code !== 0 && res?.code !== undefined) {
+      message.error(res.message || res.error || '登录失败')
+      return
+    }
+    const settings = await store.loadSettings({ preserveTheme: true, skipAuthRedirect: true, skipErrorToast: true })
+    if (!settings) {
+      clearAuthenticatedSession()
+      message.error('登录会话验证失败，请重试')
+      return
+    }
+    markAuthenticatedSession()
     if (res.needsPasswordReminder && !res.passwordReminderShown) {
       localStorage.setItem('needs_password_reminder', '1')
     } else {
       localStorage.removeItem('needs_password_reminder')
     }
     message.success('登录成功')
-	const redirect = router.currentRoute.value.query.redirect
-	router.push(typeof redirect === 'string' ? redirect : '/dashboard')
+    const redirect = router.currentRoute.value.query.redirect
+    router.push(sanitizeInternalRedirect(typeof redirect === 'string' ? redirect : '/dashboard'))
   } catch (error) {
     const msg = error?.response?.data?.message || error?.response?.data?.error || '用户名或密码错误'
     message.error(msg)

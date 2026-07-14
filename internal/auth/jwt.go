@@ -10,21 +10,27 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
-	"github.com/gin-gonic/gin"
-	"github.com/golang-jwt/jwt/v5"
-	"github.com/rs/zerolog/log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/rs/zerolog/log"
 )
 
 var jwtSecret []byte
 
-const secretFileName = ".jwt_secret"
-const secretDirPath = "./data/"
+const (
+	secretFileName      = ".jwt_secret"
+	secretDirPath       = "./data/"
+	contextTokenVersion = "token_version"
+	contextTokenExpiry  = "exp"
+)
 
 func init() {
 	fullPath := filepath.Join(secretDirPath, secretFileName)
@@ -73,10 +79,20 @@ func LoginHandler(c *gin.Context) {
 	}
 
 	if needsUpgrade && newHash != "" {
-		database.DB.Model(&user).Updates(map[string]interface{}{
-			"password_hash":    newHash,
-			"password_version": 1,
-		})
+		result := database.DB.Model(&models.User{}).
+			Where("id = ? AND password_hash = ?", user.ID, user.PasswordHash).
+			Updates(map[string]interface{}{
+				"password_hash":    newHash,
+				"password_version": 1,
+			})
+		if result.Error != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "登录失败"})
+			return
+		}
+		if result.RowsAffected != 1 {
+			c.JSON(http.StatusConflict, gin.H{"error": "凭证已发生变化，请重试"})
+			return
+		}
 		log.Info().Str("username", user.Username).Msg("密码存储已自动升级")
 	}
 
@@ -86,13 +102,42 @@ func LoginHandler(c *gin.Context) {
 		return
 	}
 	c.SetSameSite(http.SameSiteStrictMode)
-	secure := c.Request.TLS != nil
-	c.SetCookie("cloudstream_token", tokenString, 7*24*3600, "/", "", secure, true)
+	c.SetCookie("cloudstream_token", tokenString, 7*24*3600, "/", "", IsSecureRequest(c), true)
 	c.JSON(http.StatusOK, gin.H{
 		"code":                  0,
 		"needsPasswordReminder": user.NeedsPasswordReminder,
 		"passwordReminderShown": user.PasswordReminderShown,
 	})
+}
+
+// IsSecureRequest 判断当前请求是否应使用 Secure Cookie（含反向代理 HTTPS 终止场景）。
+func IsSecureRequest(c *gin.Context) bool {
+	if c.Request.TLS != nil {
+		return true
+	}
+	if !isTrustedLocalProxy(c) {
+		return false
+	}
+	proto := c.GetHeader("X-Forwarded-Proto")
+	if proto == "" {
+		proto = c.GetHeader("X-Forwarded-Protocol")
+	}
+	if i := strings.IndexByte(proto, ','); i >= 0 {
+		proto = proto[:i]
+	}
+	return strings.EqualFold(strings.TrimSpace(proto), "https")
+}
+
+func isTrustedLocalProxy(c *gin.Context) bool {
+	if c.Request.RemoteAddr == "" {
+		return true
+	}
+	host, _, err := net.SplitHostPort(c.Request.RemoteAddr)
+	if err != nil {
+		host = c.Request.RemoteAddr
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && (ip.IsLoopback() || ip.IsPrivate())
 }
 
 func generateToken(username string, tokenVersion int) (string, error) {
@@ -107,52 +152,81 @@ func generateToken(username string, tokenVersion int) (string, error) {
 
 func JWTAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		authHeader := c.GetHeader("Authorization")
 		var tokenString string
-		if authHeader != "" {
-			fmt.Sscanf(authHeader, "Bearer %s", &tokenString)
+		if authHeader := c.GetHeader("Authorization"); authHeader != "" {
+			if strings.HasPrefix(authHeader, "Bearer ") {
+				tokenString = strings.TrimSpace(strings.TrimPrefix(authHeader, "Bearer "))
+			}
 		}
 		if tokenString == "" {
 			if cookieToken, err := c.Cookie("cloudstream_token"); err == nil {
 				tokenString = cookieToken
 			}
 		}
-		if tokenString == "" {
-			tokenString = c.Query("token")
-		}
+		// 不再从 query 读取 token，避免写入访问日志 / Referer 泄露
 		if tokenString == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "请求未包含 Token"})
 			return
 		}
 		token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, fmt.Errorf("非预期的签名方法: %v", token.Header["alg"])
-			}
 			return jwtSecret, nil
-		})
+		}, jwt.WithValidMethods([]string{jwt.SigningMethodHS256.Alg()}), jwt.WithExpirationRequired())
 		if err != nil {
-			log.Warn().Err(err).Msg("JWT 验证失败")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token 无效或已过期"})
 			return
 		}
 		if claims, ok := token.Claims.(jwt.MapClaims); ok && token.Valid {
-			username, _ := claims["username"].(string)
-			version, _ := claims["version"].(float64)
-			var user models.User
-			if err := database.DB.Where("username = ?", username).First(&user).Error; err != nil {
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token 对应的用户不存在"})
-				return
-			}
-			if int(version) != user.TokenVersion {
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token 已失效，请重新登录"})
+			username, usernameOK := claims["username"].(string)
+			version, versionOK := numericClaimAsInt(claims["version"])
+			expiresAt, expErr := claims.GetExpirationTime()
+			if !usernameOK || username == "" || !versionOK || expErr != nil || expiresAt == nil {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token 无效"})
 				return
 			}
 			c.Set("username", username)
+			c.Set(contextTokenVersion, version)
+			c.Set(contextTokenExpiry, expiresAt.Time.Unix())
+			if !SessionStillValid(c) {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token 已失效，请重新登录"})
+				return
+			}
 			c.Next()
 		} else {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Token 无效"})
 		}
 	}
+}
+
+// SessionStillValid rechecks the database-backed session state for long-lived handlers.
+func SessionStillValid(c *gin.Context) bool {
+	usernameValue, usernameOK := c.Get("username")
+	versionValue, versionOK := c.Get(contextTokenVersion)
+	expiryValue, expiryOK := c.Get(contextTokenExpiry)
+	username, usernameTypeOK := usernameValue.(string)
+	version, versionTypeOK := versionValue.(int)
+	expiresAt, expiryTypeOK := expiryValue.(int64)
+	if !usernameOK || !versionOK || !expiryOK || !usernameTypeOK || !versionTypeOK || !expiryTypeOK || username == "" {
+		return false
+	}
+	if time.Now().Unix() >= expiresAt {
+		return false
+	}
+
+	var count int64
+	if err := database.DB.Model(&models.User{}).
+		Where("username = ? AND token_version = ?", username, version).
+		Count(&count).Error; err != nil {
+		return false
+	}
+	return count == 1
+}
+
+func numericClaimAsInt(value interface{}) (int, bool) {
+	number, ok := value.(float64)
+	if !ok || number < 0 || number != float64(int(number)) {
+		return 0, false
+	}
+	return int(number), true
 }
 
 func SignStreamURL(taskID uint, accountID uint, realIdentity string, expireHours int) (string, error) {

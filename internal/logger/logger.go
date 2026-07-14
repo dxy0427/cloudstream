@@ -25,7 +25,7 @@ func Init() {
 	multiWriter := io.MultiWriter(consoleWriter, lumberjackLogger)
 
 	log.Logger = zerolog.New(multiWriter).With().Timestamp().Logger()
-	
+
 	zerolog.SetGlobalLevel(zerolog.InfoLevel)
 
 	log.Info().Str("path", logFilePath).Msg("日志系统已初始化")

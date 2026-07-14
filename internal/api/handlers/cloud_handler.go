@@ -4,11 +4,11 @@ import (
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
 	"cloudstream/internal/openlist"
-	"cloudstream/internal/utils"
 	"cloudstream/internal/pan123"
+	"cloudstream/internal/utils"
 	"cloudstream/internal/webdav"
-	"fmt"
 	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
 	"net/http"
 	"strconv"
 )
@@ -50,9 +50,10 @@ func FileBrowserHandler(c *gin.Context) {
 		}
 
 		client := openlist.NewClient(account)
-		items, err := client.ListDirectory(parentPath, false)
+		items, err := client.ListDirectoryContext(c.Request.Context(), parentPath, false)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": fmt.Sprintf("获取 OpenList 文件列表失败: %s", err.Error())})
+			log.Error().Err(err).Uint64("accountID", accountId).Msg("获取 OpenList 文件列表失败")
+			c.JSON(http.StatusBadGateway, gin.H{"code": 1, "message": "OpenList 服务暂时不可用"})
 			return
 		}
 
@@ -77,9 +78,10 @@ func FileBrowserHandler(c *gin.Context) {
 		}
 
 		client := webdav.NewClient(account)
-		items, err := client.ListDirectory(parentPath)
+		items, err := client.ListDirectoryContext(c.Request.Context(), parentPath)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": fmt.Sprintf("获取 WebDAV 文件列表失败: %s", err.Error())})
+			log.Error().Err(err).Uint64("accountID", accountId).Msg("获取 WebDAV 文件列表失败")
+			c.JSON(http.StatusBadGateway, gin.H{"code": 1, "message": "WebDAV 服务暂时不可用"})
 			return
 		}
 
@@ -103,9 +105,10 @@ func FileBrowserHandler(c *gin.Context) {
 
 		var lastFileId int64 = 0
 		for {
-			files, nextLastFileId, err := client.ListFiles(parentFileId, limit, lastFileId, "")
+			files, nextLastFileId, err := client.ListFilesContext(c.Request.Context(), parentFileId, limit, lastFileId, "")
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": fmt.Sprintf("获取文件列表失败: %s", err.Error())})
+				log.Error().Err(err).Uint64("accountID", accountId).Msg("获取 123 云盘文件列表失败")
+				c.JSON(http.StatusBadGateway, gin.H{"code": 1, "message": "123 云盘服务暂时不可用"})
 				return
 			}
 

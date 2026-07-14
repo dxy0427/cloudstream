@@ -7,46 +7,39 @@ import (
 	"cloudstream/internal/openlist"
 	"cloudstream/internal/pan123"
 	"cloudstream/internal/webdav"
-	"fmt"
-	"github.com/gin-gonic/gin"
 	"io"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
-	"sync"
-)
 
-// 客户端缓存，避免每次请求都新建
-var (
-	streamClientCache sync.Map // map[uint]interface{} — accountID → client
+	"github.com/gin-gonic/gin"
+	"github.com/rs/zerolog/log"
 )
 
 type cachedOpenListClient struct{ *openlist.Client }
 type cachedWebDAVClient struct{ *webdav.Client }
 type cachedPan123Client struct{ *pan123.Client }
 
-func getStreamClient(account models.Account) interface{} {
-	if cached, ok := streamClientCache.Load(account.ID); ok {
-		return cached
-	}
+var upstreamURLPattern = regexp.MustCompile(`(?i)https?://[^\s"']+`)
 
-	var client interface{}
+func getStreamClient(account models.Account) interface{} {
 	switch account.Type {
 	case models.AccountTypeOpenList:
-		client = &cachedOpenListClient{openlist.NewClient(account)}
+		return &cachedOpenListClient{openlist.NewClient(account)}
 	case models.AccountTypeWebDAV:
-		client = &cachedWebDAVClient{webdav.NewClient(account)}
+		return &cachedWebDAVClient{webdav.NewClient(account)}
 	default:
-		client = &cachedPan123Client{pan123.NewClient(account)}
+		return &cachedPan123Client{pan123.NewClient(account)}
 	}
-
-	streamClientCache.Store(account.ID, client)
-	return client
 }
 
-// InvalidateStreamClient 缓存失效（账户更新/删除时调用）
-func InvalidateStreamClient(accountID uint) {
-	streamClientCache.Delete(accountID)
+// InvalidateStreamClient is kept for callers; stream clients are not cached.
+func InvalidateStreamClient(accountID uint) {}
+
+func logUpstreamError(message string, accountID uint, err error) {
+	redacted := upstreamURLPattern.ReplaceAllString(err.Error(), "[redacted-url]")
+	log.Error().Uint("accountID", accountID).Str("error", redacted).Msg(message)
 }
 
 func UnifiedStreamHandler(c *gin.Context) {
@@ -60,7 +53,7 @@ func UnifiedStreamHandler(c *gin.Context) {
 	if sign != "" {
 		taskID, accID, realIdentity, err := auth.VerifyStreamSign(sign)
 		if err != nil {
-			c.String(http.StatusForbidden, "Invalid signature: "+err.Error())
+			c.String(http.StatusForbidden, "Invalid signature")
 			return
 		}
 		accountID = accID
@@ -128,7 +121,6 @@ func UnifiedStreamHandler(c *gin.Context) {
 		}
 	}
 
-	// 从缓存获取客户端
 	var downloadURL string
 	var err error
 
@@ -140,7 +132,7 @@ func UnifiedStreamHandler(c *gin.Context) {
 			c.String(http.StatusBadRequest, "OpenList requires path identifier")
 			return
 		}
-		downloadURL, err = cl.GetRawURL(pathStr)
+		downloadURL, err = cl.GetRawURLContext(c.Request.Context(), pathStr)
 	case *cachedWebDAVClient:
 		pathStr, ok := identifier.(string)
 		if !ok {
@@ -150,20 +142,22 @@ func UnifiedStreamHandler(c *gin.Context) {
 		proxyWebDAVDownload(c, cl.Client, pathStr)
 		return
 	case *cachedPan123Client:
-		downloadURL, err = cl.GetDownloadURL(identifier)
+		downloadURL, err = cl.GetDownloadURLContext(c.Request.Context(), identifier)
 	}
 
 	if err != nil {
-		c.String(http.StatusInternalServerError, fmt.Sprintf("Failed to get link: %v", err))
+		logUpstreamError("获取上游下载链接失败", accountID, err)
+		c.String(http.StatusBadGateway, "Upstream service unavailable")
 		return
 	}
 	c.Redirect(http.StatusFound, downloadURL)
 }
 
 func proxyWebDAVDownload(c *gin.Context, client *webdav.Client, pathStr string) {
-	req, err := client.NewDownloadRequest(c.Request.Method, pathStr, nil)
+	req, err := client.NewDownloadRequest(c.Request.Context(), c.Request.Method, pathStr, nil)
 	if err != nil {
-		c.String(http.StatusInternalServerError, fmt.Sprintf("Failed to get link: %v", err))
+		logUpstreamError("创建 WebDAV 上游请求失败", client.AccountID, err)
+		c.String(http.StatusBadGateway, "Upstream service unavailable")
 		return
 	}
 
@@ -175,12 +169,29 @@ func proxyWebDAVDownload(c *gin.Context, client *webdav.Client, pathStr string) 
 
 	resp, err := client.HTTPClient.Do(req)
 	if err != nil {
-		c.String(http.StatusBadGateway, "WebDAV request failed: "+err.Error())
+		logUpstreamError("WebDAV 上游请求失败", client.AccountID, err)
+		c.String(http.StatusBadGateway, "Upstream service unavailable")
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode >= http.StatusBadRequest {
+		log.Error().Uint("accountID", client.AccountID).Int("upstreamStatus", resp.StatusCode).Msg("WebDAV 上游返回错误状态")
+		c.String(http.StatusBadGateway, "Upstream service unavailable")
+		return
+	}
 
-	for key, values := range resp.Header {
+	for _, key := range []string{
+		"Accept-Ranges",
+		"Cache-Control",
+		"Content-Disposition",
+		"Content-Length",
+		"Content-Range",
+		"Content-Type",
+		"ETag",
+		"Expires",
+		"Last-Modified",
+	} {
+		values := resp.Header.Values(key)
 		for _, value := range values {
 			c.Writer.Header().Add(key, value)
 		}
@@ -189,5 +200,7 @@ func proxyWebDAVDownload(c *gin.Context, client *webdav.Client, pathStr string) 
 	if c.Request.Method == http.MethodHead {
 		return
 	}
-	_, _ = io.Copy(c.Writer, resp.Body)
+	if _, err := io.Copy(c.Writer, resp.Body); err != nil {
+		logUpstreamError("转发 WebDAV 响应失败", client.AccountID, err)
+	}
 }

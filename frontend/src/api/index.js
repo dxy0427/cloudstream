@@ -8,6 +8,21 @@ export const hasAuthenticatedSession = () => authenticated
 export const markAuthenticatedSession = () => { authenticated = true }
 export const clearAuthenticatedSession = () => { authenticated = false }
 
+export function isLoginPath(path) {
+  if (typeof path !== 'string') return false
+  const pathname = path.split(/[?#]/, 1)[0].replace(/\/+$/, '') || '/'
+  return pathname.toLowerCase() === '/login'
+}
+
+/** 仅允许站内相对路径，防止 open redirect */
+export function sanitizeInternalRedirect(path) {
+  if (typeof path !== 'string' || !path) return '/dashboard'
+  if (!path.startsWith('/') || path.startsWith('//')) return '/dashboard'
+  if (path.includes('\\') || path.includes('://')) return '/dashboard'
+  if (isLoginPath(path)) return '/dashboard'
+  return path
+}
+
 const api = axios.create({
   baseURL: '/api/v1',
   timeout: 60000,
@@ -19,13 +34,14 @@ api.interceptors.response.use(
   err => {
     const status = err.response?.status
     const data = err.response?.data
-	const skipAuthRedirect = err.config?.skipAuthRedirect === true
-	const skipErrorToast = err.config?.skipErrorToast === true
+    const skipAuthRedirect = err.config?.skipAuthRedirect === true
+    const skipErrorToast = err.config?.skipErrorToast === true
 
     if (status === 401 && !skipAuthRedirect) {
-	  clearAuthenticatedSession()
-      if (!window.location.pathname.includes('/login')) {
-        window.location.href = '/login'
+      clearAuthenticatedSession()
+      if (!isLoginPath(window.location.pathname)) {
+        const redirect = sanitizeInternalRedirect(window.location.pathname + window.location.search)
+        window.location.href = `/login?redirect=${encodeURIComponent(redirect)}`
       }
       return Promise.reject(err)
     }
@@ -43,7 +59,7 @@ api.interceptors.response.use(
     } else if (status === 429) {
       msg = data?.message || data?.error || '请求过于频繁，请稍后再试'
     } else if (status === 500) {
-      msg = '服务器错误，请稍后重试'
+      msg = data?.message || data?.error || '服务器错误，请稍后重试'
     } else if (status === 502 || status === 503 || status === 504) {
       msg = data?.message || data?.error || '服务暂时不可用，请稍后重试'
     } else if (data?.message) {
@@ -54,13 +70,13 @@ api.interceptors.response.use(
       msg = err.message
     }
 
-	if (!skipErrorToast) message.error(msg)
+    if (!skipErrorToast) message.error(msg)
     return Promise.reject(err)
   }
 )
 
 export const userSettingsApi = {
-  getSettings: () => api.get('/user/settings'),
+  getSettings: (config = {}) => api.get('/user/settings', config),
   updateSettings: (data) => api.post('/user/settings', data)
 }
 

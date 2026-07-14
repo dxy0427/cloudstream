@@ -3,8 +3,11 @@ package webdav
 import (
 	"cloudstream/internal/models"
 	"cloudstream/internal/utils"
+	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -14,6 +17,18 @@ import (
 
 	"github.com/studio-b12/gowebdav"
 )
+
+var sharedTransport = &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	DialContext:           (&net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+	ForceAttemptHTTP2:     true,
+	MaxIdleConns:          100,
+	MaxIdleConnsPerHost:   10,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ResponseHeaderTimeout: 30 * time.Second,
+	ExpectContinueTimeout: 1 * time.Second,
+}
 
 type Client struct {
 	AccountID           uint
@@ -75,18 +90,30 @@ func NewClient(account models.Account) *Client {
 		Password:            strings.TrimSpace(account.WebDAVPassword),
 		CacheTTL:            account.CacheTTL,
 		CustomCachePolicies: account.CustomCachePolicies,
-		HTTPClient:          &http.Client{},
+		HTTPClient:          &http.Client{Transport: sharedTransport},
 		MetadataHTTPClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Transport: sharedTransport,
+			Timeout:   30 * time.Second,
 		},
 	}
 	c.client = gowebdav.NewClient(base, c.Username, c.Password)
+	c.client.SetTransport(sharedTransport)
 	c.client.SetTimeout(30 * time.Second)
 	return c
 }
 
 // ListDirectory 列出目录内容，使用 PROPFIND
 func (c *Client) ListDirectory(dirPath string) ([]FileInfo, error) {
+	return c.ListDirectoryContext(context.Background(), dirPath)
+}
+
+func (c *Client) ListDirectoryContext(ctx context.Context, dirPath string) ([]FileInfo, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("context 不能为空")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if dirPath == "" {
 		dirPath = "/"
 	}
@@ -95,9 +122,9 @@ func (c *Client) ListDirectory(dirPath string) ([]FileInfo, error) {
 	}
 
 	cacheTTL := utils.GetCacheTTL(c.CustomCachePolicies, c.CacheTTL, dirPath)
-	cacheKey := fmt.Sprintf("webdav:%d:%s", c.AccountID, dirPath)
+	cacheKey := fmt.Sprintf("webdav:%d:%s:%s", c.AccountID, c.cacheFingerprint(), dirPath)
 
-	if cacheTTL > 0 {
+	if c.AccountID != 0 && cacheTTL > 0 {
 		dirCacheMutex.RLock()
 		if item, ok := dirCache[cacheKey]; ok {
 			if time.Now().Before(item.ExpiresAt) {
@@ -108,8 +135,12 @@ func (c *Client) ListDirectory(dirPath string) ([]FileInfo, error) {
 		dirCacheMutex.RUnlock()
 	}
 
-	files, err := c.client.ReadDir(dirPath)
+	client := c.newContextClient(ctx)
+	files, err := client.ReadDir(dirPath)
 	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		return nil, fmt.Errorf("WebDAV 列目录失败: %w", err)
 	}
 
@@ -122,8 +153,11 @@ func (c *Client) ListDirectory(dirPath string) ([]FileInfo, error) {
 			Modified: f.ModTime(),
 		})
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
-	if cacheTTL > 0 {
+	if c.AccountID != 0 && cacheTTL > 0 {
 		dirCacheMutex.Lock()
 		dirCache[cacheKey] = &dirCacheEntry{
 			Data:      result,
@@ -135,17 +169,84 @@ func (c *Client) ListDirectory(dirPath string) ([]FileInfo, error) {
 	return result, nil
 }
 
+func (c *Client) newContextClient(ctx context.Context) *gowebdav.Client {
+	client := gowebdav.NewAuthClient(c.BaseURL, gowebdav.NewAutoAuth(c.Username, c.Password))
+	var transport http.RoundTripper = sharedTransport
+	var timeout time.Duration = 30 * time.Second
+	if c.MetadataHTTPClient != nil {
+		transport = c.MetadataHTTPClient.Transport
+		timeout = c.MetadataHTTPClient.Timeout
+	}
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	client.SetTransport(transport)
+	client.SetTimeout(timeout)
+	client.SetInterceptor(func(_ string, req *http.Request) {
+		*req = *req.WithContext(ctx)
+	})
+	return client
+}
+
 // GetDownloadURL 获取文件的下载 URL
 func (c *Client) GetDownloadURL(filePath string) (string, error) {
 	return c.buildFileURL(filePath)
 }
 
-func (c *Client) NewDownloadRequest(method, filePath string, body io.Reader) (*http.Request, error) {
+// NewDownloadRequest accepts (context.Context, method, path, body) and the
+// existing (method, path, body) form used by callers that cannot pass context.
+func (c *Client) NewDownloadRequest(args ...any) (*http.Request, error) {
+	ctx := context.Background()
+	var method string
+	var filePath string
+	var body io.Reader
+
+	switch len(args) {
+	case 3:
+		var ok bool
+		method, ok = args[0].(string)
+		if !ok {
+			return nil, fmt.Errorf("WebDAV 请求方法无效")
+		}
+		filePath, ok = args[1].(string)
+		if !ok {
+			return nil, fmt.Errorf("WebDAV 文件路径无效")
+		}
+		if args[2] != nil {
+			body, ok = args[2].(io.Reader)
+			if !ok {
+				return nil, fmt.Errorf("WebDAV 请求体无效")
+			}
+		}
+	case 4:
+		var ok bool
+		ctx, ok = args[0].(context.Context)
+		if !ok || ctx == nil {
+			return nil, fmt.Errorf("WebDAV 请求上下文无效")
+		}
+		method, ok = args[1].(string)
+		if !ok {
+			return nil, fmt.Errorf("WebDAV 请求方法无效")
+		}
+		filePath, ok = args[2].(string)
+		if !ok {
+			return nil, fmt.Errorf("WebDAV 文件路径无效")
+		}
+		if args[3] != nil {
+			body, ok = args[3].(io.Reader)
+			if !ok {
+				return nil, fmt.Errorf("WebDAV 请求体无效")
+			}
+		}
+	default:
+		return nil, fmt.Errorf("WebDAV 下载请求参数无效")
+	}
+
 	fileURL, err := c.buildFileURL(filePath)
 	if err != nil {
 		return nil, err
 	}
-	req, err := http.NewRequest(method, fileURL, body)
+	req, err := http.NewRequestWithContext(ctx, method, fileURL, body)
 	if err != nil {
 		return nil, err
 	}
@@ -173,9 +274,33 @@ func (c *Client) buildFileURL(filePath string) (string, error) {
 	return baseURL.String(), nil
 }
 
+func (c *Client) cacheFingerprint() string {
+	h := sha256.New()
+	for _, part := range []string{
+		fmt.Sprintf("%d", c.AccountID),
+		c.BaseURL,
+		"",
+		"auto",
+		c.Username,
+		c.Password,
+	} {
+		_, _ = fmt.Fprintf(h, "%d:", len(part))
+		_, _ = h.Write([]byte(part))
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
 // TestConnection 测试 WebDAV 连接
 func (c *Client) TestConnection() error {
-	_, err := c.client.ReadDir("/")
+	return c.TestConnectionContext(context.Background())
+}
+
+func (c *Client) TestConnectionContext(ctx context.Context) error {
+	testClient := *c
+	testClient.AccountID = 0
+	testClient.CacheTTL = 0
+	testClient.CustomCachePolicies = ""
+	_, err := testClient.ListDirectoryContext(ctx, "/")
 	if err != nil {
 		return fmt.Errorf("WebDAV 连接失败: %w", err)
 	}

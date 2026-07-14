@@ -5,14 +5,16 @@ import (
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 	"net/http"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 func validateCron(spec string) error {
@@ -20,7 +22,7 @@ func validateCron(spec string) error {
 	return err
 }
 
-func validateTask(task *models.Task) error {
+func validateTask(tx *gorm.DB, task *models.Task) error {
 	if strings.TrimSpace(task.Name) == "" {
 		return fmt.Errorf("任务名称不能为空")
 	}
@@ -28,7 +30,7 @@ func validateTask(task *models.Task) error {
 		return fmt.Errorf("所属账户不能为空")
 	}
 	var account models.Account
-	if err := database.DB.First(&account, task.AccountID).Error; err != nil {
+	if err := tx.First(&account, task.AccountID).Error; err != nil {
 		return fmt.Errorf("所属账户不存在")
 	}
 	if strings.TrimSpace(task.SourceFolderID) == "" {
@@ -52,6 +54,18 @@ func validateTask(task *models.Task) error {
 		return fmt.Errorf("并发线程必须在 1 到 16 之间")
 	}
 	return validateCron(task.Cron)
+}
+
+func taskNameExists(tx *gorm.DB, name string, excludeID uint) (bool, error) {
+	query := tx.Model(&models.Task{}).Where("name = ?", name)
+	if excludeID != 0 {
+		query = query.Where("id <> ?", excludeID)
+	}
+	var count int64
+	if err := query.Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }
 
 func buildTaskList() ([]gin.H, error) {
@@ -89,7 +103,7 @@ func buildTaskList() ([]gin.H, error) {
 func ListTasksHandler(c *gin.Context) {
 	tasks, err := buildTaskList()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": fmt.Sprintf("获取任务列表失败: %s", err.Error())})
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "获取任务列表失败"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": tasks})
@@ -154,7 +168,7 @@ type taskCreateRequest struct {
 func CreateTaskHandler(c *gin.Context) {
 	var req taskCreateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": fmt.Sprintf("参数错误: %s", err.Error())})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "参数错误"})
 		return
 	}
 	enabled := true
@@ -176,28 +190,41 @@ func CreateTaskHandler(c *gin.Context) {
 		SyncDelete: req.SyncDelete, EncodePath: req.EncodePath, SignExpireHours: req.SignExpireHours,
 		StrmExtensions: req.StrmExtensions, MetaExtensions: req.MetaExtensions, Threads: req.Threads,
 	}
-	if err := validateTask(&task); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": err.Error()})
-		return
-	}
+
+	accountTaskMutationMu.Lock()
+	defer accountTaskMutationMu.Unlock()
+
 	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := validateTask(tx, &task); err != nil {
+			return newAPIMutationError(http.StatusBadRequest, err.Error())
+		}
+		exists, err := taskNameExists(tx, task.Name, 0)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return newAPIMutationError(http.StatusConflict, "任务名称已存在")
+		}
 		if err := tx.Create(&task).Error; err != nil {
 			return err
 		}
 		if !enabled {
-			return tx.Model(&task).UpdateColumn("enabled", false).Error
+			result := tx.Model(&models.Task{}).Where("id = ?", task.ID).Updates(map[string]any{"enabled": false})
+			if result.Error != nil {
+				return result.Error
+			}
+			if result.RowsAffected == 0 {
+				return newAPIMutationError(http.StatusNotFound, "找不到指定的任务")
+			}
 		}
 		return nil
 	}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "创建任务失败: " + err.Error()})
+		respondMutationError(c, err, "创建任务失败", "任务名称已存在")
 		return
 	}
 	task.Enabled = enabled
-	if err := core.RefreshScheduler(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "任务已保存，但刷新调度器失败: " + err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "任务创建成功", "data": task})
+	refreshErr := core.RefreshScheduler()
+	c.JSON(http.StatusOK, schedulerWarningResponse("任务创建成功", task, refreshErr))
 }
 
 type taskUpdateRequest struct {
@@ -224,71 +251,116 @@ func UpdateTaskHandler(c *gin.Context) {
 		return
 	}
 
-	var task models.Task
-	if err := database.DB.First(&task, uint(id)).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "找不到指定的任务"})
-		return
-	}
-
 	var req taskUpdateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": fmt.Sprintf("参数错误: %s", err.Error())})
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "参数错误"})
 		return
 	}
 
-	if req.Name != nil {
-		task.Name = *req.Name
+	taskID := uint(id)
+	accountTaskMutationMu.Lock()
+	defer accountTaskMutationMu.Unlock()
+	if !core.BlockTaskIfIdle(taskID) {
+		c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "任务运行中，停止后才能修改"})
+		return
 	}
-	if req.AccountID != nil {
-		task.AccountID = *req.AccountID
-	}
-	if req.SourceFolderID != nil {
-		task.SourceFolderID = *req.SourceFolderID
-	}
-	if req.LocalPath != nil {
-		task.LocalPath = *req.LocalPath
-	}
-	if req.Cron != nil {
-		task.Cron = *req.Cron
-	}
-	if req.Enabled != nil {
-		task.Enabled = *req.Enabled
-	}
-	if req.Overwrite != nil {
-		task.Overwrite = *req.Overwrite
-	}
-	if req.SyncDelete != nil {
-		task.SyncDelete = *req.SyncDelete
-	}
-	if req.EncodePath != nil {
-		task.EncodePath = *req.EncodePath
-	}
-	if req.SignExpireHours != nil {
-		task.SignExpireHours = *req.SignExpireHours
-	}
-	if req.StrmExtensions != nil {
-		task.StrmExtensions = *req.StrmExtensions
-	}
-	if req.MetaExtensions != nil {
-		task.MetaExtensions = *req.MetaExtensions
-	}
-	if req.Threads != nil {
-		task.Threads = *req.Threads
-	}
+	defer core.UnblockTasks([]uint{taskID})
 
-	if err := validateTask(&task); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": err.Error()})
+	var task models.Task
+	err = database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.First(&task, taskID).Error; err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return newAPIMutationError(http.StatusNotFound, "找不到指定的任务")
+			}
+			return err
+		}
+
+		originalLocalPath := task.LocalPath
+		if req.Name != nil {
+			task.Name = *req.Name
+		}
+		if req.AccountID != nil {
+			task.AccountID = *req.AccountID
+		}
+		if req.SourceFolderID != nil {
+			task.SourceFolderID = *req.SourceFolderID
+		}
+		if req.LocalPath != nil {
+			task.LocalPath = *req.LocalPath
+		}
+		if req.Cron != nil {
+			task.Cron = *req.Cron
+		}
+		if req.Enabled != nil {
+			task.Enabled = *req.Enabled
+		}
+		if req.Overwrite != nil {
+			task.Overwrite = *req.Overwrite
+		}
+		if req.SyncDelete != nil {
+			task.SyncDelete = *req.SyncDelete
+		}
+		if req.EncodePath != nil {
+			task.EncodePath = *req.EncodePath
+		}
+		if req.SignExpireHours != nil {
+			task.SignExpireHours = *req.SignExpireHours
+		}
+		if req.StrmExtensions != nil {
+			task.StrmExtensions = *req.StrmExtensions
+		}
+		if req.MetaExtensions != nil {
+			task.MetaExtensions = *req.MetaExtensions
+		}
+		if req.Threads != nil {
+			task.Threads = *req.Threads
+		}
+
+		if err := validateTask(tx, &task); err != nil {
+			return newAPIMutationError(http.StatusBadRequest, err.Error())
+		}
+		exists, err := taskNameExists(tx, task.Name, taskID)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return newAPIMutationError(http.StatusConflict, "任务名称已存在")
+		}
+
+		result := tx.Model(&models.Task{}).Where("id = ?", taskID).Updates(map[string]any{
+			"name":              task.Name,
+			"account_id":        task.AccountID,
+			"source_folder_id":  task.SourceFolderID,
+			"local_path":        task.LocalPath,
+			"cron":              task.Cron,
+			"enabled":           task.Enabled,
+			"overwrite":         task.Overwrite,
+			"sync_delete":       task.SyncDelete,
+			"encode_path":       task.EncodePath,
+			"sign_expire_hours": task.SignExpireHours,
+			"strm_extensions":   task.StrmExtensions,
+			"meta_extensions":   task.MetaExtensions,
+			"threads":           task.Threads,
+		})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return newAPIMutationError(http.StatusNotFound, "找不到指定的任务")
+		}
+		if task.LocalPath != originalLocalPath {
+			if err := tx.Unscoped().Where("task_id = ?", taskID).Delete(&models.TaskFile{}).Error; err != nil {
+				return err
+			}
+		}
+		return tx.First(&task, taskID).Error
+	})
+	if err != nil {
+		respondMutationError(c, err, "更新任务失败", "任务名称已存在")
 		return
 	}
-	if err := database.DB.Save(&task).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "更新任务失败: " + err.Error()})
-		return
-	}
-	if err := core.RefreshScheduler(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "任务已保存，但刷新调度器失败: " + err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "任务更新成功", "data": task})
+	refreshErr := core.RefreshScheduler()
+	c.JSON(http.StatusOK, schedulerWarningResponse("任务更新成功", task, refreshErr))
 }
 
 func DeleteTaskHandler(c *gin.Context) {
@@ -299,6 +371,19 @@ func DeleteTaskHandler(c *gin.Context) {
 		return
 	}
 	taskID := uint(id)
+
+	accountTaskMutationMu.Lock()
+	defer accountTaskMutationMu.Unlock()
+
+	var task models.Task
+	if err := database.DB.First(&task, taskID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "找不到指定的任务"})
+			return
+		}
+		respondMutationError(c, err, "查询任务失败", "任务名称已存在")
+		return
+	}
 	if !core.StopTasksAndWait([]uint{taskID}, 30*time.Second) {
 		core.UnblockTasks([]uint{taskID})
 		c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "任务停止超时，未执行删除"})
@@ -309,23 +394,41 @@ func DeleteTaskHandler(c *gin.Context) {
 		if err := tx.Unscoped().Where("task_id = ?", taskID).Delete(&models.TaskFile{}).Error; err != nil {
 			return err
 		}
-		return tx.Unscoped().Delete(&models.Task{}, taskID).Error
+		result := tx.Unscoped().Where("id = ?", taskID).Delete(&models.Task{})
+		if result.Error != nil {
+			return result.Error
+		}
+		if result.RowsAffected == 0 {
+			return newAPIMutationError(http.StatusNotFound, "找不到指定的任务")
+		}
+		return nil
 	}); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": fmt.Sprintf("删除任务失败: %s", err.Error())})
+		respondMutationError(c, err, "删除任务失败", "任务名称已存在")
 		return
 	}
-	if err := core.RefreshScheduler(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "任务已删除，但刷新调度器失败: " + err.Error()})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"code": 0, "message": "任务及关联记录已删除"})
+	refreshErr := core.RefreshScheduler()
+	c.JSON(http.StatusOK, schedulerWarningResponse("任务及关联记录已删除", nil, refreshErr))
 }
 
 func ExecuteTaskHandler(c *gin.Context) {
-	id := c.Param("id")
+	idValue, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "无效的任务ID"})
+		return
+	}
+	taskID := uint(idValue)
+
+	accountTaskMutationMu.Lock()
+	defer accountTaskMutationMu.Unlock()
+
 	var task models.Task
-	if err := database.DB.First(&task, id).Error; err != nil {
+	if err := database.DB.First(&task, taskID).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "找不到指定的任务"})
+		return
+	}
+	var account models.Account
+	if err := database.DB.First(&account, task.AccountID).Error; err != nil {
+		c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "任务所属账户不存在"})
 		return
 	}
 	if core.RunManualTask(task) {
@@ -342,6 +445,23 @@ func StopTaskHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "无效的任务ID"})
 		return
 	}
-	core.StopTask(uint(id))
+	taskID := uint(id)
+
+	accountTaskMutationMu.Lock()
+	defer accountTaskMutationMu.Unlock()
+
+	var task models.Task
+	if err := database.DB.First(&task, taskID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "找不到指定的任务"})
+			return
+		}
+		respondMutationError(c, err, "查询任务失败", "任务名称已存在")
+		return
+	}
+	if !core.StopTask(taskID) {
+		c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "任务当前未运行"})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"code": 0, "message": fmt.Sprintf("已发送停止信号给任务 #%d。", id)})
 }

@@ -1,20 +1,20 @@
 <template>
   <n-layout position="absolute">
-    <n-layout-header bordered style="height: 64px; padding: 0 15px; display: flex; align-items: center; justify-content: space-between; z-index: 2000;">
-      <div style="display: flex; align-items: center; gap: 15px;">
+    <n-layout-header bordered class="app-header">
+      <div class="header-main">
         <n-button text style="font-size: 24px;" @click="toggleSidebar">
           <n-icon>
             <MenuUnfoldOutlined v-if="collapsed" />
             <MenuFoldOutlined v-else />
           </n-icon>
         </n-button>
-        <div style="font-weight: bold; font-size: 1.2rem; display: flex; align-items: center; gap: 8px; cursor: pointer;" @click="$router.push('/')">
-          <span style="font-size: 1.4rem;">🚀</span>
-          <n-text tag="span" strong>{{ store.siteTitle }}</n-text>
+        <div class="site-title" @click="$router.push('/')">
+          <span class="site-title-icon">🚀</span>
+          <n-text tag="span" strong class="site-title-text">{{ store.siteTitle }}</n-text>
         </div>
       </div>
-      <n-space align="center">
-        <n-switch :value="store.isDark" @update:value="store.toggleTheme">
+      <n-space align="center" class="header-actions">
+        <n-switch :value="store.isDark" :loading="themePending" @update:value="handleThemeToggle">
           <template #checked-icon>🌙</template>
           <template #unchecked-icon>☀️</template>
         </n-switch>
@@ -70,10 +70,15 @@ const route = useRoute()
 const dialog = useDialog()
 const collapsed = ref(true)
 const isMobile = ref(false)
+const themePending = ref(false)
+let viewportInitialized = false
 
 const checkMobile = () => {
-  isMobile.value = window.innerWidth <= 768
-  collapsed.value = isMobile.value
+  const nextIsMobile = window.innerWidth <= 768
+  if (viewportInitialized && nextIsMobile === isMobile.value) return
+  isMobile.value = nextIsMobile
+  collapsed.value = nextIsMobile
+  viewportInitialized = true
 }
 
 const showPasswordReminderIfNeeded = async () => {
@@ -83,7 +88,7 @@ const showPasswordReminderIfNeeded = async () => {
 
   dialog.warning({
     title: '安全提醒',
-    content: '当前账号仍在使用默认管理员密码，建议尽快到“设置管理”里修改密码。此提醒不会强制你立刻修改。',
+    content: '当前账号仍在使用首次启动时设置或生成的初始密码，建议尽快到“设置管理”里修改密码。',
     positiveText: '去设置',
     negativeText: '稍后再说',
     onPositiveClick: async () => {
@@ -105,7 +110,7 @@ const showPasswordReminderIfNeeded = async () => {
 onMounted(() => {
   checkMobile()
   window.addEventListener('resize', checkMobile)
-	store.loadSettings()
+  store.loadSettings()
   showPasswordReminderIfNeeded()
 })
 
@@ -131,6 +136,18 @@ const activeKey = computed(() => {
 
 function toggleSidebar() { collapsed.value = !collapsed.value }
 
+async function handleThemeToggle() {
+  if (themePending.value) return
+  themePending.value = true
+  try {
+    await store.toggleTheme()
+  } catch (e) {
+    // API 拦截器已提示失败，避免事件处理器产生未处理 Promise
+  } finally {
+    themePending.value = false
+  }
+}
+
 function handleMenuClick(key) {
   router.push('/' + key)
   if (isMobile.value) collapsed.value = true
@@ -139,11 +156,45 @@ function handleMenuClick(key) {
 async function logout() {
   try { await api.post('/logout') } catch (e) {}
   localStorage.removeItem('needs_password_reminder')
-	clearAuthenticatedSession()
+  clearAuthenticatedSession()
   router.push('/login')
 }
 </script>
 
 <style scoped>
+.app-header {
+  height: 64px;
+  padding: 0 15px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  z-index: 2000;
+}
+.header-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 15px;
+}
+.site-title {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  font-weight: bold;
+  font-size: 1.2rem;
+  cursor: pointer;
+}
+.site-title-icon, .header-actions { flex: none; }
+.site-title-icon { font-size: 1.4rem; }
+.site-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .mobile-mask { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0, 0, 0, 0.5); z-index: 900; backdrop-filter: blur(2px); }
 </style>

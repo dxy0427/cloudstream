@@ -6,6 +6,8 @@ import (
 	"strings"
 )
 
+const ProxyPort = 8091
+
 type MediaServerClient interface {
 	GetItemInfo(itemId string, mediaSourceId string) (string, error)
 	Ping() error
@@ -38,15 +40,24 @@ func commonGetItemPath(res commonItemsResponse, mediaSourceId string) (string, e
 	rawItem := res.Items[0]
 	targetPath := rawItem.Path
 
-	if len(rawItem.MediaSources) > 0 {
+	if mediaSourceId != "" {
 		for _, ms := range rawItem.MediaSources {
-			if mediaSourceId == "" || ms.Id == mediaSourceId {
+			if ms.Id == mediaSourceId {
 				targetPath = ms.Path
 				if ms.Protocol == "Http" && ms.Path != "" {
 					return ms.Path, nil
 				}
-				break
+				return targetPath, nil
 			}
+		}
+		return "", fmt.Errorf("media source %q not found", mediaSourceId)
+	}
+
+	if len(rawItem.MediaSources) > 0 {
+		mediaSource := rawItem.MediaSources[0]
+		targetPath = mediaSource.Path
+		if mediaSource.Protocol == "Http" && mediaSource.Path != "" {
+			return mediaSource.Path, nil
 		}
 	}
 	return targetPath, nil

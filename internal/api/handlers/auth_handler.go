@@ -1,27 +1,37 @@
 package handlers
 
 import (
+	"cloudstream/internal/auth"
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
+	"net/http"
+	"strings"
+
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
-	"net/http"
 )
 
 // LogoutHandler 退出登录，使当前 Token 失效
 func LogoutHandler(c *gin.Context) {
 	c.SetSameSite(http.SameSiteStrictMode)
-	secure := c.Request.TLS != nil
-	c.SetCookie("cloudstream_token", "", -1, "/", "", secure, true)
+	c.SetCookie("cloudstream_token", "", -1, "/", "", auth.IsSecureRequest(c), true)
 
 	username, exists := c.Get("username")
 	if !exists {
 		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "退出成功"})
 		return
 	}
+	tokenVersion, versionExists := c.Get("token_version")
+	if !versionExists {
+		c.JSON(http.StatusUnauthorized, gin.H{"code": 1, "message": "会话无效"})
+		return
+	}
 
 	// 递增 TokenVersion 使所有已签发的 Token 失效
-	if err := database.DB.Model(&models.User{}).Where("username = ?", username).Update("token_version", gorm.Expr("token_version + 1")).Error; err != nil {
+	result := database.DB.Model(&models.User{}).
+		Where("username = ? AND token_version = ?", username, tokenVersion).
+		UpdateColumn("token_version", gorm.Expr("token_version + 1"))
+	if result.Error != nil || result.RowsAffected != 1 {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "退出失败"})
 		return
 	}
@@ -78,8 +88,13 @@ func UpdateUserSettingsHandler(c *gin.Context) {
 		return
 	}
 
+	req.SiteTitle = strings.TrimSpace(req.SiteTitle)
 	if req.SiteTitle == "" {
 		req.SiteTitle = "CloudStream"
+	}
+	if len([]rune(req.SiteTitle)) > 64 {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "网站标题不能超过 64 个字符"})
+		return
 	}
 	if req.Theme == "" {
 		req.Theme = "light"
@@ -89,17 +104,18 @@ func UpdateUserSettingsHandler(c *gin.Context) {
 		return
 	}
 
-	var user models.User
-	if err := database.DB.Where("username = ?", username).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "用户不存在"})
+	result := database.DB.Model(&models.User{}).
+		Where("username = ?", username).
+		Updates(map[string]interface{}{
+			"site_title": req.SiteTitle,
+			"theme":      req.Theme,
+		})
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "更新设置失败"})
 		return
 	}
-
-	user.SiteTitle = req.SiteTitle
-	user.Theme = req.Theme
-
-	if err := database.DB.Save(&user).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "更新设置失败"})
+	if result.RowsAffected != 1 {
+		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "用户不存在"})
 		return
 	}
 
@@ -107,8 +123,8 @@ func UpdateUserSettingsHandler(c *gin.Context) {
 		"code":    0,
 		"message": "设置更新成功",
 		"data": gin.H{
-			"siteTitle": user.SiteTitle,
-			"theme":     user.Theme,
+			"siteTitle": req.SiteTitle,
+			"theme":     req.Theme,
 		},
 	})
 }

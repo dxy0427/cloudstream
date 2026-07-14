@@ -4,11 +4,15 @@ import (
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
 	"context"
+	"errors"
 	"fmt"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/go-co-op/gocron"
 	"github.com/rs/zerolog/log"
-	"sync"
-	"time"
+	"gorm.io/gorm"
 )
 
 var (
@@ -18,9 +22,11 @@ var (
 	blockedTasks    = make(map[uint]struct{})
 	taskMutex       sync.Mutex
 	schedulerMutex  sync.Mutex
+	schedulerClosed atomic.Bool
 )
 
 func InitScheduler() {
+	schedulerClosed.Store(false)
 	log.Info().Msg("定时任务调度器已初始化")
 	if err := RefreshScheduler(); err != nil {
 		log.Error().Err(err).Msg("调度器启动失败")
@@ -30,6 +36,9 @@ func InitScheduler() {
 func RefreshScheduler() error {
 	schedulerMutex.Lock()
 	defer schedulerMutex.Unlock()
+	if schedulerClosed.Load() {
+		return fmt.Errorf("调度器已关闭")
+	}
 
 	var tasks []models.Task
 	if err := database.DB.Where("enabled = ?", true).Find(&tasks).Error; err != nil {
@@ -42,7 +51,8 @@ func RefreshScheduler() error {
 		t := dbTask
 		withSeconds, err := ParseCronSpec(t.Cron)
 		if err != nil {
-			return fmt.Errorf("任务 %q 的 Cron 无效: %w", t.Name, err)
+			log.Error().Err(err).Uint("taskID", t.ID).Str("task", t.Name).Str("cron", t.Cron).Msg("任务 Cron 无效，已跳过")
+			continue
 		}
 
 		var jobScheduler *gocron.Scheduler
@@ -52,26 +62,48 @@ func RefreshScheduler() error {
 			jobScheduler = nextScheduler.Cron(t.Cron)
 		}
 		_, err = jobScheduler.Do(func() {
-			taskMutex.Lock()
-			if _, blocked := blockedTasks[t.ID]; blocked {
-				taskMutex.Unlock()
+			ctx, ok := reserveTaskRun(t.ID)
+			if !ok {
+				if IsTaskRunning(t.ID) {
+					log.Warn().Str("task", t.Name).Msg("任务已在运行，跳过此次定时执行")
+				}
 				return
 			}
-			if _, exists := runningTasks[t.ID]; exists {
-				taskMutex.Unlock()
-				log.Warn().Str("task", t.Name).Msg("任务已在运行，跳过此次定时执行")
-				return
-			}
-			ctx, cancel := context.WithCancel(context.Background())
-			runningTasks[t.ID] = cancel
-			runningTaskDone[t.ID] = make(chan struct{})
-			taskMutex.Unlock()
+			handled := false
+			defer func() {
+				if !handled {
+					finishTaskRun(t.ID)
+				}
+			}()
 
-			RunScanTask(ctx, t, RunModeScheduled)
+			var currentTask models.Task
+			if err := database.DB.First(&currentTask, t.ID).Error; err != nil {
+				if !errors.Is(err, gorm.ErrRecordNotFound) {
+					log.Error().Err(err).Uint("taskID", t.ID).Msg("定时任务执行前校验失败")
+				}
+				return
+			}
+			if !currentTask.Enabled || currentTask.Cron != t.Cron {
+				return
+			}
+			var account models.Account
+			if err := database.DB.First(&account, currentTask.AccountID).Error; err != nil {
+				if !errors.Is(err, gorm.ErrRecordNotFound) {
+					log.Error().Err(err).Uint("taskID", t.ID).Uint("accountID", currentTask.AccountID).Msg("定时任务账户校验失败")
+				}
+				return
+			}
+
+			if ctx.Err() != nil {
+				return
+			}
+			handled = true
+			RunScanTask(ctx, currentTask, RunModeScheduled)
 		})
 
 		if err != nil {
-			return fmt.Errorf("添加任务 %q 到调度器失败: %w", t.Name, err)
+			log.Error().Err(err).Uint("taskID", t.ID).Str("task", t.Name).Msg("添加任务到调度器失败，已跳过")
+			continue
 		}
 	}
 
@@ -88,27 +120,67 @@ func RefreshScheduler() error {
 }
 
 func RunManualTask(task models.Task) bool {
-	taskMutex.Lock()
-	defer taskMutex.Unlock()
-	if _, blocked := blockedTasks[task.ID]; blocked {
+	ctx, ok := reserveTaskRun(task.ID)
+	if !ok {
 		return false
 	}
-	if _, exists := runningTasks[task.ID]; exists {
-		return false
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	runningTasks[task.ID] = cancel
-	runningTaskDone[task.ID] = make(chan struct{})
 	go RunScanTask(ctx, task, RunModeManual)
 	return true
 }
 
-func StopTask(taskID uint) {
+func reserveTaskRun(taskID uint) (context.Context, bool) {
+	taskMutex.Lock()
+	defer taskMutex.Unlock()
+	if schedulerClosed.Load() {
+		return nil, false
+	}
+	if _, blocked := blockedTasks[taskID]; blocked {
+		return nil, false
+	}
+	if _, exists := runningTasks[taskID]; exists {
+		return nil, false
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runningTasks[taskID] = cancel
+	runningTaskDone[taskID] = make(chan struct{})
+	return ctx, true
+}
+
+func StopTask(taskID uint) bool {
 	taskMutex.Lock()
 	defer taskMutex.Unlock()
 	if cancel, exists := runningTasks[taskID]; exists {
 		cancel()
+		return true
 	}
+	return false
+}
+
+func BlockTaskIfIdle(taskID uint) bool {
+	taskMutex.Lock()
+	defer taskMutex.Unlock()
+	if schedulerClosed.Load() {
+		return false
+	}
+	if _, running := runningTasks[taskID]; running {
+		return false
+	}
+	if _, blocked := blockedTasks[taskID]; blocked {
+		return false
+	}
+	blockedTasks[taskID] = struct{}{}
+	return true
+}
+
+func finishTaskRun(taskID uint) {
+	taskMutex.Lock()
+	delete(runningTasks, taskID)
+	if done, ok := runningTaskDone[taskID]; ok {
+		close(done)
+		delete(runningTaskDone, taskID)
+	}
+	taskMutex.Unlock()
 }
 
 func StopTasksAndWait(taskIDs []uint, timeout time.Duration) bool {
@@ -150,4 +222,55 @@ func IsTaskRunning(taskID uint) bool {
 	defer taskMutex.Unlock()
 	_, exists := runningTasks[taskID]
 	return exists
+}
+
+func ShutdownScheduler(timeout time.Duration) bool {
+	schedulerClosed.Store(true)
+
+	taskMutex.Lock()
+	doneChannels := make([]chan struct{}, 0, len(runningTasks))
+	for taskID, cancel := range runningTasks {
+		blockedTasks[taskID] = struct{}{}
+		cancel()
+		if done := runningTaskDone[taskID]; done != nil {
+			doneChannels = append(doneChannels, done)
+		}
+	}
+	taskMutex.Unlock()
+
+	schedulerMutex.Lock()
+	scheduler := MainScheduler
+	MainScheduler = nil
+	if scheduler != nil {
+		scheduler.Clear()
+	}
+	schedulerMutex.Unlock()
+
+	schedulerDone := make(chan struct{})
+	go func() {
+		if scheduler != nil {
+			scheduler.Stop()
+		}
+		close(schedulerDone)
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	wait := func(done <-chan struct{}) bool {
+		select {
+		case <-done:
+			return true
+		case <-timer.C:
+			return false
+		}
+	}
+	if !wait(schedulerDone) {
+		return false
+	}
+	for _, done := range doneChannels {
+		if !wait(done) {
+			return false
+		}
+	}
+	return true
 }

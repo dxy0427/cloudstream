@@ -1,7 +1,7 @@
 <template>
  <div style="height: 400px; display: flex; flex-direction: column;">
   <n-breadcrumb>
-   <n-breadcrumb-item @click="loadFiles('0', '根目录')">
+   <n-breadcrumb-item @click="navigateToRoot">
     <n-icon><HomeOutlined /></n-icon> 根目录
    </n-breadcrumb-item>
    <n-breadcrumb-item v-for="(item, idx) in pathStack" :key="idx" @click="jumpTo(idx)">
@@ -33,7 +33,7 @@
 </template>
 
 <script setup>
-import { ref, watch } from 'vue'
+import { ref, watch, onUnmounted } from 'vue'
 import { FolderOutlined, FileOutlined, HomeOutlined } from '@vicons/antd'
 import { NIcon } from 'naive-ui'
 import api from '../api'
@@ -44,44 +44,77 @@ const emit = defineEmits(['select'])
 const loading = ref(false)
 const files = ref([])
 const pathStack = ref([]) // {id, name}
+let requestSeq = 0
+let committedAccountId = null
+let committedFiles = []
+let committedPath = []
 
-const loadFiles = async (parentId, name) => {
- if (!props.accountId) return
+const loadFiles = async (parentId, nextPath) => {
+ if (!props.accountId) return false
+ const requestId = ++requestSeq
+ const accountId = props.accountId
  loading.value = true
  try {
-  // 修复：对 parentId 进行 URL 编码，支持 OpenList 路径包含 / 等字符
-  const res = await api.get(`/cloud/files?accountId=${props.accountId}&parentFileId=${encodeURIComponent(parentId)}`)
-  files.value = res.data.fileList || []
-  if(parentId === '0' || parentId === '/' || parentId === '') {
-    pathStack.value = []
-  }
+  // 对 parentId 进行 URL 编码，支持 OpenList 路径包含 / 等字符
+  const res = await api.get(`/cloud/files?accountId=${accountId}&parentFileId=${encodeURIComponent(parentId)}`)
+  if (requestId !== requestSeq || accountId !== props.accountId) return false
+  if (res?.code !== 0) throw new Error(res?.message || '目录加载失败')
+  files.value = res.data?.fileList || []
+  pathStack.value = nextPath
+  committedAccountId = accountId
+  committedFiles = files.value
+  committedPath = nextPath
+  return true
+ } catch {
+  if (requestId !== requestSeq || accountId !== props.accountId) return false
+  files.value = committedAccountId === accountId ? committedFiles : []
+  pathStack.value = committedAccountId === accountId ? committedPath : []
+  return false
  } finally {
-  loading.value = false
+  if (requestId === requestSeq) loading.value = false
  }
 }
 
 watch(() => props.accountId, (val) => {
- if(val) {
+ if (val) {
+  requestSeq++
+  committedAccountId = val
+  committedFiles = []
+  committedPath = []
+  files.value = []
   pathStack.value = []
-  loadFiles('0')
+  loadFiles('0', [])
+ } else {
+  requestSeq++
+  committedAccountId = null
+  committedFiles = []
+  committedPath = []
+  loading.value = false
+  files.value = []
+  pathStack.value = []
  }
 }, { immediate: true })
 
-const handleClick = (file) => {
+const handleClick = async (file) => {
  if (file.type === 1) { // Directory
-  pathStack.value.push({ id: file.fileId, name: file.filename })
-  loadFiles(file.fileId)
+  await loadFiles(file.fileId, [...pathStack.value, { id: file.fileId, name: file.filename }])
  }
 }
 
-const jumpTo = (idx) => {
+const jumpTo = async (idx) => {
  const target = pathStack.value[idx]
- pathStack.value = pathStack.value.slice(0, idx + 1)
- loadFiles(target.id)
+ if (!target) return
+ await loadFiles(target.id, pathStack.value.slice(0, idx + 1))
 }
 
+const navigateToRoot = () => loadFiles('0', [])
+
 const selectCurrent = () => {
-	const current = pathStack.value[pathStack.value.length - 1]
-	emit('select', current?.id || '0')
+ const current = pathStack.value[pathStack.value.length - 1]
+ emit('select', current?.id || '0')
 }
+
+onUnmounted(() => {
+ requestSeq++
+})
 </script>

@@ -3,7 +3,7 @@
  <n-card>
   <n-space justify="space-between" align="center">
   <h3>媒体服务器</h3>
-  <n-button type="primary" @click="openModal(null)">添加</n-button>
+  <n-button type="primary" :disabled="savePending || testPending" @click="openModal(null)">添加</n-button>
   </n-space>
  </n-card>
 
@@ -29,8 +29,8 @@
       </template>
       <template #footer>
        <n-space size="small">
-        <n-button size="tiny" ghost @click.stop="openModal(row)">编辑</n-button>
-        <n-button size="tiny" type="error" ghost @click.stop="handleDelete(row)">删除</n-button>
+         <n-button size="tiny" ghost :disabled="isDeleting(row.ID)" @click.stop="openModal(row)">编辑</n-button>
+         <n-button size="tiny" type="error" ghost :loading="isDeleting(row.ID)" :disabled="isDeleting(row.ID)" @click.stop="handleDelete(row)">删除</n-button>
        </n-space>
       </template>
      </n-thing>
@@ -40,8 +40,8 @@
   </n-spin>
  </div>
 
- <n-modal v-model:show="showModal" preset="card" title="媒体服务器配置" style="width: 700px; max-width: 95%">
-  <n-form ref="formRef" :model="form" label-placement="top" label-width="auto">
+ <n-modal v-model:show="showModal" preset="card" title="媒体服务器配置" style="width: 700px; max-width: 95%" :closable="!savePending && !testPending" :mask-closable="!savePending && !testPending" :close-on-esc="!savePending && !testPending">
+  <n-form ref="formRef" :model="form" label-placement="top" label-width="auto" :disabled="savePending || testPending">
   <n-form-item label="名称" path="Name">
    <n-input v-model:value="form.Name" placeholder="服务器备注名称" />
   </n-form-item>
@@ -138,8 +138,8 @@
   <n-divider />
 
   <n-space justify="end">
-   <n-button @click="testConnection">测试连接</n-button>
-   <n-button type="primary" @click="submit">保存</n-button>
+    <n-button :loading="testPending" :disabled="testPending || savePending" @click="testConnection">测试连接</n-button>
+    <n-button type="primary" :loading="savePending" :disabled="savePending || testPending" @click="submit">保存</n-button>
   </n-space>
   </n-form>
  </n-modal>
@@ -147,7 +147,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted, h } from 'vue'
+import { ref, reactive, onMounted, h, watch } from 'vue'
 import { NButton, NSpace, NTag, useMessage, useDialog } from 'naive-ui'
 import api from '../api'
 
@@ -156,8 +156,14 @@ const dialog = useDialog()
 const data = ref([])
 const loading = ref(false)
 const showModal = ref(false)
+const savePending = ref(false)
+const testPending = ref(false)
+const deletingIds = reactive(new Set())
+const deleteConfirming = reactive(new Set())
 const clientListArray = ref([])
 const pathMappingsArray = ref([])
+let originalBinding = null
+let fetchSeq = 0
 const form = reactive({ 
  ID: 0, 
  Name: '', 
@@ -175,7 +181,7 @@ const form = reactive({
  ResolveStrmLinks: true,
  UaPassthrough: false,
  PathMappings: '[]',
-	HasAPIKey: false,
+  HasAPIKey: false,
  Port: 8091
 })
 
@@ -208,28 +214,51 @@ const columns = [
  { title: '状态', key: 'Enabled', width: 80, render(row) { return h(NTag, { type: row.Enabled ? 'success' : 'default', size: 'small' }, { default: () => row.Enabled ? '启用' : '禁用' }) } },
  { title: '操作', key: 'actions', width: 140, render(row) {
   return h(NSpace, { size: 'small' }, { default: () => [
-   h(NButton, { size: 'tiny', onClick: () => openModal(row) }, { default: () => '编辑' }),
-   h(NButton, { size: 'tiny', type: 'error', onClick: () => handleDelete(row) }, { default: () => '删除' })
+   h(NButton, { size: 'tiny', disabled: isDeleting(row.ID), onClick: () => openModal(row) }, { default: () => '编辑' }),
+   h(NButton, { size: 'tiny', type: 'error', loading: isDeleting(row.ID), disabled: isDeleting(row.ID), onClick: () => handleDelete(row) }, { default: () => '删除' })
   ]})
  }
  }
 ]
 
 const fetchData = async () => {
+ const requestId = ++fetchSeq
  loading.value = true
  try {
   const res = await api.get('/mediaservers')
-  data.value = res.data || []
+  if (requestId === fetchSeq) data.value = res.data || []
  } catch (e) {
-  data.value = []
  } finally {
-  loading.value = false
+  if (requestId === fetchSeq) loading.value = false
+ }
+}
+
+const normalizeAddress = (value) => (value || '').trim()
+
+const clearApiKey = () => {
+ form.APIKey = ''
+ originalBinding = null
+}
+
+watch(showModal, (visible) => {
+ if (!visible) clearApiKey()
+}, { flush: 'sync' })
+
+const showResponseWarning = (res) => {
+ if (typeof res?.warning === 'string' && res.warning.trim()) {
+  message.warning(res.warning)
  }
 }
 
 const openModal = (row) => {
- if (row) Object.assign(form, row)
- else Object.assign(form, { 
+ if (row) {
+  Object.assign(form, row)
+  originalBinding = {
+   ServerType: row.ServerType,
+   ServerAddr: normalizeAddress(row.ServerAddr)
+  }
+ } else {
+  Object.assign(form, {
   ID: 0, 
   Name: '', 
   ServerType: 'Emby', 
@@ -249,45 +278,84 @@ const openModal = (row) => {
 	  HasAPIKey: false,
   Port: 8091
  })
-	form.APIKey = ''
-	clientListArray.value = parseArray(form.ClientList)
-	pathMappingsArray.value = parseArray(form.PathMappings)
+  originalBinding = null
+ }
+ form.APIKey = ''
+ clientListArray.value = parseArray(form.ClientList)
+ pathMappingsArray.value = parseArray(form.PathMappings)
  showModal.value = true
 }
 
 const preparePayload = () => ({
-	...form,
-	ClientList: JSON.stringify(clientListArray.value),
-	PathMappings: JSON.stringify(pathMappingsArray.value)
+ ...form,
+ ClientList: JSON.stringify(clientListArray.value),
+ PathMappings: JSON.stringify(pathMappingsArray.value)
 })
 
+const validateApiKeyBinding = () => {
+ if (!form.ID || form.APIKey.trim() || !originalBinding) return true
+ const typeChanged = form.ServerType !== originalBinding.ServerType
+ const addressChanged = normalizeAddress(form.ServerAddr) !== originalBinding.ServerAddr
+ if (typeChanged || addressChanged) {
+  message.warning('服务器地址或类型已变更，请重新输入 API Key')
+  return false
+ }
+ return true
+}
+
 const testConnection = async () => {
+ if (testPending.value || savePending.value || !validateApiKeyBinding()) return
+ testPending.value = true
  try { 
    const res = await api.post('/mediaservers/test', preparePayload())
   message.success(res.message) 
- } catch (e) {}
+  showResponseWarning(res)
+ } catch (e) {
+ } finally {
+  testPending.value = false
+ }
 }
 
 const submit = async () => {
+ if (savePending.value || testPending.value || !validateApiKeyBinding()) return
+ savePending.value = true
  try {
   const payload = preparePayload()
-  if (form.ID) await api.put(`/mediaservers/${form.ID}`, payload)
-  else await api.post('/mediaservers', payload)
- message.success('保存成功')
- showModal.value = false
- fetchData()
- } catch (e) {}
+  const res = form.ID
+   ? await api.put(`/mediaservers/${form.ID}`, payload)
+   : await api.post('/mediaservers', payload)
+  message.success('保存成功')
+  showResponseWarning(res)
+  showModal.value = false
+  clearApiKey()
+  await fetchData()
+ } catch (e) {
+ } finally {
+  savePending.value = false
+ }
 }
 
+const isDeleting = (id) => deletingIds.has(id) || deleteConfirming.has(id)
+
 const handleDelete = (row) => {
+ if (isDeleting(row.ID)) return
+ deleteConfirming.add(row.ID)
  dialog.warning({
- title: '警告', content: '确定要删除此媒体服务器吗？', positiveText: '删除', negativeText: '取消',
+ title: '警告', content: '确定要删除此媒体服务器吗？', positiveText: '删除', negativeText: '取消', closable: false, maskClosable: false, closeOnEsc: false,
+ onNegativeClick: () => deleteConfirming.delete(row.ID),
  onPositiveClick: async () => {
+  deleteConfirming.delete(row.ID)
+  if (deletingIds.has(row.ID)) return
+  deletingIds.add(row.ID)
   try {
-   await api.delete(`/mediaservers/${row.ID}`)
+   const res = await api.delete(`/mediaservers/${row.ID}`)
    message.success('删除成功')
-   fetchData()
-  } catch (e) {}
+   showResponseWarning(res)
+   await fetchData()
+  } catch (e) {
+  } finally {
+   deletingIds.delete(row.ID)
+  }
  }
  })
 }

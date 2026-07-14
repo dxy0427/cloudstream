@@ -1,16 +1,16 @@
 <template>
  <n-space vertical>
   <n-card title="全局显示设置" style="max-width: 600px">
-    <n-form label-placement="left" label-width="120">
+    <n-form label-placement="left" label-width="120" :disabled="titlePending">
       <n-form-item label="网站标题">
-        <n-input v-model:value="titleForm.title" placeholder="CloudStream" />
-        <n-button type="primary" style="margin-left: 10px" @click="saveTitle">保存</n-button>
+        <n-input v-model:value="titleForm.title" :disabled="titlePending" placeholder="CloudStream" />
+        <n-button type="primary" style="margin-left: 10px" :loading="titlePending" :disabled="titlePending" @click="saveTitle">保存</n-button>
       </n-form-item>
     </n-form>
   </n-card>
 
   <n-card title="安全设置" style="max-width: 600px">
-   <n-form ref="formRef" :model="form">
+   <n-form ref="formRef" :model="form" :disabled="credentialsPending">
     <n-form-item label="当前用户名">
       <n-input :value="username" disabled />
     </n-form-item>
@@ -28,22 +28,24 @@
     <n-form-item label="确认新密码" path="confirmPassword">
       <n-input type="password" show-password-on="click" v-model:value="form.confirmPassword" />
     </n-form-item>
-    <n-button type="primary" block @click="submit">确认修改</n-button>
+    <n-button type="primary" block :loading="credentialsPending" :disabled="credentialsPending" @click="submit">确认修改</n-button>
    </n-form>
   </n-card>
  </n-space>
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, watch } from 'vue'
 import { useMessage } from 'naive-ui'
 import { useGlobalStore } from '../store/global'
 import { hashPassword } from '../utils/crypto'
-import api from '../api'
+import api, { clearAuthenticatedSession } from '../api'
 
 const message = useMessage()
 const store = useGlobalStore()
 const username = ref('')
+const titlePending = ref(false)
+const credentialsPending = ref(false)
 
 const titleForm = reactive({ title: store.siteTitle })
 const form = reactive({ 
@@ -53,6 +55,10 @@ const form = reactive({
   confirmPassword: ''
 })
 
+watch(() => store.siteTitle, (title) => {
+  titleForm.title = title
+}, { immediate: true })
+
 onMounted(async () => {
  try {
   const res = await api.get('/username')
@@ -61,33 +67,68 @@ onMounted(async () => {
 })
 
 const saveTitle = async () => {
+  if (titlePending.value) return
+  const normalizedTitle = titleForm.title.trim()
+  if ([...normalizedTitle].length > 64) {
+    message.warning('网站标题不能超过 64 个字符')
+    return
+  }
+  titlePending.value = true
   try {
-    await store.setSiteTitle(titleForm.title)
+    await store.setSiteTitle(normalizedTitle)
     message.success('网站标题已更新')
-  } catch (e) {}
+  } catch (e) {
+  } finally {
+    titlePending.value = false
+  }
 }
 
 const submit = async () => {
+ if (credentialsPending.value) return
  if (!form.currentPassword) return message.error('请输入当前密码')
  if (form.newPassword && form.newPassword !== form.confirmPassword) {
    return message.error('两次输入的新密码不一致')
  }
+ credentialsPending.value = true
+ let clearAll = false
+ const currentPassword = form.currentPassword
+ const newUsername = form.newUsername
+ const newPassword = form.newPassword
+ const confirmPassword = form.confirmPassword
  try {
    // 密码 SHA-256 预哈希：明文永远不离开浏览器
-   const hashedCurrent = await hashPassword(form.currentPassword)
+   const hashedCurrent = await hashPassword(currentPassword)
    const payload = {
-     newUsername: form.newUsername,
+     newUsername,
      currentPassword: hashedCurrent,
-     newPassword: form.newPassword ? await hashPassword(form.newPassword) : '',
-     confirmPassword: form.confirmPassword ? await hashPassword(form.confirmPassword) : '',
+     newPassword: newPassword ? await hashPassword(newPassword) : '',
+     confirmPassword: confirmPassword ? await hashPassword(confirmPassword) : '',
    }
-   await api.post('/update_credentials', payload)
-   message.success('凭证已修改，请重新登录')
+   const res = await api.post('/update_credentials', payload)
+   if (res?.message && res.message.includes('未做任何修改')) {
+     clearAll = true
+     message.info(res.message)
+     return
+   }
+   clearAll = true
+   message.success(res?.message || '凭证已修改，请重新登录')
+   // 凭证变更会 bump TokenVersion；显式登出并跳转登录页
+   try { await api.post('/logout', null, { skipAuthRedirect: true, skipErrorToast: true }) } catch (e) {}
+   clearAuthenticatedSession()
+   localStorage.removeItem('needs_password_reminder')
    setTimeout(() => {
-     window.location.reload()
-   }, 1000)
- } catch (e) {
-   // 错误已由 api 拦截器全局弹出，此处不重复提示
- }
+     window.location.href = '/login'
+   }, 800)
+  } catch (e) {
+    // 错误已由 api 拦截器全局弹出，此处不重复提示
+  } finally {
+    if (clearAll) {
+      form.newUsername = ''
+      form.newPassword = ''
+      form.confirmPassword = ''
+    }
+    form.currentPassword = ''
+    credentialsPending.value = false
+  }
 }
 </script>

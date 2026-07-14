@@ -3,9 +3,10 @@ package mediaserver
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/go-resty/resty/v2"
 	"strings"
 	"time"
+
+	"github.com/go-resty/resty/v2"
 )
 
 type JellyfinClient struct {
@@ -23,12 +24,8 @@ func NewJellyfinClient(host, apiKey string) *JellyfinClient {
 }
 
 func (j *JellyfinClient) Ping() error {
-	url := fmt.Sprintf("%s/System/Info/Public", j.host)
-	req := j.client.R()
-	if j.apiKey != "" {
-		req.SetHeader("X-Emby-Token", j.apiKey)
-		req.SetQueryParam("api_key", j.apiKey)
-	}
+	url := fmt.Sprintf("%s/System/Info", j.host)
+	req := j.authenticatedRequest()
 	resp, err := req.Get(url)
 	if err != nil {
 		return err
@@ -48,7 +45,6 @@ func (j *JellyfinClient) GetItemInfo(itemId string, mediaSourceId string) (strin
 
 	if j.apiKey != "" {
 		req.SetHeader("X-Emby-Token", j.apiKey)
-		req.SetQueryParam("api_key", j.apiKey)
 	}
 
 	resp, err := req.Get(url)
@@ -65,4 +61,16 @@ func (j *JellyfinClient) GetItemInfo(itemId string, mediaSourceId string) (strin
 	}
 
 	return commonGetItemPath(res, mediaSourceId)
+}
+
+func (j *JellyfinClient) authenticatedRequest() *resty.Request {
+	req := j.client.R()
+	if j.apiKey != "" {
+		req.SetHeader("X-Emby-Token", j.apiKey)
+	}
+	return req
+}
+
+func (j *JellyfinClient) Close() {
+	j.client.GetClient().CloseIdleConnections()
 }

@@ -47,14 +47,15 @@ const logContainerRef = ref(null)
 const streamStatus = ref('connecting')
 const hasInitialized = ref(false)
 const hasEverConnected = ref(false)
-const initialLogsLoaded = ref(false)
 let eventSource = null
 let reconnectTimer = null
 let statsTimer = null
-let initialLogsTimer = null
 let resumeTimer = null
 let scrollTimer = null
 let scrollRafId = null
+let isActive = false
+let clearLogsOnOpen = false
+let streamGeneration = 0
 
 const levelOptions = [
   { label: '全部', value: 'ALL' },
@@ -149,61 +150,86 @@ const loadStats = async () => {
   stats.runningTasks = data.runningTasks || 0
 }
 
-const loadInitialLogs = async () => {
-  if (initialLogsLoaded.value || !hasEverConnected.value) return
-  try {
-    const res = await api.get('/logs')
-    const incoming = Array.isArray(res.data) ? res.data : []
-    if (logs.value.length === 0) logs.value = incoming.slice(-200)
-    initialLogsLoaded.value = true
-    ensureScrollToBottom()
-  } catch (e) {
-    if (logs.value.length === 0) logs.value = []
-  }
-}
-
-const scheduleInitialLogsLoad = () => {
-  if (initialLogsLoaded.value || initialLogsTimer || !hasEverConnected.value) return
-  initialLogsTimer = setTimeout(() => {
-    loadInitialLogs().catch(() => {})
-    initialLogsTimer = null
-  }, 300)
-}
-
 const scheduleReconnect = () => {
-  if (reconnectTimer) return
+  if (!isActive || eventSource || reconnectTimer || document.visibilityState !== 'visible') return
   streamStatus.value = 'reconnecting'
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null
-    connectLogStream()
+    if (isActive && document.visibilityState === 'visible') connectLogStream()
   }, 3000)
 }
 
+const closeLogStream = () => {
+  const source = eventSource
+  eventSource = null
+  if (source) source.close()
+}
+
 const connectLogStream = () => {
-  if (eventSource) return
+  if (!isActive || eventSource || document.visibilityState !== 'visible') return
   streamStatus.value = 'connecting'
+  // 后端每次连接都会先推送历史日志，成功建立后再清空旧快照。
+  clearLogsOnOpen = true
   // EventSource 同源请求自动携带 HTTP-only Cookie，无需手动传 token
-  eventSource = new EventSource('/api/v1/logs/stream')
-  eventSource.onopen = () => {
+  const source = new EventSource('/api/v1/logs/stream')
+  const generation = ++streamGeneration
+  eventSource = source
+  source.onopen = () => {
+    if (!isActive || eventSource !== source) return
+    if (clearLogsOnOpen) {
+      logs.value = []
+      clearLogsOnOpen = false
+    }
     streamStatus.value = 'connected'
     hasEverConnected.value = true
     ensureScrollToBottom()
-    scheduleInitialLogsLoad()
   }
-  eventSource.onmessage = (event) => {
+  source.onmessage = (event) => {
+    if (!isActive || eventSource !== source) return
     if (event.data) {
       logs.value.push(event.data)
       if (logs.value.length > 200) logs.value = logs.value.slice(-200)
       if (canRenderLogs.value) ensureScrollToBottom()
     }
   }
-  eventSource.onerror = () => {
-    if (eventSource) {
-      eventSource.close()
-      eventSource = null
+  source.onerror = () => {
+    if (eventSource !== source) return
+    // EventSource 在 401 时 readyState 会进入 CLOSED；停止无意义重连并走登录
+    const closed = source.readyState === EventSource.CLOSED
+    closeLogStream()
+		streamStatus.value = closed ? 'reconnecting' : 'disconnected'
+    if (!isActive || document.visibilityState !== 'visible') {
+      streamStatus.value = 'disconnected'
+      return
+    }
+    if (closed) {
+      // 探测会话是否仍有效；只有有效时才重连
+      api.get('/username', { skipErrorToast: true })
+        .then(() => {
+          if (!eventSource && generation === streamGeneration) scheduleReconnect()
+        })
+        .catch((error) => {
+          if (!eventSource && generation === streamGeneration && error?.response?.status !== 401) scheduleReconnect()
+        })
+      return
     }
     scheduleReconnect()
   }
+}
+
+const handleVisibilityChange = () => {
+  if (!isActive) return
+  if (document.visibilityState !== 'visible') {
+    closeLogStream()
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
+    streamStatus.value = 'disconnected'
+    return
+  }
+  if (!eventSource) connectLogStream()
+  loadStats().catch(() => {})
 }
 
 const startStatsRefresh = () => {
@@ -221,19 +247,23 @@ const stopStatsRefresh = () => {
 }
 
 onMounted(() => {
+  isActive = true
   if (!hasInitialized.value) {
     loadStats().catch(() => {})
     connectLogStream()
     startStatsRefresh()
+    document.addEventListener('visibilitychange', handleVisibilityChange)
     hasInitialized.value = true
   }
 })
 
 onActivated(() => {
+  isActive = true
   if (!statsTimer) startStatsRefresh()
   if (autoScroll.value && canRenderLogs.value) ensureScrollToBottom()
   if (resumeTimer) clearTimeout(resumeTimer)
   resumeTimer = setTimeout(() => {
+    if (!isActive) return
     if (!eventSource) connectLogStream()
     loadStats().catch(() => {})
     if (autoScroll.value && canRenderLogs.value) ensureScrollToBottom()
@@ -242,18 +272,13 @@ onActivated(() => {
 })
 
 onDeactivated(() => {
-	stopStatsRefresh()
-	if (eventSource) {
-		eventSource.close()
-		eventSource = null
-	}
+  isActive = false
+  stopStatsRefresh()
+  closeLogStream()
+  streamStatus.value = 'disconnected'
   if (reconnectTimer) {
     clearTimeout(reconnectTimer)
     reconnectTimer = null
-  }
-  if (initialLogsTimer) {
-    clearTimeout(initialLogsTimer)
-    initialLogsTimer = null
   }
   if (resumeTimer) {
     clearTimeout(resumeTimer)
@@ -263,10 +288,11 @@ onDeactivated(() => {
 })
 
 onUnmounted(() => {
-  if (eventSource) eventSource.close()
+  isActive = false
+  closeLogStream()
   if (reconnectTimer) clearTimeout(reconnectTimer)
-  if (initialLogsTimer) clearTimeout(initialLogsTimer)
   if (resumeTimer) clearTimeout(resumeTimer)
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
   cancelPendingScroll()
   stopStatsRefresh()
 })

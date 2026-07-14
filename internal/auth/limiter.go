@@ -1,10 +1,11 @@
 package auth
 
 import (
-	"github.com/gin-gonic/gin"
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 const (
@@ -21,9 +22,11 @@ type rateLimiter struct {
 
 var loginLimiterStore = struct {
 	sync.Mutex
-	entries map[string]*rateLimiter
+	entries     map[string]*rateLimiter
+	nextCleanup time.Time
 }{
-	entries: make(map[string]*rateLimiter),
+	entries:     make(map[string]*rateLimiter),
+	nextCleanup: time.Now().Add(entryTTL),
 }
 
 func cleanupExpiredEntries(now time.Time) {
@@ -41,7 +44,10 @@ func LoginRateLimiter() gin.HandlerFunc {
 
 		loginLimiterStore.Lock()
 
-		cleanupExpiredEntries(now)
+		if !now.Before(loginLimiterStore.nextCleanup) {
+			cleanupExpiredEntries(now)
+			loginLimiterStore.nextCleanup = now.Add(entryTTL)
+		}
 
 		limiter, exists := loginLimiterStore.entries[ip]
 		if !exists {
@@ -63,14 +69,24 @@ func LoginRateLimiter() gin.HandlerFunc {
 			return
 		}
 
+		// 在进入登录处理器前预占一次额度，避免并发请求同时绕过上限。
+		limiter.count++
 		loginLimiterStore.Unlock()
 
 		c.Next()
 
-		// 只在登录失败时递增计数（401 = 用户名密码错误）
-		if c.Writer.Status() == http.StatusUnauthorized {
+		if c.Writer.Status() >= http.StatusOK && c.Writer.Status() < http.StatusMultipleChoices {
 			loginLimiterStore.Lock()
-			limiter.count++
+			if current := loginLimiterStore.entries[ip]; current == limiter {
+				delete(loginLimiterStore.entries, ip)
+			}
+			loginLimiterStore.Unlock()
+		} else if c.Writer.Status() != http.StatusUnauthorized {
+			loginLimiterStore.Lock()
+			if current := loginLimiterStore.entries[ip]; current == limiter && current.count > 0 {
+				current.count--
+				current.lastSeen = time.Now()
+			}
 			loginLimiterStore.Unlock()
 		}
 	}
