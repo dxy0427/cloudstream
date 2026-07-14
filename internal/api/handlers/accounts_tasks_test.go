@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/driver/sqlite"
@@ -66,6 +67,235 @@ func TestUpdateAccountRejectsMalformedID(t *testing.T) {
 	recorder := performHandlerRequest(t, http.MethodPut, "/accounts/1abc", map[string]any{"Name": "renamed"}, UpdateAccountHandler)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+}
+
+func TestRevealAccountSecretIsExplicitAndNoStore(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t)
+	account := models.Account{
+		Name:           "visible-dav",
+		Type:           models.AccountTypeWebDAV,
+		WebDAVURL:      "https://dav.example",
+		WebDAVUsername: "user",
+		WebDAVPassword: "saved-password",
+	}
+	if err := db.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	listed := performHandlerRequest(t, http.MethodGet, "/accounts", nil, ListAccountsHandler)
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list status = %d, body = %s", listed.Code, listed.Body.String())
+	}
+	if strings.Contains(listed.Body.String(), "saved-password") {
+		t.Fatalf("account list leaked password: %s", listed.Body.String())
+	}
+
+	revealed := performHandlerRequest(t, http.MethodPost, "/accounts/1", map[string]any{
+		"field": "webdav_password", "updatedAt": account.UpdatedAt.Format(time.RFC3339Nano),
+		"accountType": models.AccountTypeWebDAV, "webdavUrl": "https://dav.example/", "webdavUsername": " user ",
+	}, RevealAccountSecretHandler)
+	if revealed.Code != http.StatusOK {
+		t.Fatalf("reveal status = %d, body = %s", revealed.Code, revealed.Body.String())
+	}
+	if !strings.Contains(revealed.Body.String(), "saved-password") {
+		t.Fatalf("reveal response missing password: %s", revealed.Body.String())
+	}
+	if cacheControl := revealed.Header().Get("Cache-Control"); !strings.Contains(cacheControl, "no-store") {
+		t.Fatalf("Cache-Control = %q", cacheControl)
+	}
+	if revealed.Header().Get("Pragma") != "no-cache" || revealed.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("missing reveal safety headers: %v", revealed.Header())
+	}
+
+	wrongField := performHandlerRequest(t, http.MethodPost, "/accounts/1", map[string]any{
+		"field": "client_secret", "updatedAt": account.UpdatedAt.Format(time.RFC3339Nano),
+		"accountType": models.AccountTypeWebDAV, "clientId": "not-applicable",
+	}, RevealAccountSecretHandler)
+	if wrongField.Code != http.StatusConflict {
+		t.Fatalf("wrong-field status = %d, body = %s", wrongField.Code, wrongField.Body.String())
+	}
+	stale := performHandlerRequest(t, http.MethodPost, "/accounts/1", map[string]any{
+		"field": "webdav_password", "updatedAt": time.Now().Add(-time.Hour).Format(time.RFC3339Nano),
+		"accountType": models.AccountTypeWebDAV, "webdavUrl": account.WebDAVURL, "webdavUsername": account.WebDAVUsername,
+	}, RevealAccountSecretHandler)
+	if stale.Code != http.StatusConflict {
+		t.Fatalf("stale status = %d, body = %s", stale.Code, stale.Body.String())
+	}
+}
+
+func TestRevealOpenListUsesOnlyActiveCredential(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t)
+	account := models.Account{
+		Name:             "openlist-token",
+		Type:             models.AccountTypeOpenList,
+		OpenListURL:      "https://list.example",
+		OpenListAuthMode: "token",
+		OpenListToken:    "saved-token",
+		OpenListPassword: "inactive-password",
+	}
+	if err := db.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	token := performHandlerRequest(t, http.MethodPost, "/accounts/1", map[string]any{
+		"field": "openlist_token", "updatedAt": account.UpdatedAt.Format(time.RFC3339Nano),
+		"accountType": models.AccountTypeOpenList, "openListAuthMode": "token", "openListUrl": "https://list.example/",
+	}, RevealAccountSecretHandler)
+	if token.Code != http.StatusOK || !strings.Contains(token.Body.String(), "saved-token") {
+		t.Fatalf("token reveal status = %d, body = %s", token.Code, token.Body.String())
+	}
+	password := performHandlerRequest(t, http.MethodPost, "/accounts/1", map[string]any{
+		"field": "openlist_password", "updatedAt": account.UpdatedAt.Format(time.RFC3339Nano),
+		"accountType": models.AccountTypeOpenList, "openListAuthMode": "password", "openListUrl": account.OpenListURL, "openListUsername": "",
+	}, RevealAccountSecretHandler)
+	if password.Code != http.StatusConflict {
+		t.Fatalf("inactive password status = %d, body = %s", password.Code, password.Body.String())
+	}
+}
+
+func TestRevealOpenListPasswordRequiresCompleteBinding(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t)
+	account := models.Account{
+		Name:             "openlist-password",
+		Type:             models.AccountTypeOpenList,
+		OpenListURL:      "https://list.example/dav",
+		OpenListAuthMode: "password",
+		OpenListUsername: "user",
+		OpenListPassword: "saved-password",
+	}
+	if err := db.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	payload := map[string]any{
+		"field": "openlist_password", "updatedAt": account.UpdatedAt.Format(time.RFC3339Nano),
+		"accountType": models.AccountTypeOpenList, "openListAuthMode": "password",
+		"openListUrl": "https://list.example/dav/", "openListUsername": " user ",
+	}
+	revealed := performHandlerRequest(t, http.MethodPost, "/accounts/1", payload, RevealAccountSecretHandler)
+	if revealed.Code != http.StatusOK || !strings.Contains(revealed.Body.String(), "saved-password") {
+		t.Fatalf("reveal status = %d, body = %s", revealed.Code, revealed.Body.String())
+	}
+
+	delete(payload, "openListUsername")
+	missing := performHandlerRequest(t, http.MethodPost, "/accounts/1", payload, RevealAccountSecretHandler)
+	if missing.Code != http.StatusBadRequest {
+		t.Fatalf("missing username status = %d, body = %s", missing.Code, missing.Body.String())
+	}
+	payload["openListUsername"] = "other-user"
+	changed := performHandlerRequest(t, http.MethodPost, "/accounts/1", payload, RevealAccountSecretHandler)
+	if changed.Code != http.StatusConflict {
+		t.Fatalf("changed username status = %d, body = %s", changed.Code, changed.Body.String())
+	}
+}
+
+func TestRevealAccountSecretRejectsMissingOrChangedBinding(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t)
+	account := models.Account{
+		Name: "bound-pan", Type: models.AccountType123Pan, ClientID: "client-id", ClientSecret: "saved-secret",
+	}
+	if err := db.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	base := map[string]any{
+		"field": "client_secret", "updatedAt": account.UpdatedAt.Format(time.RFC3339Nano), "accountType": models.AccountType123Pan,
+	}
+	missing := performHandlerRequest(t, http.MethodPost, "/accounts/1", base, RevealAccountSecretHandler)
+	if missing.Code != http.StatusBadRequest {
+		t.Fatalf("missing binding status = %d, body = %s", missing.Code, missing.Body.String())
+	}
+	base["clientId"] = "changed-id"
+	changed := performHandlerRequest(t, http.MethodPost, "/accounts/1", base, RevealAccountSecretHandler)
+	if changed.Code != http.StatusConflict {
+		t.Fatalf("changed binding status = %d, body = %s", changed.Code, changed.Body.String())
+	}
+	base["clientId"] = account.ClientID
+	base["accountType"] = models.AccountTypeWebDAV
+	wrongType := performHandlerRequest(t, http.MethodPost, "/accounts/1", base, RevealAccountSecretHandler)
+	if wrongType.Code != http.StatusConflict {
+		t.Fatalf("wrong type status = %d, body = %s", wrongType.Code, wrongType.Body.String())
+	}
+}
+
+func TestCreateAccountWebDAVPlaybackModeCompatibility(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name       string
+		fields     map[string]any
+		wantStatus int
+		wantMode   string
+		wantLegacy bool
+	}{
+		{name: "default", fields: map[string]any{}, wantStatus: http.StatusOK, wantMode: models.WebDAVPlaybackModeProxy},
+		{name: "new redirect", fields: map[string]any{"WebDAVPlaybackMode": models.WebDAVPlaybackModeUpstreamRedirect}, wantStatus: http.StatusOK, wantMode: models.WebDAVPlaybackModeUpstreamRedirect, wantLegacy: true},
+		{name: "legacy redirect", fields: map[string]any{"WebDAVDirectLink": true}, wantStatus: http.StatusOK, wantMode: models.WebDAVPlaybackModeUpstreamRedirect, wantLegacy: true},
+		{name: "consistent", fields: map[string]any{"WebDAVPlaybackMode": models.WebDAVPlaybackModeProxy, "WebDAVDirectLink": false}, wantStatus: http.StatusOK, wantMode: models.WebDAVPlaybackModeProxy},
+		{name: "conflict", fields: map[string]any{"WebDAVPlaybackMode": models.WebDAVPlaybackModeProxy, "WebDAVDirectLink": true}, wantStatus: http.StatusBadRequest},
+		{name: "invalid", fields: map[string]any{"WebDAVPlaybackMode": "direct"}, wantStatus: http.StatusBadRequest},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := openHandlerTestDB(t)
+			payload := map[string]any{"Name": "dav-" + strings.ReplaceAll(tt.name, " ", "-"), "Type": models.AccountTypeWebDAV, "WebDAVURL": "https://dav.example"}
+			for key, value := range tt.fields {
+				payload[key] = value
+			}
+			recorder := performHandlerRequest(t, http.MethodPost, "/accounts", payload, CreateAccountHandler)
+			if recorder.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d, body = %s", recorder.Code, tt.wantStatus, recorder.Body.String())
+			}
+			if tt.wantStatus != http.StatusOK {
+				return
+			}
+			var stored models.Account
+			if err := db.First(&stored).Error; err != nil {
+				t.Fatal(err)
+			}
+			if stored.WebDAVPlaybackMode != tt.wantMode || stored.WebDAVDirectLink != tt.wantLegacy {
+				t.Fatalf("stored mode = %q legacy = %v", stored.WebDAVPlaybackMode, stored.WebDAVDirectLink)
+			}
+			if !strings.Contains(recorder.Body.String(), `"WebDAVPlaybackMode":"`+tt.wantMode+`"`) {
+				t.Fatalf("response missing normalized mode: %s", recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestUpdateAccountPlaybackModeOmissionAndValidation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t)
+	account := models.Account{
+		Name: "dav-mode", Type: models.AccountTypeWebDAV, WebDAVURL: "https://dav.example",
+		WebDAVPlaybackMode: models.WebDAVPlaybackModeUpstreamRedirect, WebDAVDirectLink: true,
+	}
+	if err := db.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	omitted := performHandlerRequest(t, http.MethodPut, "/accounts/1", map[string]any{"Name": "dav-renamed"}, UpdateAccountHandler)
+	if omitted.Code != http.StatusOK {
+		t.Fatalf("omitted status = %d, body = %s", omitted.Code, omitted.Body.String())
+	}
+	var stored models.Account
+	if err := db.First(&stored, account.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.WebDAVPlaybackMode != models.WebDAVPlaybackModeUpstreamRedirect || !stored.WebDAVDirectLink {
+		t.Fatalf("omitted update changed mode: %+v", stored)
+	}
+	conflict := performHandlerRequest(t, http.MethodPut, "/accounts/1", map[string]any{
+		"WebDAVPlaybackMode": models.WebDAVPlaybackModeUpstreamRedirect, "WebDAVDirectLink": false,
+	}, UpdateAccountHandler)
+	if conflict.Code != http.StatusBadRequest {
+		t.Fatalf("conflict status = %d, body = %s", conflict.Code, conflict.Body.String())
+	}
+	invalid := performHandlerRequest(t, http.MethodPut, "/accounts/1", map[string]any{"WebDAVPlaybackMode": "unknown"}, UpdateAccountHandler)
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid status = %d, body = %s", invalid.Code, invalid.Body.String())
 	}
 }
 
@@ -166,7 +396,7 @@ func TestMergeStoredWebDAVSecretsHonorsExplicitClear(t *testing.T) {
 	}
 }
 
-func TestUpdateWebDAVEnablesDirectLinkWithStoredPassword(t *testing.T) {
+func TestUpdateWebDAVEnablesRedirectModeWithStoredPassword(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := openHandlerTestDB(t)
 	account := models.Account{
@@ -195,7 +425,7 @@ func TestUpdateWebDAVEnablesDirectLinkWithStoredPassword(t *testing.T) {
 	}
 }
 
-func TestCreateWebDAVDirectLinkRejectsWhitespaceCredentials(t *testing.T) {
+func TestCreateAnonymousWebDAVCanEnableRedirectMode(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	openHandlerTestDB(t)
 	recorder := performHandlerRequest(t, http.MethodPost, "/accounts", map[string]any{
@@ -206,19 +436,17 @@ func TestCreateWebDAVDirectLinkRejectsWhitespaceCredentials(t *testing.T) {
 		"WebDAVPassword":   " ",
 		"WebDAVDirectLink": true,
 	}, CreateAccountHandler)
-	if recorder.Code != http.StatusBadRequest {
+	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
 }
 
-func TestAccountConnectionWebDAVDirectLinkChecksWebDAVAndOpenList(t *testing.T) {
+func TestAccountConnectionWebDAVRedirectModeWarnsThatFileRedirectIsRequired(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	openHandlerTestDB(t)
 	var webDAVChecked bool
-	var openListChecked bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/dav/":
+		if r.URL.Path == "/dav/" {
 			username, password, ok := r.BasicAuth()
 			if !ok {
 				w.Header().Set("WWW-Authenticate", `Basic realm="OpenList"`)
@@ -234,24 +462,9 @@ func TestAccountConnectionWebDAVDirectLinkChecksWebDAVAndOpenList(t *testing.T) 
 			w.WriteHeader(http.StatusMultiStatus)
 			_, _ = w.Write([]byte(`<?xml version="1.0" encoding="utf-8"?>
 <d:multistatus xmlns:d="DAV:"><d:response><d:href>/dav/</d:href><d:propstat><d:prop><d:displayname>root</d:displayname><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>`))
-		case "/api/auth/login":
-			var credentials map[string]string
-			if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
-				t.Error(err)
-			}
-			if credentials["username"] != "user" || credentials["password"] != "secret" {
-				t.Errorf("unexpected credentials: %#v", credentials)
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": map[string]string{"token": "token"}})
-		case "/api/fs/list":
-			if r.Header.Get("Authorization") != "token" {
-				t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
-			}
-			openListChecked = true
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": map[string]any{"content": []any{}, "total": 0}})
-		default:
-			http.NotFound(w, r)
+			return
 		}
+		http.NotFound(w, r)
 	}))
 	defer server.Close()
 
@@ -266,8 +479,29 @@ func TestAccountConnectionWebDAVDirectLinkChecksWebDAVAndOpenList(t *testing.T) 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	if !webDAVChecked || !openListChecked {
-		t.Fatalf("WebDAV checked=%v OpenList checked=%v", webDAVChecked, openListChecked)
+	if !webDAVChecked || !strings.Contains(recorder.Body.String(), "文件请求实际返回 3xx") {
+		t.Fatalf("WebDAV checked=%v body=%s", webDAVChecked, recorder.Body.String())
+	}
+}
+
+func TestAccountConnectionRejectsInvalidOrConflictingPlaybackMode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	openHandlerTestDB(t)
+	base := map[string]any{
+		"Name": "mode-validation", "Type": models.AccountTypeWebDAV, "WebDAVURL": "https://dav.invalid",
+	}
+
+	base["WebDAVPlaybackMode"] = "invalid"
+	invalid := performHandlerRequest(t, http.MethodPost, "/accounts/test", base, TestAccountConnectionHandler)
+	if invalid.Code != http.StatusBadRequest {
+		t.Fatalf("invalid status = %d, body = %s", invalid.Code, invalid.Body.String())
+	}
+
+	base["WebDAVPlaybackMode"] = models.WebDAVPlaybackModeProxy
+	base["WebDAVDirectLink"] = true
+	conflict := performHandlerRequest(t, http.MethodPost, "/accounts/test", base, TestAccountConnectionHandler)
+	if conflict.Code != http.StatusBadRequest {
+		t.Fatalf("conflict status = %d, body = %s", conflict.Code, conflict.Body.String())
 	}
 }
 

@@ -3,16 +3,16 @@ package handlers
 import (
 	"cloudstream/internal/auth"
 	"cloudstream/internal/models"
-	"cloudstream/internal/openlist"
 	"cloudstream/internal/webdav"
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 
@@ -33,38 +33,6 @@ func TestExpectedDownstreamDisconnect(t *testing.T) {
 	}
 	if isExpectedDownstreamDisconnect(context.Background(), errors.New("upstream read failed")) {
 		t.Fatal("unexpected upstream error was suppressed")
-	}
-}
-
-func TestOpenListAccountFromWebDAV(t *testing.T) {
-	account, err := openListAccountFromWebDAV(models.Account{
-		WebDAVURL:      "https://files.example/base/dav/",
-		WebDAVUsername: "user",
-		WebDAVPassword: "secret",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	schemeLess, err := openListAccountFromWebDAV(models.Account{WebDAVURL: "files.example/base/dav"})
-	if err != nil || schemeLess.OpenListURL != "http://files.example/base" {
-		t.Fatalf("scheme-less WebDAV conversion failed: %+v, %v", schemeLess, err)
-	}
-	uppercase, err := openListAccountFromWebDAV(models.Account{WebDAVURL: "HTTPS://files.example/base/dav"})
-	if err != nil || !strings.EqualFold(uppercase.OpenListURL, "https://files.example/base") {
-		t.Fatalf("uppercase HTTPS conversion failed: %+v, %v", uppercase, err)
-	}
-	if account.OpenListURL != "https://files.example/base" || account.OpenListAuthMode != "password" || account.OpenListUsername != "user" || account.OpenListPassword != "secret" {
-		t.Fatalf("unexpected OpenList account: %+v", account)
-	}
-	for _, invalid := range []string{
-		"https://files.example/webdav",
-		"https://files.example/dav?token=secret",
-		"ftp://files.example/dav",
-		"javascript:alert(1)",
-	} {
-		if _, err := openListAccountFromWebDAV(models.Account{WebDAVURL: invalid}); err == nil {
-			t.Fatalf("accepted invalid OpenList WebDAV URL %q", invalid)
-		}
 	}
 }
 
@@ -125,52 +93,40 @@ func TestProxyWebDAVDownloadDoesNotSuppressUpstreamReset(t *testing.T) {
 	}
 }
 
-func TestWebDAVDirectLinkUsesOpenListAPI(t *testing.T) {
+func TestWebDAVRedirectModePassesThroughUpstreamRedirect(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := openHandlerTestDB(t)
-	var getPath string
-	openListServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/auth/login":
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": map[string]string{"token": "token"}})
-		case "/api/fs/get":
-			if r.Header.Get("Authorization") != "token" {
-				t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
-			}
-			var body struct {
-				Path string `json:"path"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-				t.Error(err)
-			}
-			getPath = body.Path
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"code": 200,
-				"data": map[string]any{"raw_url": "https://storage.example/video.mkv?sign=value"},
-			})
-		default:
-			http.Error(w, "unexpected media proxy request", http.StatusInternalServerError)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		username, password, ok := r.BasicAuth()
+		if !ok || username != "user" || password != "secret" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="DAV"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
 		}
+		if r.Header.Get("Range") != "bytes=0-1023" {
+			t.Errorf("Range = %q", r.Header.Get("Range"))
+		}
+		http.Redirect(w, r, "https://storage.example/video.mkv?sign=value", http.StatusFound)
 	}))
-	defer openListServer.Close()
+	defer upstream.Close()
 
 	account := models.Account{
-		Name:             "openlist-dav",
-		Type:             models.AccountTypeWebDAV,
-		WebDAVURL:        openListServer.URL + "/dav",
-		WebDAVUsername:   "user",
-		WebDAVPassword:   "secret",
-		WebDAVDirectLink: true,
+		Name:               "redirect-dav",
+		Type:               models.AccountTypeWebDAV,
+		WebDAVURL:          upstream.URL,
+		WebDAVUsername:     "user",
+		WebDAVPassword:     "secret",
+		WebDAVPlaybackMode: models.WebDAVPlaybackModeUpstreamRedirect,
 	}
 	if err := db.Create(&account).Error; err != nil {
 		t.Fatal(err)
 	}
-	defer openlist.InvalidateAccountCache(account.ID)
 
 	router := gin.New()
 	router.GET("/api/v1/stream/s/*path", UnifiedStreamHandler)
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/api/v1/stream/s/1/media/video.mkv", nil)
+	request.Header.Set("Range", "bytes=0-1023")
 	router.ServeHTTP(recorder, request)
 
 	if recorder.Code != http.StatusFound {
@@ -182,85 +138,101 @@ func TestWebDAVDirectLinkUsesOpenListAPI(t *testing.T) {
 	if recorder.Header().Get("Cache-Control") != "no-store" || recorder.Header().Get("Referrer-Policy") != "no-referrer" {
 		t.Fatalf("redirect safety headers missing: %v", recorder.Header())
 	}
-	if getPath != "/media/video.mkv" {
-		t.Fatalf("OpenList path = %q", getPath)
-	}
 }
 
-func TestWebDAVDirectLinkResolvesRelativeOpenListURL(t *testing.T) {
+func TestWebDAVRedirectModeRejectsProxiedFileResponse(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := openHandlerTestDB(t)
-	openListServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/auth/login":
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": map[string]string{"token": "token"}})
-		case "/api/fs/get":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"code": 200,
-				"data": map[string]any{"raw_url": "/p/media/video.mkv?sign=value"},
-			})
-		default:
-			http.NotFound(w, r)
-		}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "video/mp4")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("media-data"))
 	}))
-	defer openListServer.Close()
+	defer upstream.Close()
 
 	account := models.Account{
-		Name:             "relative-dav",
-		Type:             models.AccountTypeWebDAV,
-		WebDAVURL:        openListServer.URL + "/dav",
-		WebDAVUsername:   "user",
-		WebDAVPassword:   "secret",
-		WebDAVDirectLink: true,
+		Name:               "proxy-policy-dav",
+		Type:               models.AccountTypeWebDAV,
+		WebDAVURL:          upstream.URL,
+		WebDAVPlaybackMode: models.WebDAVPlaybackModeUpstreamRedirect,
 	}
 	if err := db.Create(&account).Error; err != nil {
 		t.Fatal(err)
 	}
-	defer openlist.InvalidateAccountCache(account.ID)
 
 	router := gin.New()
 	router.GET("/api/v1/stream/s/*path", UnifiedStreamHandler)
 	recorder := httptest.NewRecorder()
 	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/v1/stream/s/1/media/video.mkv", nil))
 
-	if recorder.Code != http.StatusFound {
+	if recorder.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
 	}
-	if location := recorder.Header().Get("Location"); location != openListServer.URL+"/p/media/video.mkv?sign=value" {
-		t.Fatalf("Location = %q", location)
+	if strings.Contains(recorder.Body.String(), "media-data") {
+		t.Fatalf("redirect mode unexpectedly proxied media body: %q", recorder.Body.String())
 	}
 }
 
-func TestSignedWebDAVDirectLinkSupportsHead(t *testing.T) {
+func TestWebDAVPlaybackModeIsAuthoritativeAndUnknownFallsBackToProxy(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		mode string
+	}{
+		{name: "proxy", mode: models.WebDAVPlaybackModeProxy},
+		{name: "unknown", mode: "unknown-mode"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			gin.SetMode(gin.TestMode)
+			db := openHandlerTestDB(t)
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("media-data"))
+			}))
+			defer upstream.Close()
+
+			account := models.Account{
+				Name:               "mode-authority-" + test.name,
+				Type:               models.AccountTypeWebDAV,
+				WebDAVURL:          upstream.URL,
+				WebDAVPlaybackMode: test.mode,
+			}
+			if err := db.Create(&account).Error; err != nil {
+				t.Fatal(err)
+			}
+
+			router := gin.New()
+			router.GET("/api/v1/stream/s/*path", UnifiedStreamHandler)
+			recorder := httptest.NewRecorder()
+			path := "/api/v1/stream/s/" + strconv.FormatUint(uint64(account.ID), 10) + "/media/video.mkv"
+			router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+
+			if recorder.Code != http.StatusOK || recorder.Body.String() != "media-data" {
+				t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+			}
+		})
+	}
+}
+
+func TestSignedWebDAVRedirectModeSupportsHead(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := openHandlerTestDB(t)
-	openListServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/api/auth/login":
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": map[string]string{"token": "token"}})
-		case "/api/fs/get":
-			_ = json.NewEncoder(w).Encode(map[string]any{
-				"code": 200,
-				"data": map[string]any{"raw_url": "https://storage.example/video.mkv?sign=value"},
-			})
-		default:
-			http.NotFound(w, r)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodHead {
+			t.Errorf("method = %s", r.Method)
 		}
+		http.Redirect(w, r, "https://storage.example/video.mkv?sign=value", http.StatusTemporaryRedirect)
 	}))
-	defer openListServer.Close()
+	defer upstream.Close()
 
 	account := models.Account{
-		Name:             "signed-direct-dav",
-		Type:             models.AccountTypeWebDAV,
-		WebDAVURL:        openListServer.URL + "/dav",
-		WebDAVUsername:   "user",
-		WebDAVPassword:   "secret",
-		WebDAVDirectLink: true,
+		Name:               "signed-direct-dav",
+		Type:               models.AccountTypeWebDAV,
+		WebDAVURL:          upstream.URL,
+		WebDAVPlaybackMode: models.WebDAVPlaybackModeUpstreamRedirect,
 	}
 	if err := db.Create(&account).Error; err != nil {
 		t.Fatal(err)
 	}
-	defer openlist.InvalidateAccountCache(account.ID)
 	task := models.Task{
 		Name:           "signed-task",
 		AccountID:      account.ID,
@@ -285,7 +257,7 @@ func TestSignedWebDAVDirectLinkSupportsHead(t *testing.T) {
 	request := httptest.NewRequest(http.MethodHead, "/api/v1/stream/s/placeholder?sign="+url.QueryEscape(sign), nil)
 	router.ServeHTTP(recorder, request)
 
-	if recorder.Code != http.StatusFound || recorder.Header().Get("Location") != "https://storage.example/video.mkv?sign=value" {
+	if recorder.Code != http.StatusTemporaryRedirect || recorder.Header().Get("Location") != "https://storage.example/video.mkv?sign=value" {
 		t.Fatalf("status=%d location=%q", recorder.Code, recorder.Header().Get("Location"))
 	}
 	if recorder.Body.Len() != 0 {
@@ -293,14 +265,129 @@ func TestSignedWebDAVDirectLinkSupportsHead(t *testing.T) {
 	}
 }
 
+func TestWebDAVRedirectModePassesNotModifiedAndRangeErrors(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+		header string
+		value  string
+	}{
+		{name: "not-modified", status: http.StatusNotModified, header: "ETag", value: `"etag"`},
+		{name: "range-error", status: http.StatusRequestedRangeNotSatisfiable, header: "Content-Range", value: "bytes */42"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set(test.header, test.value)
+				w.WriteHeader(test.status)
+			}))
+			defer upstream.Close()
+			account := models.Account{Type: models.AccountTypeWebDAV, WebDAVURL: upstream.URL, WebDAVPlaybackMode: models.WebDAVPlaybackModeUpstreamRedirect}
+			client := webdav.NewClient(account)
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodGet, "/stream", nil)
+			redirectWebDAVDownload(ctx, client, "/video.mkv")
+			if recorder.Code != test.status || recorder.Header().Get(test.header) != test.value {
+				t.Fatalf("status=%d headers=%v", recorder.Code, recorder.Header())
+			}
+		})
+	}
+}
+
+func TestWebDAVProxyStripsAuthorizationAcrossOrigins(t *testing.T) {
+	var receivedAuthorization string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuthorization = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data"))
+	}))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if username, password, ok := r.BasicAuth(); !ok || username != "user" || password != "secret" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="DAV"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		http.Redirect(w, r, target.URL+"/video.mkv", http.StatusFound)
+	}))
+	defer source.Close()
+	account := models.Account{Type: models.AccountTypeWebDAV, WebDAVURL: source.URL, WebDAVUsername: "user", WebDAVPassword: "secret"}
+	client := webdav.NewClient(account)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/stream", nil)
+	proxyWebDAVDownload(ctx, client, "/video.mkv")
+	if recorder.Code != http.StatusOK || recorder.Body.String() != "data" {
+		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if receivedAuthorization != "" {
+		t.Fatalf("Authorization leaked to redirect target: %q", receivedAuthorization)
+	}
+}
+
+func TestWebDAVProxyStripsAuthorizationOnExactOriginRedirect(t *testing.T) {
+	var receivedAuthorization string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/video.mkv" {
+			if _, _, ok := r.BasicAuth(); !ok {
+				w.Header().Set("WWW-Authenticate", `Basic realm="DAV"`)
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			http.Redirect(w, r, "/storage/video.mkv", http.StatusFound)
+			return
+		}
+		receivedAuthorization = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data"))
+	}))
+	defer server.Close()
+	account := models.Account{Type: models.AccountTypeWebDAV, WebDAVURL: server.URL, WebDAVUsername: "user", WebDAVPassword: "secret"}
+	client := webdav.NewClient(account)
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/stream", nil)
+	proxyWebDAVDownload(ctx, client, "/video.mkv")
+	if recorder.Code != http.StatusOK || receivedAuthorization != "" {
+		t.Fatalf("status=%d Authorization=%q", recorder.Code, receivedAuthorization)
+	}
+}
+
+func TestWebDAVProxyDoesNotAnswerRedirectTargetAuthChallenge(t *testing.T) {
+	var challengedRequests atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		challengedRequests.Add(1)
+		w.Header().Set("WWW-Authenticate", `Basic realm="target"`)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, _, ok := r.BasicAuth(); !ok {
+			w.Header().Set("WWW-Authenticate", `Basic realm="source"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		http.Redirect(w, r, target.URL+"/video.mkv", http.StatusFound)
+	}))
+	defer source.Close()
+	client := webdav.NewClient(models.Account{Type: models.AccountTypeWebDAV, WebDAVURL: source.URL, WebDAVUsername: "user", WebDAVPassword: "secret"})
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/stream", nil)
+	proxyWebDAVDownload(ctx, client, "/video.mkv")
+	if recorder.Code != http.StatusBadGateway || challengedRequests.Load() != 1 {
+		t.Fatalf("status=%d target requests=%d", recorder.Code, challengedRequests.Load())
+	}
+}
+
 func TestGetStreamClientDoesNotCacheAccountConfiguration(t *testing.T) {
 	account := models.Account{Type: models.AccountTypeWebDAV, WebDAVURL: "https://old.example", WebDAVPassword: "old"}
-	first := getStreamClient(account).(*cachedWebDAVClient)
+	first := getStreamClient(account).(*webdav.Client)
 	account.WebDAVURL = "https://new.example"
 	account.WebDAVPassword = "new"
-	second := getStreamClient(account).(*cachedWebDAVClient)
+	second := getStreamClient(account).(*webdav.Client)
 
-	if first.Client == second.Client {
+	if first == second {
 		t.Fatal("stream client was cached")
 	}
 	if second.BaseURL != "https://new.example" || second.Password != "new" {
@@ -358,5 +445,45 @@ func TestProxyWebDAVDownloadMapsUpstreamErrorsToBadGateway(t *testing.T) {
 
 	if recorder.Code != http.StatusBadGateway || recorder.Body.String() != "Upstream service unavailable" {
 		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestProxyWebDAVDownloadPreservesRangeNotSatisfiable(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Range", "bytes */42")
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+	}))
+	defer upstream.Close()
+	client := webdav.NewClient(models.Account{Type: models.AccountTypeWebDAV, WebDAVURL: upstream.URL})
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/stream", nil)
+	proxyWebDAVDownload(ctx, client, "/video.mp4")
+	if recorder.Code != http.StatusRequestedRangeNotSatisfiable || recorder.Header().Get("Content-Range") != "bytes */42" {
+		t.Fatalf("status=%d headers=%v", recorder.Code, recorder.Header())
+	}
+}
+
+func TestFollowWebDAVRedirectsKeepsHeadForSeeOther(t *testing.T) {
+	var targetMethod string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetMethod = r.Method
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	response := &http.Response{
+		StatusCode: http.StatusSeeOther,
+		Header:     http.Header{"Location": []string{target.URL}},
+		Body:       io.NopCloser(strings.NewReader("")),
+	}
+	client := webDAVNoRedirectHTTPClient(target.Client())
+	final, err := followWebDAVRedirects(context.Background(), client, response, http.MethodHead, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	final.Body.Close()
+	if targetMethod != http.MethodHead {
+		t.Fatalf("target method = %s", targetMethod)
 	}
 }

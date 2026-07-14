@@ -5,13 +5,44 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+func TestDoDownloadRequestNegotiatesDigestAuth(t *testing.T) {
+	const nonce = "0123456789abcdef"
+	var attempts atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		authorization := r.Header.Get("Authorization")
+		if !strings.HasPrefix(authorization, "Digest ") {
+			w.Header().Set("WWW-Authenticate", `Digest realm="dav", nonce="`+nonce+`", qop="auth", algorithm=MD5`)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if !strings.Contains(authorization, `uri="/dav/video.mkv"`) {
+			t.Errorf("Digest URI = %q", authorization)
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data")
+	}))
+	defer server.Close()
+	client := NewClient(models.Account{WebDAVURL: server.URL + "/dav", WebDAVUsername: "user", WebDAVPassword: "secret"})
+	response, err := client.DoDownloadRequest(context.Background(), client.HTTPClient, http.MethodGet, "/video.mkv", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK || attempts.Load() != 2 {
+		t.Fatalf("status=%d attempts=%d", response.StatusCode, attempts.Load())
+	}
+}
 
 func TestListDirectoryContextCancelsRequest(t *testing.T) {
 	started := make(chan struct{})

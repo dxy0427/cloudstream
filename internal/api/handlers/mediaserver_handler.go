@@ -70,6 +70,46 @@ func sanitizeMediaServer(server models.MediaServer) gin.H {
 	}
 }
 
+type revealMediaServerSecretRequest struct {
+	Field      string `json:"field" binding:"required"`
+	ServerType string `json:"serverType" binding:"required"`
+	ServerAddr string `json:"serverAddr" binding:"required"`
+	UpdatedAt  string `json:"updatedAt" binding:"required"`
+}
+
+func RevealMediaServerSecretHandler(c *gin.Context) {
+	serverID, ok := parseMediaServerID(c)
+	if !ok {
+		return
+	}
+	var req revealMediaServerSecretRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.Field != "api_key" {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "凭据类型无效"})
+		return
+	}
+	var server models.MediaServer
+	if err := database.DB.First(&server, serverID).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "媒体服务器未找到"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取媒体服务器凭据失败"})
+		}
+		return
+	}
+	if !validateSecretRevealTimestamp(c, req.UpdatedAt, server.UpdatedAt, "媒体服务器配置已发生变化，请刷新后重试") {
+		return
+	}
+	if req.ServerType != server.ServerType || normalizeMediaServerAddress(req.ServerAddr) != normalizeMediaServerAddress(server.ServerAddr) {
+		c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "媒体服务器配置已发生变化，请刷新后重试"})
+		return
+	}
+	respondSecretValue(c, req.Field, server.APIKey, "当前媒体服务器未保存 API Key")
+}
+
+func normalizeMediaServerAddress(value string) string {
+	return strings.TrimRight(strings.TrimSpace(value), "/")
+}
+
 func validateMediaServer(server *models.MediaServer) (bool, string) {
 	if server.Name == "" {
 		return false, "服务器名称不能为空"
@@ -144,7 +184,7 @@ func CreateMediaServerHandler(c *gin.Context) {
 		Enabled:          boolOrDefault(req.Enabled, true),
 		Port:             req.Port,
 	}
-	server.ServerAddr = strings.TrimSpace(server.ServerAddr)
+	server.ServerAddr = normalizeMediaServerAddress(server.ServerAddr)
 	server.APIKey = strings.TrimSpace(server.APIKey)
 
 	if ok, msg := validateMediaServer(&server); !ok {
@@ -232,7 +272,8 @@ func UpdateMediaServerHandler(c *gin.Context) {
 		return
 	}
 	originalServerType := server.ServerType
-	originalServerAddr := server.ServerAddr
+	originalServerAddr := normalizeMediaServerAddress(server.ServerAddr)
+	server.ServerAddr = originalServerAddr
 
 	var req mediaServerUpdateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -247,7 +288,7 @@ func UpdateMediaServerHandler(c *gin.Context) {
 		server.ServerType = *req.ServerType
 	}
 	if req.ServerAddr != nil {
-		server.ServerAddr = strings.TrimSpace(*req.ServerAddr)
+		server.ServerAddr = normalizeMediaServerAddress(*req.ServerAddr)
 	}
 	apiKeySubmitted := req.APIKey != nil && strings.TrimSpace(*req.APIKey) != ""
 	if apiKeySubmitted {
@@ -333,6 +374,11 @@ func UpdateMediaServerHandler(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "媒体服务器未找到"})
 		return
 	}
+	if err := database.DB.First(&server, serverID).Error; err != nil {
+		log.Error().Err(err).Uint("serverID", serverID).Msg("重新读取媒体服务器失败")
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "更新媒体服务器失败"})
+		return
+	}
 	server.Port = mediaserver.ProxyPort
 
 	if err := mediaserver.GetManager().ReloadServer(server.ID); err != nil {
@@ -376,7 +422,7 @@ func TestMediaServerConnectionHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "参数错误"})
 		return
 	}
-	server.ServerAddr = strings.TrimSpace(server.ServerAddr)
+	server.ServerAddr = normalizeMediaServerAddress(server.ServerAddr)
 	server.APIKey = strings.TrimSpace(server.APIKey)
 	if server.ID != 0 && server.APIKey == "" {
 		if uint64(server.ID) > uint64(^uint32(0)) {
@@ -393,7 +439,7 @@ func TestMediaServerConnectionHandler(c *gin.Context) {
 			c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "媒体服务器未找到"})
 			return
 		}
-		if server.ServerType != stored.ServerType || server.ServerAddr != stored.ServerAddr {
+		if server.ServerType != stored.ServerType || normalizeMediaServerAddress(server.ServerAddr) != normalizeMediaServerAddress(stored.ServerAddr) {
 			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "服务器地址或类型变化时必须重新提交 API Key"})
 			return
 		}

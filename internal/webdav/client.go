@@ -83,11 +83,13 @@ func NewClient(account models.Account) *Client {
 	}
 	base = strings.TrimRight(base, "/")
 
+	username := strings.TrimSpace(account.WebDAVUsername)
+	password := strings.TrimSpace(account.WebDAVPassword)
 	c := &Client{
 		AccountID:           account.ID,
 		BaseURL:             base,
-		Username:            strings.TrimSpace(account.WebDAVUsername),
-		Password:            strings.TrimSpace(account.WebDAVPassword),
+		Username:            username,
+		Password:            password,
 		CacheTTL:            account.CacheTTL,
 		CustomCachePolicies: account.CustomCachePolicies,
 		HTTPClient:          &http.Client{Transport: sharedTransport},
@@ -100,6 +102,57 @@ func NewClient(account models.Account) *Client {
 	c.client.SetTransport(sharedTransport)
 	c.client.SetTimeout(30 * time.Second)
 	return c
+}
+
+func (c *Client) DoDownloadRequest(ctx context.Context, httpClient *http.Client, method, filePath string, headers http.Header) (*http.Response, error) {
+	if ctx == nil {
+		return nil, fmt.Errorf("WebDAV 请求上下文无效")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	fileURL, err := c.buildFileURL(filePath)
+	if err != nil {
+		return nil, err
+	}
+	if httpClient == nil {
+		httpClient = c.HTTPClient
+	}
+	if httpClient == nil {
+		httpClient = http.DefaultClient
+	}
+	authorizer := gowebdav.NewAutoAuth(c.Username, c.Password)
+	authenticator, _ := authorizer.NewAuthenticator(nil)
+	defer authenticator.Close()
+
+	for attempt := 0; attempt < 4; attempt++ {
+		request, err := http.NewRequestWithContext(ctx, method, fileURL, nil)
+		if err != nil {
+			return nil, err
+		}
+		request.Header = make(http.Header)
+		for key, values := range headers {
+			request.Header[key] = append([]string(nil), values...)
+		}
+		authPath := request.URL.RequestURI()
+		if err := authenticator.Authorize(httpClient, request, authPath); err != nil {
+			return nil, err
+		}
+		response, err := httpClient.Do(request)
+		if err != nil {
+			return nil, err
+		}
+		redo, verifyErr := authenticator.Verify(httpClient, response, authPath)
+		if verifyErr != nil {
+			response.Body.Close()
+			return nil, verifyErr
+		}
+		if !redo {
+			return response, nil
+		}
+		response.Body.Close()
+	}
+	return nil, fmt.Errorf("WebDAV 认证重试次数过多")
 }
 
 // ListDirectory 列出目录内容，使用 PROPFIND

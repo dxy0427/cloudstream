@@ -104,6 +104,7 @@ func InitRouter() *gin.Engine {
 			{
 				accounts.GET("", handlers.ListAccountsHandler)
 				accounts.POST("", handlers.CreateAccountHandler)
+				accounts.POST("/:id/secrets/reveal", handlers.RevealAccountSecretHandler)
 				accounts.PUT("/:id", handlers.UpdateAccountHandler)
 				accounts.DELETE("/:id", handlers.DeleteAccountHandler)
 			}
@@ -113,6 +114,7 @@ func InitRouter() *gin.Engine {
 				notifications.GET("", handlers.ListNotificationsHandler)
 				notifications.POST("", handlers.CreateNotificationHandler)
 				notifications.POST("/test", handlers.TestNotificationHandler)
+				notifications.POST("/:id/secrets/reveal", handlers.RevealNotificationSecretHandler)
 				notifications.PUT("/:id", handlers.UpdateNotificationHandler)
 				notifications.DELETE("/:id", handlers.DeleteNotificationHandler)
 			}
@@ -137,6 +139,7 @@ func InitRouter() *gin.Engine {
 			{
 				mediaservers.GET("", handlers.ListMediaServersHandler)
 				mediaservers.POST("", handlers.CreateMediaServerHandler)
+				mediaservers.POST("/:id/secrets/reveal", handlers.RevealMediaServerSecretHandler)
 				mediaservers.PUT("/:id", handlers.UpdateMediaServerHandler)
 				mediaservers.DELETE("/:id", handlers.DeleteMediaServerHandler)
 				mediaservers.POST("/test", handlers.TestMediaServerConnectionHandler)

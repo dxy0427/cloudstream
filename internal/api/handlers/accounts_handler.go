@@ -86,16 +86,116 @@ func ListAccountsHandler(c *gin.Context) {
 }
 
 func sanitizeAccount(account models.Account) gin.H {
+	mode := models.NormalizeWebDAVPlaybackMode(account.WebDAVPlaybackMode)
+	if account.Type != models.AccountTypeWebDAV {
+		mode = models.WebDAVPlaybackModeProxy
+	}
 	return gin.H{
 		"ID": account.ID, "CreatedAt": account.CreatedAt, "UpdatedAt": account.UpdatedAt,
 		"Name": account.Name, "Type": account.Type, "ClientID": account.ClientID,
 		"OpenListURL": account.OpenListURL, "OpenListAuthMode": normalizeOpenListAuthMode(&account), "OpenListUsername": account.OpenListUsername,
-		"WebDAVURL": account.WebDAVURL, "WebDAVUsername": account.WebDAVUsername, "WebDAVDirectLink": account.WebDAVDirectLink,
+		"WebDAVURL": account.WebDAVURL, "WebDAVUsername": account.WebDAVUsername,
+		"WebDAVPlaybackMode": mode, "WebDAVDirectLink": models.WebDAVPlaybackModeUsesUpstreamRedirect(mode),
 		"StrmBaseURL": account.StrmBaseURL, "CacheTTL": account.CacheTTL,
 		"CustomCachePolicies": account.CustomCachePolicies,
 		"HasClientSecret":     account.ClientSecret != "", "HasOpenListToken": account.OpenListToken != "",
 		"HasOpenListPassword": account.OpenListPassword != "", "HasWebDAVPassword": account.WebDAVPassword != "",
 	}
+}
+
+type revealAccountSecretRequest struct {
+	Field            string  `json:"field" binding:"required"`
+	UpdatedAt        string  `json:"updatedAt" binding:"required"`
+	AccountType      string  `json:"accountType" binding:"required"`
+	ClientID         *string `json:"clientId"`
+	OpenListAuthMode *string `json:"openListAuthMode"`
+	OpenListURL      *string `json:"openListUrl"`
+	OpenListUsername *string `json:"openListUsername"`
+	WebDAVURL        *string `json:"webdavUrl"`
+	WebDAVUsername   *string `json:"webdavUsername"`
+}
+
+func RevealAccountSecretHandler(c *gin.Context) {
+	idValue, err := strconv.ParseUint(c.Param("id"), 10, 32)
+	if err != nil || idValue == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "无效的账户ID"})
+		return
+	}
+	var req revealAccountSecretRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "凭据类型无效"})
+		return
+	}
+
+	var account models.Account
+	if err := database.DB.First(&account, uint(idValue)).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "账户未找到"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取账户凭据失败"})
+		}
+		return
+	}
+	normalizeAccountType(&account)
+	if !validateSecretRevealTimestamp(c, req.UpdatedAt, account.UpdatedAt, "账户配置已发生变化，请刷新后重试") {
+		return
+	}
+	if req.AccountType != account.Type {
+		c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "账户配置已发生变化，请刷新后重试"})
+		return
+	}
+
+	var value string
+	switch req.Field {
+	case "client_secret":
+		if req.ClientID == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "缺少 ClientID 绑定"})
+			return
+		}
+		if account.Type != models.AccountType123Pan || *req.ClientID != account.ClientID {
+			c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "账户配置已发生变化，请刷新后重试"})
+			return
+		}
+		value = account.ClientSecret
+	case "openlist_password":
+		if req.OpenListAuthMode == nil || req.OpenListURL == nil || req.OpenListUsername == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "缺少 OpenList 凭据绑定"})
+			return
+		}
+		if account.Type != models.AccountTypeOpenList || normalizeOpenListAuthMode(&account) != "password" ||
+			*req.OpenListAuthMode != "password" || !sameAccountURL(*req.OpenListURL, account.OpenListURL) ||
+			strings.TrimSpace(*req.OpenListUsername) != strings.TrimSpace(account.OpenListUsername) {
+			c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "账户配置已发生变化，请刷新后重试"})
+			return
+		}
+		value = account.OpenListPassword
+	case "openlist_token":
+		if req.OpenListAuthMode == nil || req.OpenListURL == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "缺少 OpenList 凭据绑定"})
+			return
+		}
+		if account.Type != models.AccountTypeOpenList || normalizeOpenListAuthMode(&account) != "token" ||
+			*req.OpenListAuthMode != "token" || !sameAccountURL(*req.OpenListURL, account.OpenListURL) {
+			c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "账户配置已发生变化，请刷新后重试"})
+			return
+		}
+		value = account.OpenListToken
+	case "webdav_password":
+		if req.WebDAVURL == nil || req.WebDAVUsername == nil {
+			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "缺少 WebDAV 凭据绑定"})
+			return
+		}
+		if account.Type != models.AccountTypeWebDAV || !sameAccountURL(*req.WebDAVURL, account.WebDAVURL) ||
+			strings.TrimSpace(*req.WebDAVUsername) != strings.TrimSpace(account.WebDAVUsername) {
+			c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "账户配置已发生变化，请刷新后重试"})
+			return
+		}
+		value = account.WebDAVPassword
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "不支持的凭据类型"})
+		return
+	}
+	respondSecretValue(c, req.Field, value, "当前账户未保存该凭据")
 }
 
 func normalizeAccountType(a *models.Account) {
@@ -137,14 +237,6 @@ func validateAccount(a *models.Account) (ok bool, msg string) {
 		if a.Name == "" || a.WebDAVURL == "" {
 			return false, "WebDAV 账户名称和地址不能为空"
 		}
-		if a.WebDAVDirectLink {
-			if strings.TrimSpace(a.WebDAVUsername) == "" || strings.TrimSpace(a.WebDAVPassword) == "" {
-				return false, "OpenList 302 直链模式需要 WebDAV 用户名和密码"
-			}
-			if _, err := openListAccountFromWebDAV(*a); err != nil {
-				return false, "OpenList 302 直链配置无效: " + err.Error()
-			}
-		}
 	default:
 		return false, "不支持的云账户类型"
 	}
@@ -153,6 +245,7 @@ func validateAccount(a *models.Account) (ok bool, msg string) {
 
 func normalizeAccountCredentials(a *models.Account) {
 	normalizeAccountType(a)
+	a.WebDAVPlaybackMode = models.NormalizeWebDAVPlaybackMode(a.WebDAVPlaybackMode)
 	switch a.Type {
 	case models.AccountType123Pan:
 		a.OpenListURL = ""
@@ -163,6 +256,7 @@ func normalizeAccountCredentials(a *models.Account) {
 		a.WebDAVURL = ""
 		a.WebDAVUsername = ""
 		a.WebDAVPassword = ""
+		a.WebDAVPlaybackMode = models.WebDAVPlaybackModeProxy
 		a.WebDAVDirectLink = false
 	case models.AccountTypeOpenList:
 		a.ClientID = ""
@@ -170,6 +264,7 @@ func normalizeAccountCredentials(a *models.Account) {
 		a.WebDAVURL = ""
 		a.WebDAVUsername = ""
 		a.WebDAVPassword = ""
+		a.WebDAVPlaybackMode = models.WebDAVPlaybackModeProxy
 		a.WebDAVDirectLink = false
 		normalizeInactiveOpenListCredentials(a)
 	case models.AccountTypeWebDAV:
@@ -180,7 +275,37 @@ func normalizeAccountCredentials(a *models.Account) {
 		a.OpenListToken = ""
 		a.OpenListUsername = ""
 		a.OpenListPassword = ""
+		a.WebDAVDirectLink = models.WebDAVPlaybackModeUsesUpstreamRedirect(a.WebDAVPlaybackMode)
 	}
+}
+
+type accountCreateRequest struct {
+	models.Account
+	WebDAVPlaybackMode *string `json:"WebDAVPlaybackMode"`
+	WebDAVDirectLink   *bool   `json:"WebDAVDirectLink"`
+}
+
+func applyWebDAVPlaybackMode(account *models.Account, mode *string, directLink *bool, fallback string) (bool, string) {
+	resolved := models.NormalizeWebDAVPlaybackMode(fallback)
+	if mode != nil {
+		if !models.IsValidWebDAVPlaybackMode(*mode) {
+			return false, "WebDAV 播放模式无效"
+		}
+		resolved = *mode
+	}
+	if directLink != nil {
+		legacyMode := models.WebDAVPlaybackModeProxy
+		if *directLink {
+			legacyMode = models.WebDAVPlaybackModeUpstreamRedirect
+		}
+		if mode != nil && resolved != legacyMode {
+			return false, "WebDAV 播放模式字段冲突"
+		}
+		resolved = legacyMode
+	}
+	account.WebDAVPlaybackMode = resolved
+	account.WebDAVDirectLink = models.WebDAVPlaybackModeUsesUpstreamRedirect(resolved)
+	return true, ""
 }
 
 func accountNameExists(tx *gorm.DB, name string, excludeID uint) (bool, error) {
@@ -196,9 +321,14 @@ func accountNameExists(tx *gorm.DB, name string, excludeID uint) (bool, error) {
 }
 
 func CreateAccountHandler(c *gin.Context) {
-	var account models.Account
-	if err := c.ShouldBindJSON(&account); err != nil {
+	var req accountCreateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "账户参数错误"})
+		return
+	}
+	account := req.Account
+	if ok, msg := applyWebDAVPlaybackMode(&account, req.WebDAVPlaybackMode, req.WebDAVDirectLink, models.WebDAVPlaybackModeProxy); !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": msg})
 		return
 	}
 
@@ -232,7 +362,7 @@ func CreateAccountHandler(c *gin.Context) {
 				return newAPIMutationError(http.StatusNotFound, "账户未找到")
 			}
 		}
-		return nil
+		return tx.First(&account, account.ID).Error
 	}); err != nil {
 		respondMutationError(c, err, "创建账户失败", "账户名称已存在")
 		return
@@ -254,6 +384,7 @@ type accountUpdateRequest struct {
 	WebDAVURL           *string `json:"WebDAVURL"`
 	WebDAVUsername      *string `json:"WebDAVUsername"`
 	WebDAVPassword      *string `json:"WebDAVPassword"`
+	WebDAVPlaybackMode  *string `json:"WebDAVPlaybackMode"`
 	WebDAVDirectLink    *bool   `json:"WebDAVDirectLink"`
 	ClearWebDAVPassword bool    `json:"ClearWebDAVPassword"`
 	StrmBaseURL         *string `json:"StrmBaseURL"`
@@ -308,6 +439,7 @@ func UpdateAccountHandler(c *gin.Context) {
 			account.WebDAVURL = ""
 			account.WebDAVUsername = ""
 			account.WebDAVPassword = ""
+			account.WebDAVPlaybackMode = models.WebDAVPlaybackModeProxy
 			account.WebDAVDirectLink = false
 
 			var taskCount int64
@@ -340,8 +472,8 @@ func UpdateAccountHandler(c *gin.Context) {
 		if req.WebDAVUsername != nil {
 			account.WebDAVUsername = *req.WebDAVUsername
 		}
-		if req.WebDAVDirectLink != nil {
-			account.WebDAVDirectLink = *req.WebDAVDirectLink
+		if ok, msg := applyWebDAVPlaybackMode(&account, req.WebDAVPlaybackMode, req.WebDAVDirectLink, stored.WebDAVPlaybackMode); !ok {
+			return newAPIMutationError(http.StatusBadRequest, msg)
 		}
 		if req.StrmBaseURL != nil {
 			account.StrmBaseURL = *req.StrmBaseURL
@@ -415,6 +547,7 @@ func UpdateAccountHandler(c *gin.Context) {
 			"web_dav_url":           account.WebDAVURL,
 			"web_dav_username":      account.WebDAVUsername,
 			"web_dav_password":      account.WebDAVPassword,
+			"web_dav_playback_mode": account.WebDAVPlaybackMode,
 			"web_dav_direct_link":   account.WebDAVDirectLink,
 			"strm_base_url":         account.StrmBaseURL,
 			"cache_ttl":             account.CacheTTL,
@@ -432,7 +565,6 @@ func UpdateAccountHandler(c *gin.Context) {
 		respondMutationError(c, err, "更新账户失败", "账户名称已存在")
 		return
 	}
-	InvalidateStreamClient(account.ID)
 	openlist.InvalidateAccountCache(account.ID)
 	pan123.InvalidateAccountCache(account.ID)
 	webdav.InvalidateAccountCache(account.ID)
@@ -504,7 +636,6 @@ func DeleteAccountHandler(c *gin.Context) {
 		respondMutationError(c, err, "删除账户失败", "账户名称已存在")
 		return
 	}
-	InvalidateStreamClient(accountID)
 	openlist.InvalidateAccountCache(accountID)
 	pan123.InvalidateAccountCache(accountID)
 	webdav.InvalidateAccountCache(accountID)

@@ -178,6 +178,31 @@ func TestNotificationRejectsStaleVersion(t *testing.T) {
 	}
 }
 
+func TestRevealNotificationSecretIsScopedVersionedAndNoStore(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	user, request := openNotificationTestDB(t)
+	notification := models.Notification{UserID: user.ID, Name: "secret-webhook", Type: models.NotifyTypeWebhook, WebhookURL: "https://hooks.example/saved-secret", Version: 2}
+	if err := databaseNotificationDB().Create(&notification).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	revealed := request(http.MethodPost, "/notifications/1", map[string]any{"field": "webhook_url", "Version": 2}, RevealNotificationSecretHandler)
+	if revealed.Code != http.StatusOK || !strings.Contains(revealed.Body.String(), "saved-secret") {
+		t.Fatalf("status=%d body=%s", revealed.Code, revealed.Body.String())
+	}
+	if !strings.Contains(revealed.Header().Get("Cache-Control"), "no-store") {
+		t.Fatalf("Cache-Control=%q", revealed.Header().Get("Cache-Control"))
+	}
+	stale := request(http.MethodPost, "/notifications/1", map[string]any{"field": "webhook_url", "Version": 1}, RevealNotificationSecretHandler)
+	if stale.Code != http.StatusConflict {
+		t.Fatalf("stale status=%d body=%s", stale.Code, stale.Body.String())
+	}
+	wrongField := request(http.MethodPost, "/notifications/1", map[string]any{"field": "telegram_token", "Version": 2}, RevealNotificationSecretHandler)
+	if wrongField.Code != http.StatusBadRequest {
+		t.Fatalf("wrong field status=%d body=%s", wrongField.Code, wrongField.Body.String())
+	}
+}
+
 func databaseNotificationDB() *gorm.DB {
 	return database.DB
 }

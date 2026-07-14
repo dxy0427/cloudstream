@@ -34,6 +34,60 @@ type notificationMutationRequest struct {
 	Version          *int    `json:"Version"`
 }
 
+type revealNotificationSecretRequest struct {
+	Field   string `json:"field" binding:"required"`
+	Version int    `json:"Version" binding:"required"`
+}
+
+func RevealNotificationSecretHandler(c *gin.Context) {
+	notificationID, ok := parseNotificationID(c)
+	if !ok {
+		return
+	}
+	var req revealNotificationSecretRequest
+	if err := c.ShouldBindJSON(&req); err != nil || req.Version < 1 {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "凭据请求无效"})
+		return
+	}
+	user, ok := currentUser(c)
+	if !ok {
+		return
+	}
+	var notification models.Notification
+	if err := database.DB.Where("id = ? AND user_id = ?", notificationID, user.ID).First(&notification).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "通知目标未找到"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取通知凭据失败"})
+		}
+		return
+	}
+	if notification.Version != req.Version {
+		c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "通知配置已发生变化，请刷新后重试"})
+		return
+	}
+
+	var value string
+	switch req.Field {
+	case "webhook_url":
+		if notification.Type != models.NotifyTypeWebhook {
+			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "当前通知目标不使用 Webhook URL"})
+			return
+		}
+		value = notification.WebhookURL
+	case "telegram_token":
+		if notification.Type != models.NotifyTypeTelegram {
+			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "当前通知目标不使用 Telegram Token"})
+			return
+		}
+		value = notification.TelegramToken
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "不支持的凭据类型"})
+		return
+	}
+	respondSecretValue(c, req.Field, value, "当前通知目标未保存该凭据")
+}
+
 func currentUser(c *gin.Context) (models.User, bool) {
 	username, _ := c.Get("username")
 	var user models.User

@@ -41,7 +41,7 @@
  </div>
 
  <n-modal v-model:show="showModal" preset="card" title="媒体服务器配置" style="width: 700px; max-width: 95%" :closable="!savePending && !testPending" :mask-closable="!savePending && !testPending" :close-on-esc="!savePending && !testPending">
-  <n-form ref="formRef" :model="form" label-placement="top" label-width="auto" :disabled="savePending || testPending">
+  <n-form ref="formRef" :model="form" label-placement="top" label-width="auto" :disabled="savePending || testPending || apiKeyPending">
   <n-form-item label="名称" path="Name">
    <n-input v-model:value="form.Name" placeholder="服务器备注名称" />
   </n-form-item>
@@ -55,7 +55,9 @@
   </n-form-item>
 
   <n-form-item label="API Key" path="APIKey">
-    <n-input type="password" show-password-on="click" v-model:value="form.APIKey" :placeholder="form.ID && form.HasAPIKey ? '已配置，留空不修改' : 'Emby/Jellyfin API Key'" />
+     <n-input :type="apiKeyVisibility.api_key ? 'text' : 'password'" autocomplete="off" v-model:value="form.APIKey" :placeholder="form.ID && form.HasAPIKey ? '点击眼睛查看，或直接输入新值' : 'Emby/Jellyfin API Key'" @update:value="value => markApiKeyEdited('api_key', value)">
+      <template #suffix><n-button text :loading="apiKeyPending" @mousedown.prevent @click.stop="toggleApiKeyVisibility('api_key')"><template #icon><n-icon><EyeInvisibleOutlined v-if="apiKeyVisibility.api_key" /><EyeOutlined v-else /></n-icon></template></n-button></template>
+     </n-input>
   </n-form-item>
 
   <n-divider />
@@ -138,8 +140,8 @@
   <n-divider />
 
   <n-space justify="end">
-    <n-button :loading="testPending" :disabled="testPending || savePending" @click="testConnection">测试连接</n-button>
-    <n-button type="primary" :loading="savePending" :disabled="savePending || testPending" @click="submit">保存</n-button>
+    <n-button :loading="testPending" :disabled="testPending || savePending || apiKeyPending" @click="testConnection">测试连接</n-button>
+    <n-button type="primary" :loading="savePending" :disabled="savePending || testPending || apiKeyPending" @click="submit">保存</n-button>
   </n-space>
   </n-form>
  </n-modal>
@@ -148,8 +150,10 @@
 
 <script setup>
 import { ref, reactive, onMounted, h, watch } from 'vue'
-import { NButton, NSpace, NTag, useMessage, useDialog } from 'naive-ui'
+import { NButton, NIcon, NSpace, NTag, useMessage, useDialog } from 'naive-ui'
 import api from '../api'
+import { EyeInvisibleOutlined, EyeOutlined } from '@vicons/antd'
+import { useSecretFields } from '../composables/useSecretFields'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -233,10 +237,54 @@ const fetchData = async () => {
  }
 }
 
-const normalizeAddress = (value) => (value || '').trim()
+const normalizeAddress = (value) => (value || '').trim().replace(/\/+$/, '')
+
+const apiKeyContextKey = () => JSON.stringify({
+ ID: form.ID,
+ UpdatedAt: form.UpdatedAt,
+ ServerType: form.ServerType,
+ ServerAddr: normalizeAddress(form.ServerAddr)
+})
+
+const apiKeyBindingMatches = () => Boolean(
+ form.ID &&
+ originalBinding &&
+ form.ID === originalBinding.ID &&
+ form.UpdatedAt === originalBinding.UpdatedAt &&
+ form.ServerType === originalBinding.ServerType &&
+ normalizeAddress(form.ServerAddr) === originalBinding.ServerAddr
+)
+
+const revealApiKey = async () => {
+ if (!apiKeyBindingMatches()) {
+  message.warning('服务器地址或类型已变更，请直接输入新的 API Key')
+  throw new Error('secret binding changed')
+ }
+ const res = await api.post(`/mediaservers/${form.ID}/secrets/reveal`, {
+  field: 'api_key', serverType: form.ServerType, serverAddr: form.ServerAddr, updatedAt: form.UpdatedAt
+ })
+ return res.data?.value ?? ''
+}
+
+const {
+ visible: apiKeyVisibility,
+ pending: apiKeyPending,
+ toggle: toggleApiKeyVisibility,
+ markEdited: markApiKeyEdited,
+ reset: resetApiKey,
+ valueForSubmit: apiKeyValueForSubmit,
+ hasExplicitValue: hasExplicitApiKey
+} = useSecretFields({
+ fields: ['api_key'],
+ getValue: () => form.APIKey,
+ setValue: (_field, value) => { form.APIKey = value },
+ hasStoredValue: () => Boolean(form.ID && form.HasAPIKey),
+ reveal: revealApiKey,
+ contextKey: apiKeyContextKey
+})
 
 const clearApiKey = () => {
- form.APIKey = ''
+ resetApiKey()
  originalBinding = null
 }
 
@@ -251,11 +299,14 @@ const showResponseWarning = (res) => {
 }
 
 const openModal = (row) => {
+ resetApiKey()
  if (row) {
   Object.assign(form, row)
   originalBinding = {
    ServerType: row.ServerType,
-   ServerAddr: normalizeAddress(row.ServerAddr)
+   ServerAddr: normalizeAddress(row.ServerAddr),
+   ID: row.ID,
+   UpdatedAt: row.UpdatedAt
   }
  } else {
   Object.assign(form, {
@@ -288,12 +339,13 @@ const openModal = (row) => {
 
 const preparePayload = () => ({
  ...form,
+ APIKey: apiKeyValueForSubmit('api_key'),
  ClientList: JSON.stringify(clientListArray.value),
  PathMappings: JSON.stringify(pathMappingsArray.value)
 })
 
 const validateApiKeyBinding = () => {
- if (!form.ID || form.APIKey.trim() || !originalBinding) return true
+ if (!form.ID || hasExplicitApiKey('api_key') || !originalBinding) return true
  const typeChanged = form.ServerType !== originalBinding.ServerType
  const addressChanged = normalizeAddress(form.ServerAddr) !== originalBinding.ServerAddr
  if (typeChanged || addressChanged) {
@@ -304,7 +356,7 @@ const validateApiKeyBinding = () => {
 }
 
 const testConnection = async () => {
- if (testPending.value || savePending.value || !validateApiKeyBinding()) return
+ if (testPending.value || savePending.value || apiKeyPending.value || !validateApiKeyBinding()) return
  testPending.value = true
  try { 
    const res = await api.post('/mediaservers/test', preparePayload())
@@ -317,7 +369,7 @@ const testConnection = async () => {
 }
 
 const submit = async () => {
- if (savePending.value || testPending.value || !validateApiKeyBinding()) return
+ if (savePending.value || testPending.value || apiKeyPending.value || !validateApiKeyBinding()) return
  savePending.value = true
  try {
   const payload = preparePayload()

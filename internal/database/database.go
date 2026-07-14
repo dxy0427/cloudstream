@@ -52,6 +52,10 @@ func ConnectDatabase(dbPath string) error {
 	if _, err := sqlDB.Exec("PRAGMA busy_timeout=5000;"); err != nil {
 		log.Warn().Err(err).Msg("设置 busy_timeout 失败")
 	}
+	playbackModeAdded := DB.Migrator().HasTable("accounts") && !DB.Migrator().HasColumn("accounts", "web_dav_playback_mode")
+	if err := migrateWebDAVPlaybackMode(); err != nil {
+		return fmt.Errorf("迁移 WebDAV 播放模式失败: %w", err)
+	}
 
 	err = DB.AutoMigrate(
 		&models.User{},
@@ -63,6 +67,13 @@ func ConnectDatabase(dbPath string) error {
 	)
 	if err != nil {
 		return fmt.Errorf("数据库迁移失败: %w", err)
+	}
+	// SQLite 的 AutoMigrate 可能通过重建表来补齐 NOT NULL/default 约束，
+	// 因而丢失刚添加的 nullable 列值。仅当本次新增该列时重复旧字段回填。
+	if playbackModeAdded {
+		if err := backfillNewWebDAVPlaybackMode(DB); err != nil {
+			return fmt.Errorf("回填 WebDAV 播放模式失败: %w", err)
+		}
 	}
 
 	var userCount int64
@@ -107,6 +118,40 @@ func ConnectDatabase(dbPath string) error {
 
 	log.Info().Msg("数据库连接和迁移成功 (WAL模式已启用)")
 	return nil
+}
+
+func migrateWebDAVPlaybackMode() error {
+	if !DB.Migrator().HasTable("accounts") {
+		return nil
+	}
+	return DB.Transaction(func(tx *gorm.DB) error {
+		hasPlaybackMode := tx.Migrator().HasColumn("accounts", "web_dav_playback_mode")
+		if !hasPlaybackMode {
+			if err := tx.Exec("ALTER TABLE accounts ADD COLUMN web_dav_playback_mode text").Error; err != nil {
+				return err
+			}
+			return backfillNewWebDAVPlaybackMode(tx)
+		}
+
+		return tx.Exec(`UPDATE accounts SET web_dav_playback_mode = ?
+			WHERE web_dav_playback_mode IS NULL
+				OR web_dav_playback_mode NOT IN (?, ?)`,
+			models.WebDAVPlaybackModeProxy,
+			models.WebDAVPlaybackModeProxy,
+			models.WebDAVPlaybackModeUpstreamRedirect,
+		).Error
+	})
+}
+
+func backfillNewWebDAVPlaybackMode(db *gorm.DB) error {
+	if db.Migrator().HasColumn("accounts", "web_dav_direct_link") {
+		return db.Exec(`UPDATE accounts
+			SET web_dav_playback_mode = CASE
+				WHEN web_dav_direct_link = 1 THEN ?
+				ELSE ?
+			END`, models.WebDAVPlaybackModeUpstreamRedirect, models.WebDAVPlaybackModeProxy).Error
+	}
+	return db.Exec("UPDATE accounts SET web_dav_playback_mode = ?", models.WebDAVPlaybackModeProxy).Error
 }
 
 func migrateLegacyNotifications() error {

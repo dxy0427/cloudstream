@@ -9,9 +9,27 @@ const (
 	AccountTypeOpenList = "openlist"
 	AccountTypeWebDAV   = "webdav"
 
+	WebDAVPlaybackModeProxy            = "proxy"
+	WebDAVPlaybackModeUpstreamRedirect = "upstream-redirect"
+
 	NotifyTypeWebhook  = "webhook"
 	NotifyTypeTelegram = "telegram"
 )
+
+func IsValidWebDAVPlaybackMode(mode string) bool {
+	return mode == WebDAVPlaybackModeProxy || mode == WebDAVPlaybackModeUpstreamRedirect
+}
+
+func NormalizeWebDAVPlaybackMode(mode string) string {
+	if !IsValidWebDAVPlaybackMode(mode) {
+		return WebDAVPlaybackModeProxy
+	}
+	return mode
+}
+
+func WebDAVPlaybackModeUsesUpstreamRedirect(mode string) bool {
+	return NormalizeWebDAVPlaybackMode(mode) == WebDAVPlaybackModeUpstreamRedirect
+}
 
 type User struct {
 	gorm.Model
@@ -70,10 +88,11 @@ type Account struct {
 	OpenListUsername string `json:"OpenListUsername"`
 	OpenListPassword string `json:"OpenListPassword"`
 
-	WebDAVURL        string `json:"WebDAVURL"`
-	WebDAVUsername   string `json:"WebDAVUsername"`
-	WebDAVPassword   string `json:"WebDAVPassword"`
-	WebDAVDirectLink bool   `gorm:"default:false" json:"WebDAVDirectLink"`
+	WebDAVURL          string `json:"WebDAVURL"`
+	WebDAVUsername     string `json:"WebDAVUsername"`
+	WebDAVPassword     string `json:"WebDAVPassword"`
+	WebDAVPlaybackMode string `gorm:"not null;default:'proxy'" json:"WebDAVPlaybackMode"`
+	WebDAVDirectLink   bool   `gorm:"default:false" json:"WebDAVDirectLink"`
 
 	StrmBaseURL         string `json:"StrmBaseURL"`
 	CacheTTL            int    `gorm:"default:30" json:"CacheTTL"`

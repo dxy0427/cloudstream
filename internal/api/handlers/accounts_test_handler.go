@@ -12,16 +12,18 @@ import (
 )
 
 func TestAccountConnectionHandler(c *gin.Context) {
-	var account models.Account
-	if err := c.ShouldBindJSON(&account); err != nil {
+	var req accountCreateRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "账户凭证无效"})
 		return
 	}
+	account := req.Account
 
 	normalizeAccountType(&account)
 	if account.Type == models.AccountTypeOpenList {
 		normalizeOpenListAuthMode(&account)
 	}
+	playbackModeFallback := models.WebDAVPlaybackModeProxy
 	if account.ID != 0 {
 		var stored models.Account
 		if err := database.DB.First(&stored, account.ID).Error; err != nil {
@@ -32,6 +34,11 @@ func TestAccountConnectionHandler(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": msg})
 			return
 		}
+		playbackModeFallback = stored.WebDAVPlaybackMode
+	}
+	if ok, msg := applyWebDAVPlaybackMode(&account, req.WebDAVPlaybackMode, req.WebDAVDirectLink, playbackModeFallback); !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": msg})
+		return
 	}
 
 	normalizeInactiveOpenListCredentials(&account)
@@ -58,16 +65,12 @@ func TestAccountConnectionHandler(c *gin.Context) {
 			c.JSON(http.StatusBadGateway, gin.H{"code": 1, "message": "WebDAV 连接失败"})
 			return
 		}
-		if testAccount.WebDAVDirectLink {
-			openListAccount, err := openListAccountFromWebDAV(testAccount)
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "OpenList 302 直链配置无效"})
-				return
-			}
-			if err := openlist.NewClient(openListAccount).TestConnectionContext(c.Request.Context()); err != nil {
-				c.JSON(http.StatusBadGateway, gin.H{"code": 1, "message": "WebDAV 可连接，但 OpenList 302 接口连接失败"})
-				return
-			}
+		if models.WebDAVPlaybackModeUsesUpstreamRedirect(testAccount.WebDAVPlaybackMode) {
+			c.JSON(http.StatusOK, gin.H{
+				"code": 0, "message": "连接成功！",
+				"warning": "目录连接正常。302 重定向需上游文件请求实际返回 3xx（如 OpenList 的“302 重定向”或“使用代理网址”策略）；若上游返回 200/206，请使用本机代理。",
+			})
+			return
 		}
 	default: // 123 云盘开放平台
 		client := pan123.NewClient(testAccount)
