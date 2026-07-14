@@ -90,7 +90,7 @@ func sanitizeAccount(account models.Account) gin.H {
 		"ID": account.ID, "CreatedAt": account.CreatedAt, "UpdatedAt": account.UpdatedAt,
 		"Name": account.Name, "Type": account.Type, "ClientID": account.ClientID,
 		"OpenListURL": account.OpenListURL, "OpenListAuthMode": normalizeOpenListAuthMode(&account), "OpenListUsername": account.OpenListUsername,
-		"WebDAVURL": account.WebDAVURL, "WebDAVUsername": account.WebDAVUsername,
+		"WebDAVURL": account.WebDAVURL, "WebDAVUsername": account.WebDAVUsername, "WebDAVDirectLink": account.WebDAVDirectLink,
 		"StrmBaseURL": account.StrmBaseURL, "CacheTTL": account.CacheTTL,
 		"CustomCachePolicies": account.CustomCachePolicies,
 		"HasClientSecret":     account.ClientSecret != "", "HasOpenListToken": account.OpenListToken != "",
@@ -137,6 +137,14 @@ func validateAccount(a *models.Account) (ok bool, msg string) {
 		if a.Name == "" || a.WebDAVURL == "" {
 			return false, "WebDAV 账户名称和地址不能为空"
 		}
+		if a.WebDAVDirectLink {
+			if strings.TrimSpace(a.WebDAVUsername) == "" || strings.TrimSpace(a.WebDAVPassword) == "" {
+				return false, "OpenList 302 直链模式需要 WebDAV 用户名和密码"
+			}
+			if _, err := openListAccountFromWebDAV(*a); err != nil {
+				return false, "OpenList 302 直链配置无效: " + err.Error()
+			}
+		}
 	default:
 		return false, "不支持的云账户类型"
 	}
@@ -155,12 +163,14 @@ func normalizeAccountCredentials(a *models.Account) {
 		a.WebDAVURL = ""
 		a.WebDAVUsername = ""
 		a.WebDAVPassword = ""
+		a.WebDAVDirectLink = false
 	case models.AccountTypeOpenList:
 		a.ClientID = ""
 		a.ClientSecret = ""
 		a.WebDAVURL = ""
 		a.WebDAVUsername = ""
 		a.WebDAVPassword = ""
+		a.WebDAVDirectLink = false
 		normalizeInactiveOpenListCredentials(a)
 	case models.AccountTypeWebDAV:
 		a.ClientID = ""
@@ -244,6 +254,7 @@ type accountUpdateRequest struct {
 	WebDAVURL           *string `json:"WebDAVURL"`
 	WebDAVUsername      *string `json:"WebDAVUsername"`
 	WebDAVPassword      *string `json:"WebDAVPassword"`
+	WebDAVDirectLink    *bool   `json:"WebDAVDirectLink"`
 	ClearWebDAVPassword bool    `json:"ClearWebDAVPassword"`
 	StrmBaseURL         *string `json:"StrmBaseURL"`
 	CacheTTL            *int    `json:"CacheTTL"`
@@ -297,6 +308,7 @@ func UpdateAccountHandler(c *gin.Context) {
 			account.WebDAVURL = ""
 			account.WebDAVUsername = ""
 			account.WebDAVPassword = ""
+			account.WebDAVDirectLink = false
 
 			var taskCount int64
 			if err := tx.Model(&models.Task{}).Where("account_id = ?", accountID).Count(&taskCount).Error; err != nil {
@@ -327,6 +339,9 @@ func UpdateAccountHandler(c *gin.Context) {
 		}
 		if req.WebDAVUsername != nil {
 			account.WebDAVUsername = *req.WebDAVUsername
+		}
+		if req.WebDAVDirectLink != nil {
+			account.WebDAVDirectLink = *req.WebDAVDirectLink
 		}
 		if req.StrmBaseURL != nil {
 			account.StrmBaseURL = *req.StrmBaseURL
@@ -400,6 +415,7 @@ func UpdateAccountHandler(c *gin.Context) {
 			"web_dav_url":           account.WebDAVURL,
 			"web_dav_username":      account.WebDAVUsername,
 			"web_dav_password":      account.WebDAVPassword,
+			"web_dav_direct_link":   account.WebDAVDirectLink,
 			"strm_base_url":         account.StrmBaseURL,
 			"cache_ttl":             account.CacheTTL,
 			"custom_cache_policies": account.CustomCachePolicies,

@@ -1,208 +1,325 @@
 <template>
-  <n-space vertical>
-    <n-card title="通知管理">
-      <n-alert v-if="!loaded" type="warning" style="margin-bottom: 16px;">
-        通知设置尚未加载，重新加载成功前不会允许保存。
-        <template #action>
-          <n-button size="small" :loading="pending === 'load'" :disabled="pending !== null" @click="reload">重试</n-button>
-        </template>
-      </n-alert>
-      <n-form label-placement="top" :disabled="pending !== null || !loaded">
-        <n-form-item label="通知类型">
-          <n-radio-group v-model:value="form.notifyType">
-            <n-space>
-              <n-radio value="webhook">Webhook</n-radio>
-              <n-radio value="telegram">Telegram</n-radio>
-            </n-space>
-          </n-radio-group>
-        </n-form-item>
+ <n-space vertical>
+  <n-card>
+   <n-space justify="space-between" align="center">
+    <h3>通知管理</h3>
+    <n-space>
+     <n-button :loading="loading" :disabled="loading || savePending || testPending" @click="fetchData">刷新</n-button>
+     <n-button type="primary" :disabled="savePending || testPending || !loaded" @click="openModal(null)">添加</n-button>
+    </n-space>
+   </n-space>
+  </n-card>
 
-        <template v-if="form.notifyType === 'webhook'">
-          <n-form-item label="Webhook URL">
-             <n-input v-model:value="form.webhookUrl" :disabled="form.clearWebhookUrl || pending !== null" :placeholder="stored.hasWebhookUrl ? '已配置，留空不修改' : '请输入机器人 Webhook 地址'" />
-          </n-form-item>
-        </template>
+  <n-alert v-if="loadAttempted && !loaded" type="warning">通知列表加载失败，请刷新后重试。</n-alert>
 
-        <template v-else>
-          <n-form-item label="Telegram Bot Token">
-             <n-input type="password" show-password-on="click" v-model:value="form.telegramToken" :disabled="form.clearTelegramToken || pending !== null" :placeholder="stored.hasTelegramToken ? '已配置，留空不修改' : '请输入 Bot Token'" />
-          </n-form-item>
-          <n-form-item label="Telegram Chat ID">
-            <n-input v-model:value="form.telegramChatId" :disabled="pending !== null" placeholder="请输入 Chat ID" />
-          </n-form-item>
-        </template>
+  <div class="desktop-view">
+   <n-data-table :columns="columns" :data="data" :loading="loading" :scroll-x="900" />
+  </div>
 
-        <template v-if="stored.hasWebhookUrl || stored.hasTelegramToken">
-          <n-divider>清理已保存凭据</n-divider>
-          <n-space vertical>
-            <n-checkbox v-if="stored.hasWebhookUrl" v-model:checked="form.clearWebhookUrl" :disabled="pending !== null">
-              清除已保存的 Webhook URL
-            </n-checkbox>
-            <n-checkbox v-if="stored.hasTelegramToken" v-model:checked="form.clearTelegramToken" :disabled="pending !== null">
-              清除已保存的 Telegram Bot Token
-            </n-checkbox>
-          </n-space>
-        </template>
-
-        <n-divider>通知开关</n-divider>
-        <n-space vertical>
-          <n-checkbox v-model:checked="form.notifyOnComplete">任务完成通知</n-checkbox>
-          <n-checkbox v-model:checked="form.notifyOnError">任务异常通知</n-checkbox>
-          <n-checkbox v-model:checked="form.notifyOnStop">手动停止通知</n-checkbox>
-          <n-checkbox v-model:checked="form.notifyOnManual">手动运行通知</n-checkbox>
+  <div class="mobile-view">
+   <n-spin :show="loading">
+    <n-list hoverable clickable>
+     <n-list-item v-for="row in data" :key="row.ID">
+      <n-thing :title="row.Name">
+       <template #description>
+        <n-space size="small">
+         <n-tag :type="row.Type === 'webhook' ? 'info' : 'success'" size="small">{{ typeLabels[row.Type] || row.Type }}</n-tag>
+         <n-tag :type="row.Enabled ? 'success' : 'default'" size="small">{{ row.Enabled ? '启用' : '禁用' }}</n-tag>
         </n-space>
-
-        <n-space style="margin-top: 20px;">
-          <n-button type="primary" :loading="pending === 'save'" :disabled="pending !== null || !loaded" @click="save">保存设置</n-button>
-          <n-button :loading="pending === 'test'" :disabled="pending !== null || !loaded" @click="testSend">测试通知</n-button>
+        <div class="event-summary">{{ eventSummary(row) }}</div>
+       </template>
+       <template #footer>
+        <n-space size="small">
+         <n-button size="tiny" ghost :loading="rowAction(row.ID) === 'test'" :disabled="isRowBusy(row.ID)" @click.stop="testSaved(row)">测试</n-button>
+         <n-button size="tiny" ghost :disabled="isRowBusy(row.ID)" @click.stop="openModal(row)">编辑</n-button>
+         <n-button size="tiny" type="error" ghost :loading="rowAction(row.ID) === 'delete'" :disabled="isRowBusy(row.ID)" @click.stop="handleDelete(row)">删除</n-button>
         </n-space>
-      </n-form>
-    </n-card>
-  </n-space>
+       </template>
+      </n-thing>
+     </n-list-item>
+     <n-empty v-if="data.length === 0" description="暂无通知目标" style="margin-top: 20px" />
+    </n-list>
+   </n-spin>
+  </div>
+
+  <n-modal v-model:show="showModal" preset="card" title="通知配置" style="width: 620px; max-width: 95%" :closable="!savePending && !testPending" :mask-closable="!savePending && !testPending" :close-on-esc="!savePending && !testPending">
+   <n-form label-placement="top" :disabled="savePending || testPending">
+    <n-form-item label="名称">
+     <n-input v-model:value="form.Name" maxlength="64" placeholder="例如：运维群通知" />
+    </n-form-item>
+
+    <n-form-item label="通知类型">
+     <n-select v-model:value="form.Type" :options="typeOptions" />
+    </n-form-item>
+
+    <template v-if="form.Type === 'webhook'">
+     <n-form-item label="Webhook URL">
+      <n-input v-model:value="form.WebhookURL" :placeholder="form.ID && originalBinding?.HasWebhookURL && originalBinding.Type === 'webhook' ? '已配置，留空不修改' : 'https://...'" />
+     </n-form-item>
+    </template>
+
+    <template v-else>
+     <n-form-item label="Telegram Bot Token">
+      <n-input v-model:value="form.TelegramToken" type="password" show-password-on="click" :placeholder="form.ID && originalBinding?.HasTelegramToken && originalBinding.Type === 'telegram' ? '已配置，留空不修改' : 'Bot Token'" />
+     </n-form-item>
+     <n-form-item label="Telegram Chat ID">
+      <n-input v-model:value="form.TelegramChatID" placeholder="Chat ID" />
+     </n-form-item>
+    </template>
+
+    <n-form-item label="状态">
+     <n-checkbox v-model:checked="form.Enabled">启用此通知目标</n-checkbox>
+    </n-form-item>
+
+    <n-divider>通知事件</n-divider>
+    <n-space vertical>
+     <n-checkbox v-model:checked="form.NotifyOnComplete">定时任务完成</n-checkbox>
+     <n-checkbox v-model:checked="form.NotifyOnError">任务异常</n-checkbox>
+     <n-checkbox v-model:checked="form.NotifyOnStop">手动停止</n-checkbox>
+     <n-checkbox v-model:checked="form.NotifyOnManual">手动运行完成</n-checkbox>
+    </n-space>
+
+    <n-space justify="end" style="margin-top: 24px">
+     <n-button :loading="testPending" :disabled="savePending || testPending" @click="testDraft">测试通知</n-button>
+     <n-button type="primary" :loading="savePending" :disabled="savePending || testPending" @click="submit">保存</n-button>
+    </n-space>
+   </n-form>
+  </n-modal>
+ </n-space>
 </template>
 
 <script setup>
-import { reactive, ref, onMounted, watch } from 'vue'
-import { useMessage } from 'naive-ui'
+import { h, onMounted, reactive, ref, watch } from 'vue'
+import { NButton, NSpace, NTag, useDialog, useMessage } from 'naive-ui'
 import api from '../api'
 
 const message = useMessage()
-const pending = ref('load')
+const dialog = useDialog()
+const data = ref([])
+const loading = ref(false)
 const loaded = ref(false)
-const form = reactive({
-  notifyType: 'webhook',
-  webhookUrl: '',
-  telegramToken: '',
-  telegramChatId: '',
-  clearWebhookUrl: false,
-  clearTelegramToken: false,
-  notifyOnComplete: true,
-  notifyOnError: true,
-  notifyOnStop: true,
-  notifyOnManual: true,
-})
-const stored = reactive({ hasWebhookUrl: false, hasTelegramToken: false, telegramChatId: '' })
+const loadAttempted = ref(false)
+const showModal = ref(false)
+const savePending = ref(false)
+const testPending = ref(false)
+const rowPending = reactive(new Map())
+const deleteConfirming = reactive(new Set())
+let fetchSeq = 0
+let originalBinding = null
 
-const load = async () => {
-  try {
-    // /username 接口同时返回通知配置字段，业务数据在 res.data 内
-    const res = await api.get('/username')
-    const settings = res.data || {}
-    Object.assign(form, {
-      notifyType: settings.notifyType || 'webhook',
-      webhookUrl: '',
-      telegramToken: '',
-      telegramChatId: settings.telegramChatId || '',
-      clearWebhookUrl: false,
-      clearTelegramToken: false,
-      notifyOnComplete: settings.notifyOnComplete !== false,
-      notifyOnError: settings.notifyOnError !== false,
-      notifyOnStop: settings.notifyOnStop !== false,
-      notifyOnManual: settings.notifyOnManual !== false,
-    })
-    stored.hasWebhookUrl = settings.hasWebhookUrl === true
-    stored.hasTelegramToken = settings.hasTelegramToken === true
-    stored.telegramChatId = settings.telegramChatId || ''
-    loaded.value = true
-  } catch (e) {
-    loaded.value = false
-  }
+const defaultForm = {
+ ID: 0,
+ Version: 0,
+ Name: '',
+ Type: 'webhook',
+ WebhookURL: '',
+ TelegramToken: '',
+ TelegramChatID: '',
+ Enabled: true,
+ NotifyOnComplete: true,
+ NotifyOnError: true,
+ NotifyOnStop: true,
+ NotifyOnManual: true
+}
+const form = reactive({ ...defaultForm })
+
+const typeOptions = [
+ { label: 'Webhook', value: 'webhook' },
+ { label: 'Telegram', value: 'telegram' }
+]
+const typeLabels = { webhook: 'Webhook', telegram: 'Telegram' }
+
+const eventSummary = (row) => {
+ const events = []
+ if (row.NotifyOnComplete) events.push('定时完成')
+ if (row.NotifyOnError) events.push('异常')
+ if (row.NotifyOnStop) events.push('停止')
+ if (row.NotifyOnManual) events.push('手动完成')
+ return events.length ? events.join('、') : '未选择通知事件'
 }
 
-watch(() => form.clearWebhookUrl, (clear) => {
-  if (clear) form.webhookUrl = ''
-})
+const rowAction = (id) => rowPending.get(id) || ''
+const isRowBusy = (id) => !loaded.value || rowPending.has(id) || deleteConfirming.has(id)
 
-watch(() => form.clearTelegramToken, (clear) => {
-  if (clear) form.telegramToken = ''
-})
+const columns = [
+ { title: '名称', key: 'Name', width: 160, ellipsis: { tooltip: true } },
+ { title: '类型', key: 'Type', width: 100, render(row) { return h(NTag, { type: row.Type === 'webhook' ? 'info' : 'success', size: 'small' }, { default: () => typeLabels[row.Type] || row.Type }) } },
+ { title: '状态', key: 'Enabled', width: 80, render(row) { return h(NTag, { type: row.Enabled ? 'success' : 'default', size: 'small' }, { default: () => row.Enabled ? '启用' : '禁用' }) } },
+ { title: '通知事件', key: 'events', minWidth: 220, ellipsis: { tooltip: true }, render: eventSummary },
+ { title: '操作', key: 'actions', fixed: 'right', width: 190, render(row) { return h(NSpace, { size: 'small' }, { default: () => [
+  h(NButton, { size: 'tiny', loading: rowAction(row.ID) === 'test', disabled: isRowBusy(row.ID), onClick: () => testSaved(row) }, { default: () => '测试' }),
+  h(NButton, { size: 'tiny', disabled: isRowBusy(row.ID), onClick: () => openModal(row) }, { default: () => '编辑' }),
+  h(NButton, { size: 'tiny', type: 'error', loading: rowAction(row.ID) === 'delete', disabled: isRowBusy(row.ID), onClick: () => handleDelete(row) }, { default: () => '删除' })
+ ] }) } }
+]
 
-const notificationsEnabled = () => form.notifyOnComplete || form.notifyOnError || form.notifyOnStop || form.notifyOnManual
-
-const validateChannel = (alwaysRequire = false) => {
-  if (!alwaysRequire && !notificationsEnabled()) return true
-  if (form.notifyType === 'webhook') {
-    const hasWebhook = form.webhookUrl.trim() || (stored.hasWebhookUrl && !form.clearWebhookUrl)
-    if (!hasWebhook) {
-      message.warning('启用 Webhook 通知时必须填写或保留已保存的 Webhook URL')
-      return false
-    }
-    return true
+const fetchData = async () => {
+ const requestId = ++fetchSeq
+ loading.value = true
+ try {
+  const res = await api.get('/notifications')
+  if (requestId === fetchSeq) {
+   data.value = res.data || []
+   loaded.value = true
   }
-
-  const hasToken = form.telegramToken.trim() || (stored.hasTelegramToken && !form.clearTelegramToken)
-  if (!hasToken) {
-    message.warning('启用 Telegram 通知时必须填写或保留已保存的 Bot Token')
-    return false
+ } catch (e) {
+  if (requestId === fetchSeq) loaded.value = false
+ } finally {
+  if (requestId === fetchSeq) {
+   loading.value = false
+   loadAttempted.value = true
   }
-  if (!form.telegramChatId.trim()) {
-    message.warning('启用 Telegram 通知时必须填写 Chat ID')
-    return false
+ }
+}
+
+const clearSecrets = () => {
+ form.WebhookURL = ''
+ form.TelegramToken = ''
+ originalBinding = null
+}
+
+watch(showModal, (visible) => {
+ if (!visible) clearSecrets()
+}, { flush: 'sync' })
+
+const openModal = (row) => {
+ if (row) {
+  Object.assign(form, {
+   ...defaultForm,
+   ID: row.ID,
+   Version: row.Version,
+   Name: row.Name,
+   Type: row.Type,
+   TelegramChatID: row.TelegramChatID || '',
+   Enabled: row.Enabled,
+   NotifyOnComplete: row.NotifyOnComplete,
+   NotifyOnError: row.NotifyOnError,
+   NotifyOnStop: row.NotifyOnStop,
+   NotifyOnManual: row.NotifyOnManual
+  })
+  originalBinding = {
+   Type: row.Type,
+   HasWebhookURL: row.HasWebhookURL === true,
+   HasTelegramToken: row.HasTelegramToken === true
+  }
+ } else {
+  Object.assign(form, defaultForm)
+  originalBinding = null
+ }
+ showModal.value = true
+}
+
+const validateForm = () => {
+ if (!form.Name.trim()) {
+  message.warning('请输入通知名称')
+  return false
+ }
+ if (form.Type === 'webhook') {
+  const canReuse = form.ID && originalBinding?.Type === 'webhook' && originalBinding.HasWebhookURL
+  if (!form.WebhookURL.trim() && !canReuse) {
+   message.warning('请输入 Webhook URL')
+   return false
   }
   return true
+ }
+ const canReuseToken = form.ID && originalBinding?.Type === 'telegram' && originalBinding.HasTelegramToken
+ if (!form.TelegramToken.trim() && !canReuseToken) {
+  message.warning('请输入 Telegram Bot Token')
+  return false
+ }
+ if (!form.TelegramChatID.trim()) {
+  message.warning('请输入 Telegram Chat ID')
+  return false
+ }
+ return true
 }
 
 const buildPayload = () => ({
-  notifyType: form.notifyType,
-  webhookUrl: form.webhookUrl.trim(),
-  telegramToken: form.telegramToken.trim(),
-  telegramChatId: form.telegramChatId.trim(),
-  clearWebhookUrl: form.clearWebhookUrl,
-  clearTelegramToken: form.clearTelegramToken,
-  notifyOnComplete: form.notifyOnComplete,
-  notifyOnError: form.notifyOnError,
-  notifyOnStop: form.notifyOnStop,
-  notifyOnManual: form.notifyOnManual
+ ...form,
+ Name: form.Name.trim(),
+ WebhookURL: form.WebhookURL.trim(),
+ TelegramToken: form.TelegramToken.trim(),
+ TelegramChatID: form.TelegramChatID.trim()
 })
 
-const save = async () => {
-  if (pending.value || !loaded.value || !validateChannel()) return
-  pending.value = 'save'
-  try {
-    const payload = buildPayload()
-    await api.post('/notifications', payload)
-    stored.hasWebhookUrl = payload.clearWebhookUrl ? false : stored.hasWebhookUrl || Boolean(payload.webhookUrl)
-    stored.hasTelegramToken = payload.clearTelegramToken ? false : stored.hasTelegramToken || Boolean(payload.telegramToken)
-    stored.telegramChatId = payload.telegramChatId
-    form.webhookUrl = ''
-    form.telegramToken = ''
-    form.telegramChatId = payload.telegramChatId
-    form.clearWebhookUrl = false
-    form.clearTelegramToken = false
-    message.success('通知设置已保存')
-  } catch (e) {
-  } finally {
-    pending.value = null
-  }
+const testDraft = async () => {
+ if (testPending.value || savePending.value || !validateForm()) return
+ testPending.value = true
+ try {
+  await api.post('/notifications/test', buildPayload())
+  message.success('测试通知发送成功')
+ } catch (e) {
+ } finally {
+  testPending.value = false
+ }
 }
 
-const testSend = async () => {
-  if (pending.value || !loaded.value || !validateChannel(true)) return
-  const payload = form.notifyType === 'webhook'
-    ? { webhookUrl: form.webhookUrl.trim(), notifyType: form.notifyType }
-    : { telegramToken: form.telegramToken.trim(), telegramChatId: form.telegramChatId.trim(), notifyType: form.notifyType }
-  pending.value = 'test'
-  try {
-    await api.post('/webhook/test', payload)
-    message.success('测试通知已发送')
-  } catch (e) {
-  } finally {
-    pending.value = null
-  }
+const testSaved = async (row) => {
+ if (isRowBusy(row.ID)) return
+ rowPending.set(row.ID, 'test')
+ try {
+  await api.post('/notifications/test', { ID: row.ID, Version: row.Version })
+  message.success('测试通知发送成功')
+ } catch (e) {
+ } finally {
+  rowPending.delete(row.ID)
+ }
 }
 
-onMounted(async () => {
-  await load()
-  pending.value = null
-})
-
-const reload = async () => {
-  if (pending.value) return
-  pending.value = 'load'
-  try {
-    await load()
-  } finally {
-    pending.value = null
+const submit = async () => {
+ if (savePending.value || testPending.value || !validateForm()) return
+ savePending.value = true
+ try {
+  const payload = buildPayload()
+  const res = form.ID ? await api.put(`/notifications/${form.ID}`, payload) : await api.post('/notifications', payload)
+  message.success('通知配置已保存')
+  showModal.value = false
+  clearSecrets()
+  const saved = res.data
+  if (saved?.ID) {
+   const index = data.value.findIndex(item => item.ID === saved.ID)
+   if (index >= 0) data.value.splice(index, 1, saved)
+   else data.value.push(saved)
   }
+  fetchData().catch(() => {})
+ } catch (e) {
+ } finally {
+  savePending.value = false
+ }
 }
+
+const handleDelete = (row) => {
+ if (isRowBusy(row.ID)) return
+ deleteConfirming.add(row.ID)
+ dialog.warning({
+  title: '删除通知目标', content: `确定删除“${row.Name}”吗？`, positiveText: '删除', negativeText: '取消', closable: false, maskClosable: false, closeOnEsc: false,
+  onNegativeClick: () => deleteConfirming.delete(row.ID),
+  onPositiveClick: async () => {
+   deleteConfirming.delete(row.ID)
+   if (rowPending.has(row.ID)) return
+   rowPending.set(row.ID, 'delete')
+   try {
+    await api.delete(`/notifications/${row.ID}`, { params: { version: row.Version } })
+    message.success('通知目标已删除')
+    data.value = data.value.filter(item => item.ID !== row.ID)
+    fetchData().catch(() => {})
+   } catch (e) {
+   } finally {
+    rowPending.delete(row.ID)
+   }
+  }
+ })
+}
+
+onMounted(fetchData)
 </script>
+
+<style scoped>
+.mobile-view { display: none; }
+.desktop-view { display: block; }
+.event-summary { margin-top: 8px; color: #888; font-size: 12px; }
+@media (max-width: 600px) {
+ .desktop-view { display: none; }
+ .mobile-view { display: block; }
+}
+</style>

@@ -4,10 +4,13 @@ import (
 	"cloudstream/internal/models"
 	"cloudstream/internal/utils"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/rs/zerolog/log"
 	"gorm.io/driver/sqlite"
@@ -52,6 +55,7 @@ func ConnectDatabase(dbPath string) error {
 
 	err = DB.AutoMigrate(
 		&models.User{},
+		&models.Notification{},
 		&models.Task{},
 		&models.Account{},
 		&models.TaskFile{},
@@ -90,6 +94,9 @@ func ConnectDatabase(dbPath string) error {
 			fmt.Fprintf(os.Stderr, "\nCloudStream initial admin password (shown once): %s\n\n", initialPassword)
 		}
 	}
+	if err := migrateLegacyNotifications(); err != nil {
+		return err
+	}
 
 	if err := migrateLegacyAdminPassword(); err != nil {
 		return err
@@ -100,6 +107,135 @@ func ConnectDatabase(dbPath string) error {
 
 	log.Info().Msg("数据库连接和迁移成功 (WAL模式已启用)")
 	return nil
+}
+
+func migrateLegacyNotifications() error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var users []models.User
+		if err := tx.Order("id asc").Find(&users).Error; err != nil {
+			return fmt.Errorf("读取旧版通知配置失败: %w", err)
+		}
+		for _, user := range users {
+			fingerprint := legacyNotificationFingerprint(user)
+			if user.NotificationMigrationFingerprint == fingerprint {
+				continue
+			}
+
+			notifyType := user.NotifyType
+			if notifyType != models.NotifyTypeTelegram {
+				notifyType = models.NotifyTypeWebhook
+			}
+			webhookURL := strings.TrimSpace(user.WebhookURL)
+			webhook := models.Notification{
+				UserID: user.ID, Name: "旧版 Webhook", Type: models.NotifyTypeWebhook, LegacySource: models.NotifyTypeWebhook,
+				WebhookURL: webhookURL, Enabled: webhookURL != "" && notifyType == models.NotifyTypeWebhook,
+				NotifyOnComplete: user.NotifyOnComplete, NotifyOnError: user.NotifyOnError,
+				NotifyOnStop: user.NotifyOnStop, NotifyOnManual: user.NotifyOnManual,
+			}
+			if err := syncLegacyNotification(tx, webhook, webhookURL != ""); err != nil {
+				return err
+			}
+			telegramToken := strings.TrimSpace(user.TelegramToken)
+			telegramChatID := strings.TrimSpace(user.TelegramChatID)
+			telegramPresent := telegramToken != "" || telegramChatID != ""
+			telegram := models.Notification{
+				UserID: user.ID, Name: "旧版 Telegram", Type: models.NotifyTypeTelegram, LegacySource: models.NotifyTypeTelegram,
+				TelegramToken: telegramToken, TelegramChatID: telegramChatID,
+				Enabled:          telegramToken != "" && telegramChatID != "" && notifyType == models.NotifyTypeTelegram,
+				NotifyOnComplete: user.NotifyOnComplete, NotifyOnError: user.NotifyOnError,
+				NotifyOnStop: user.NotifyOnStop, NotifyOnManual: user.NotifyOnManual,
+			}
+			if err := syncLegacyNotification(tx, telegram, telegramPresent); err != nil {
+				return err
+			}
+			if err := tx.Model(&models.User{}).Where("id = ?", user.ID).Update("notification_migration_fingerprint", fingerprint).Error; err != nil {
+				return fmt.Errorf("保存通知迁移状态失败: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
+func syncLegacyNotification(tx *gorm.DB, desired models.Notification, present bool) error {
+	var stored models.Notification
+	err := tx.Where("user_id = ? AND legacy_source = ?", desired.UserID, desired.LegacySource).First(&stored).Error
+	if !present {
+		if err == nil {
+			if deleteErr := tx.Unscoped().Delete(&stored).Error; deleteErr != nil {
+				return fmt.Errorf("删除已移除的旧版通知失败: %w", deleteErr)
+			}
+			return nil
+		}
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return fmt.Errorf("读取旧版通知迁移记录失败: %w", err)
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		name, nameErr := availableLegacyNotificationName(tx, desired.UserID, desired.Name)
+		if nameErr != nil {
+			return nameErr
+		}
+		desired.Name = name
+		desired.Version = 1
+		requested := desired
+		if createErr := tx.Create(&desired).Error; createErr != nil {
+			return fmt.Errorf("迁移旧版通知配置失败: %w", createErr)
+		}
+		if updateErr := tx.Model(&desired).Updates(notificationMigrationUpdates(requested)).Error; updateErr != nil {
+			return fmt.Errorf("保存旧版通知配置失败: %w", updateErr)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("读取旧版通知迁移记录失败: %w", err)
+	}
+	desired.Name = stored.Name
+	desired.Version = stored.Version + 1
+	if updateErr := tx.Model(&stored).Updates(notificationMigrationUpdates(desired)).Error; updateErr != nil {
+		return fmt.Errorf("同步旧版通知配置失败: %w", updateErr)
+	}
+	return nil
+}
+
+func availableLegacyNotificationName(tx *gorm.DB, userID uint, base string) (string, error) {
+	for index := 0; ; index++ {
+		candidate := base
+		if index > 0 {
+			candidate = fmt.Sprintf("%s (%d)", base, index+1)
+		}
+		var count int64
+		if err := tx.Model(&models.Notification{}).Where("user_id = ? AND name = ?", userID, candidate).Count(&count).Error; err != nil {
+			return "", fmt.Errorf("检查旧版通知名称失败: %w", err)
+		}
+		if count == 0 {
+			return candidate, nil
+		}
+	}
+}
+
+func notificationMigrationUpdates(notification models.Notification) map[string]interface{} {
+	return map[string]interface{}{
+		"name": notification.Name, "type": notification.Type, "version": notification.Version,
+		"webhook_url": notification.WebhookURL, "telegram_token": notification.TelegramToken,
+		"telegram_chat_id": notification.TelegramChatID, "enabled": notification.Enabled,
+		"notify_on_complete": notification.NotifyOnComplete, "notify_on_error": notification.NotifyOnError,
+		"notify_on_stop": notification.NotifyOnStop, "notify_on_manual": notification.NotifyOnManual,
+		"legacy_source": notification.LegacySource,
+	}
+}
+
+func legacyNotificationFingerprint(user models.User) string {
+	hash := sha256.New()
+	for _, value := range []string{
+		user.NotifyType, user.WebhookURL, user.TelegramToken, user.TelegramChatID,
+		fmt.Sprintf("%t", user.NotifyOnComplete), fmt.Sprintf("%t", user.NotifyOnError),
+		fmt.Sprintf("%t", user.NotifyOnStop), fmt.Sprintf("%t", user.NotifyOnManual),
+	} {
+		_, _ = fmt.Fprintf(hash, "%d:", len(value))
+		_, _ = hash.Write([]byte(value))
+	}
+	return fmt.Sprintf("%x", hash.Sum(nil))
 }
 
 func initialAdminPassword() (string, bool, error) {

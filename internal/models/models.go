@@ -33,8 +33,28 @@ type User struct {
 	SiteTitle string `gorm:"default:'CloudStream'" json:"SiteTitle"`
 	Theme     string `gorm:"default:'light'" json:"Theme"`
 
-	NeedsPasswordReminder bool `gorm:"default:false" json:"NeedsPasswordReminder"`
-	PasswordReminderShown bool `gorm:"default:false" json:"PasswordReminderShown"`
+	NeedsPasswordReminder            bool   `gorm:"default:false" json:"NeedsPasswordReminder"`
+	PasswordReminderShown            bool   `gorm:"default:false" json:"PasswordReminderShown"`
+	NotificationMigrationFingerprint string `json:"-"`
+}
+
+type Notification struct {
+	gorm.Model
+	UserID       uint   `gorm:"not null;index;uniqueIndex:idx_notification_user_name" json:"UserID"`
+	Name         string `gorm:"not null;uniqueIndex:idx_notification_user_name" json:"Name"`
+	Type         string `gorm:"not null" json:"Type"`
+	Version      int    `gorm:"not null;default:1" json:"Version"`
+	LegacySource string `gorm:"index" json:"-"`
+
+	WebhookURL     string `json:"WebhookURL"`
+	TelegramToken  string `json:"TelegramToken"`
+	TelegramChatID string `json:"TelegramChatID"`
+
+	Enabled          bool `gorm:"default:true" json:"Enabled"`
+	NotifyOnComplete bool `gorm:"default:true" json:"NotifyOnComplete"`
+	NotifyOnError    bool `gorm:"default:true" json:"NotifyOnError"`
+	NotifyOnStop     bool `gorm:"default:true" json:"NotifyOnStop"`
+	NotifyOnManual   bool `gorm:"default:true" json:"NotifyOnManual"`
 }
 
 type Account struct {
@@ -50,9 +70,10 @@ type Account struct {
 	OpenListUsername string `json:"OpenListUsername"`
 	OpenListPassword string `json:"OpenListPassword"`
 
-	WebDAVURL      string `json:"WebDAVURL"`
-	WebDAVUsername string `json:"WebDAVUsername"`
-	WebDAVPassword string `json:"WebDAVPassword"`
+	WebDAVURL        string `json:"WebDAVURL"`
+	WebDAVUsername   string `json:"WebDAVUsername"`
+	WebDAVPassword   string `json:"WebDAVPassword"`
+	WebDAVDirectLink bool   `gorm:"default:false" json:"WebDAVDirectLink"`
 
 	StrmBaseURL         string `json:"StrmBaseURL"`
 	CacheTTL            int    `gorm:"default:30" json:"CacheTTL"`

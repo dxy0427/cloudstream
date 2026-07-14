@@ -91,6 +91,10 @@
      <n-input type="password" show-password-on="click" v-model:value="form.WebDAVPassword" :disabled="form.ClearWebDAVPassword" :placeholder="form.ID && form.HasWebDAVPassword ? '已配置，留空不修改' : 'password'" />
    </n-form-item>
    <n-checkbox v-if="form.ID && form.HasWebDAVPassword" v-model:checked="form.ClearWebDAVPassword">清除已保存的 WebDAV 密码</n-checkbox>
+   <n-form-item label="播放方式" style="margin-top: 12px;">
+    <n-checkbox v-model:checked="form.WebDAVDirectLink">OpenList 302 直链播放</n-checkbox>
+    <template #feedback>仅用于 OpenList 的 /dav 地址。开启后 CloudStream 只返回 302，不中转媒体流量；普通 WebDAV 请勿开启。</template>
+   </n-form-item>
   </template>
   
   <n-divider />
@@ -139,7 +143,7 @@ const form = reactive({
     ClientID: '', ClientSecret: '', 
     OpenListURL: '', OpenListAuthMode: 'password', OpenListToken: '',
     OpenListUsername: '', OpenListPassword: '',
-    WebDAVURL: '', WebDAVUsername: '', WebDAVPassword: '', ClearWebDAVPassword: false,
+    WebDAVURL: '', WebDAVUsername: '', WebDAVPassword: '', WebDAVDirectLink: false, ClearWebDAVPassword: false,
     StrmBaseURL: '',
     CacheTTL: 30,
     CustomCachePolicies: ''
@@ -181,7 +185,9 @@ const fetchData = async () => {
 const normalizeUrl = (value) => {
  const trimmed = (value || '').trim()
  if (!trimmed) return ''
- const withScheme = trimmed.startsWith('http://') || trimmed.startsWith('https://') ? trimmed : `http://${trimmed}`
+ const lower = trimmed.toLowerCase()
+ if (trimmed.includes('://') && !lower.startsWith('http://') && !lower.startsWith('https://')) return ''
+ const withScheme = lower.startsWith('http://') || lower.startsWith('https://') ? trimmed : `http://${trimmed}`
  return withScheme.replace(/\/+$/, '')
 }
 
@@ -199,7 +205,10 @@ const captureBinding = (row) => ({
  HasWebDAVPassword: row.HasWebDAVPassword === true
 })
 
-const preparePayload = () => ({ ...form })
+const preparePayload = () => ({
+ ...form,
+ WebDAVURL: form.Type === 'webdav' && form.WebDAVDirectLink ? normalizeUrl(form.WebDAVURL) : form.WebDAVURL
+})
 
 const prepareTestPayload = () => {
  const payload = preparePayload()
@@ -218,6 +227,10 @@ const clearSecrets = () => {
  form.ClearWebDAVPassword = false
  originalBinding = null
 }
+
+watch(() => form.ClearWebDAVPassword, (clear) => {
+ if (clear && form.WebDAVDirectLink) form.WebDAVDirectLink = false
+})
 
 watch(showModal, (visible) => {
  if (!visible) clearSecrets()
@@ -239,7 +252,7 @@ const openModal = (row) => {
     ClientID: '', ClientSecret: '', 
      OpenListURL: '', OpenListAuthMode: 'password', OpenListToken: '',
     OpenListUsername: '', OpenListPassword: '',
-    WebDAVURL: '', WebDAVUsername: '', WebDAVPassword: '', ClearWebDAVPassword: false,
+    WebDAVURL: '', WebDAVUsername: '', WebDAVPassword: '', WebDAVDirectLink: false, ClearWebDAVPassword: false,
     StrmBaseURL: '',
     CacheTTL: 30,
     CustomCachePolicies: ''
@@ -250,9 +263,25 @@ const openModal = (row) => {
 }
 
 const validateSecretBinding = () => {
- if (!form.ID || !originalBinding) return true
+ const typeChanged = Boolean(form.ID && originalBinding && form.Type !== originalBinding.Type)
 
- const typeChanged = form.Type !== originalBinding.Type
+ if (form.Type === 'webdav' && form.WebDAVDirectLink) {
+  const hasPassword = form.WebDAVPassword.trim() || (originalBinding?.HasWebDAVPassword && !form.ClearWebDAVPassword)
+  if (!form.WebDAVUsername.trim() || !hasPassword) {
+   message.warning('OpenList 302 直链模式需要用户名和密码')
+   return false
+  }
+  try {
+	 const parsed = new URL(normalizeUrl(form.WebDAVURL))
+	 if (parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error('unsafe URL parts')
+	 const pathname = parsed.pathname.replace(/\/+$/, '')
+   if (!pathname.toLowerCase().endsWith('/dav')) throw new Error('not OpenList WebDAV')
+  } catch (e) {
+	 message.warning('OpenList 302 直链模式要求纯 HTTP(S) 地址且路径以 /dav 结尾')
+   return false
+  }
+ }
+
  if (typeChanged) {
   if (form.Type === '123pan' && (!form.ClientID.trim() || !form.ClientSecret.trim())) {
    message.warning('切换为 123 云盘时必须填写 Client ID 和 Client Secret')
@@ -278,6 +307,8 @@ const validateSecretBinding = () => {
   }
   return true
  }
+
+ if (!form.ID || !originalBinding) return true
 
  if (form.Type === '123pan' && originalBinding.HasClientSecret && !form.ClientSecret.trim() && form.ClientID !== originalBinding.ClientID) {
   message.warning('Client ID 已变更，请重新输入 Client Secret')

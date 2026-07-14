@@ -52,8 +52,10 @@ func performHandlerRequest(t *testing.T, method, path string, payload any, handl
 	ctx, _ := gin.CreateTestContext(recorder)
 	ctx.Request = httptest.NewRequest(method, path, &body)
 	ctx.Request.Header.Set("Content-Type", "application/json")
-	if index := strings.LastIndex(path, "/"); index >= 0 {
-		ctx.Params = gin.Params{{Key: "id", Value: path[index+1:]}}
+	if requestPath := ctx.Request.URL.Path; requestPath != "" {
+		if index := strings.LastIndex(requestPath, "/"); index >= 0 {
+			ctx.Params = gin.Params{{Key: "id", Value: requestPath[index+1:]}}
+		}
 	}
 	handler(ctx)
 	return recorder
@@ -161,6 +163,111 @@ func TestMergeStoredWebDAVSecretsHonorsExplicitClear(t *testing.T) {
 	}
 	if account.WebDAVPassword != "" {
 		t.Fatalf("password = %q, want empty", account.WebDAVPassword)
+	}
+}
+
+func TestUpdateWebDAVEnablesDirectLinkWithStoredPassword(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t)
+	account := models.Account{
+		Name:           "direct-dav",
+		Type:           models.AccountTypeWebDAV,
+		WebDAVURL:      "https://files.example/dav",
+		WebDAVUsername: "user",
+		WebDAVPassword: "secret",
+	}
+	if err := db.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := performHandlerRequest(t, http.MethodPut, "/accounts/1", map[string]any{
+		"WebDAVDirectLink": true,
+	}, UpdateAccountHandler)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var stored models.Account
+	if err := db.First(&stored, account.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !stored.WebDAVDirectLink || stored.WebDAVPassword != "secret" {
+		t.Fatalf("unexpected stored account: %+v", stored)
+	}
+}
+
+func TestCreateWebDAVDirectLinkRejectsWhitespaceCredentials(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	openHandlerTestDB(t)
+	recorder := performHandlerRequest(t, http.MethodPost, "/accounts", map[string]any{
+		"Name":             "invalid-direct",
+		"Type":             models.AccountTypeWebDAV,
+		"WebDAVURL":        "https://files.example/dav",
+		"WebDAVUsername":   " ",
+		"WebDAVPassword":   " ",
+		"WebDAVDirectLink": true,
+	}, CreateAccountHandler)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestAccountConnectionWebDAVDirectLinkChecksWebDAVAndOpenList(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	openHandlerTestDB(t)
+	var webDAVChecked bool
+	var openListChecked bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/dav/":
+			username, password, ok := r.BasicAuth()
+			if !ok {
+				w.Header().Set("WWW-Authenticate", `Basic realm="OpenList"`)
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if username != "user" || password != "secret" || r.Method != "PROPFIND" {
+				http.Error(w, "invalid WebDAV request", http.StatusUnauthorized)
+				return
+			}
+			webDAVChecked = true
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusMultiStatus)
+			_, _ = w.Write([]byte(`<?xml version="1.0" encoding="utf-8"?>
+<d:multistatus xmlns:d="DAV:"><d:response><d:href>/dav/</d:href><d:propstat><d:prop><d:displayname>root</d:displayname><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response></d:multistatus>`))
+		case "/api/auth/login":
+			var credentials map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&credentials); err != nil {
+				t.Error(err)
+			}
+			if credentials["username"] != "user" || credentials["password"] != "secret" {
+				t.Errorf("unexpected credentials: %#v", credentials)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": map[string]string{"token": "token"}})
+		case "/api/fs/list":
+			if r.Header.Get("Authorization") != "token" {
+				t.Errorf("Authorization = %q", r.Header.Get("Authorization"))
+			}
+			openListChecked = true
+			_ = json.NewEncoder(w).Encode(map[string]any{"code": 200, "data": map[string]any{"content": []any{}, "total": 0}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	recorder := performHandlerRequest(t, http.MethodPost, "/accounts/test", map[string]any{
+		"Name":             "direct-test",
+		"Type":             models.AccountTypeWebDAV,
+		"WebDAVURL":        server.URL + "/dav",
+		"WebDAVUsername":   "user",
+		"WebDAVPassword":   "secret",
+		"WebDAVDirectLink": true,
+	}, TestAccountConnectionHandler)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	if !webDAVChecked || !openListChecked {
+		t.Fatalf("WebDAV checked=%v OpenList checked=%v", webDAVChecked, openListChecked)
 	}
 }
 

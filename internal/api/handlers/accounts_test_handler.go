@@ -58,6 +58,17 @@ func TestAccountConnectionHandler(c *gin.Context) {
 			c.JSON(http.StatusBadGateway, gin.H{"code": 1, "message": "WebDAV 连接失败"})
 			return
 		}
+		if testAccount.WebDAVDirectLink {
+			openListAccount, err := openListAccountFromWebDAV(testAccount)
+			if err != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "OpenList 302 直链配置无效"})
+				return
+			}
+			if err := openlist.NewClient(openListAccount).TestConnectionContext(c.Request.Context()); err != nil {
+				c.JSON(http.StatusBadGateway, gin.H{"code": 1, "message": "WebDAV 可连接，但 OpenList 302 接口连接失败"})
+				return
+			}
+		}
 	default: // 123 云盘开放平台
 		client := pan123.NewClient(testAccount)
 		if _, err := client.GetAccessTokenForTestContext(c.Request.Context()); err != nil {

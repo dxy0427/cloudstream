@@ -97,8 +97,6 @@ func InitRouter() *gin.Engine {
 			authorized.POST("/user/settings", handlers.UpdateUserSettingsHandler)
 			authorized.POST("/user/password-reminder/dismiss", handlers.DismissPasswordReminderHandler)
 
-			authorized.POST("/webhook/test", handlers.TestWebhookHandler)
-			authorized.POST("/notifications", handlers.UpdateNotificationHandler)
 			authorized.POST("/update_credentials", handlers.UpdateCredentialsHandler)
 			authorized.POST("/accounts/test", handlers.TestAccountConnectionHandler)
 
@@ -108,6 +106,15 @@ func InitRouter() *gin.Engine {
 				accounts.POST("", handlers.CreateAccountHandler)
 				accounts.PUT("/:id", handlers.UpdateAccountHandler)
 				accounts.DELETE("/:id", handlers.DeleteAccountHandler)
+			}
+
+			notifications := authorized.Group("/notifications")
+			{
+				notifications.GET("", handlers.ListNotificationsHandler)
+				notifications.POST("", handlers.CreateNotificationHandler)
+				notifications.POST("/test", handlers.TestNotificationHandler)
+				notifications.PUT("/:id", handlers.UpdateNotificationHandler)
+				notifications.DELETE("/:id", handlers.DeleteNotificationHandler)
 			}
 
 			tasks := authorized.Group("/tasks")
