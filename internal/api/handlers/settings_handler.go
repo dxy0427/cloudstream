@@ -142,8 +142,7 @@ func UpdateCredentialsHandler(c *gin.Context) {
 		return
 	}
 
-	matched, needsUpgrade, upgradeHash := utils.CheckAndUpgradePassword(req.CurrentPassword, user.PasswordHash)
-	if !matched {
+	if !utils.CheckPasswordHash(req.CurrentPassword, user.PasswordHash) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "当前密码不正确"})
 		return
 	}
@@ -169,16 +168,10 @@ func UpdateCredentialsHandler(c *gin.Context) {
 			return
 		}
 		updates["password_hash"] = newPasswordHash
-		updates["password_version"] = 1
 		updates["needs_password_reminder"] = false
 		updates["password_reminder_shown"] = true
 		passwordChanged = true
 	}
-	if needsUpgrade && upgradeHash != "" && !passwordChanged {
-		updates["password_hash"] = upgradeHash
-		updates["password_version"] = 1
-	}
-
 	if len(updates) == 0 {
 		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "未做任何修改"})
 		return

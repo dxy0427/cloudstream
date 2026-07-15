@@ -1,15 +1,19 @@
 package core
 
 import (
+	"cloudstream/internal/auth"
 	"cloudstream/internal/models"
 	"cloudstream/internal/pan123"
 	"context"
 	"errors"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestScanOutputRootRejectsEscapes(t *testing.T) {
@@ -96,7 +100,7 @@ func TestScanOutputRootStoresResolvedRootPath(t *testing.T) {
 	}
 }
 
-func TestCreateStrmFileKeepsSignedAndPublicModes(t *testing.T) {
+func TestCreateStrmFileUsesAccountSigningConfiguration(t *testing.T) {
 	rootPath := t.TempDir()
 	outputRoot, err := openScanOutputRoot(rootPath)
 	if err != nil {
@@ -104,11 +108,10 @@ func TestCreateStrmFileKeepsSignedAndPublicModes(t *testing.T) {
 	}
 	defer outputRoot.root.Close()
 
-	clientAccount := models.Account{StrmBaseURL: "https://stream.example"}
-	client := pan123.NewClient(clientAccount)
+	client := pan123.NewClient(models.Account{StrmBaseURL: "https://stream.example"})
 	file := pan123.FileInfo{FileId: 42, FileName: "movie.mkv"}
 
-	publicTask := models.Task{AccountID: 7, SourceFolderID: "0", EncodePath: false}
+	publicTask := models.Task{AccountID: 7, SourceFolderID: "0"}
 	if err := createStrmFile(context.Background(), client, models.AccountType123Pan, outputRoot, publicTask, file, "movie.mkv", "public", NewFileTracker(), &ScanStats{}); err != nil {
 		t.Fatal(err)
 	}
@@ -120,16 +123,43 @@ func TestCreateStrmFileKeepsSignedAndPublicModes(t *testing.T) {
 		t.Fatalf("public STRM = %q", publicContent)
 	}
 
-	signedTask := models.Task{AccountID: 7, SourceFolderID: "0", EncodePath: true}
+	signedClient := pan123.NewClient(models.Account{
+		StrmBaseURL:      "https://stream.example",
+		EnableStreamSign: true,
+		SignExpireHours:  2,
+	})
+	signedTask := models.Task{AccountID: 7, SourceFolderID: "0"}
 	signedTask.ID = 9
-	if err := createStrmFile(context.Background(), client, models.AccountType123Pan, outputRoot, signedTask, file, "movie.mkv", "signed", NewFileTracker(), &ScanStats{}); err != nil {
+	before := time.Now().Add(2 * time.Hour).Unix()
+	if err := createStrmFile(context.Background(), signedClient, models.AccountType123Pan, outputRoot, signedTask, file, "movie.mkv", "signed", NewFileTracker(), &ScanStats{}); err != nil {
 		t.Fatal(err)
 	}
+	after := time.Now().Add(2 * time.Hour).Unix()
 	signedContent, err := outputRoot.root.ReadFile(filepath.Join("signed", "movie.strm"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(string(signedContent), "https://stream.example/api/v1/stream/s/movie.mkv?sign=") {
 		t.Fatalf("signed STRM = %q", signedContent)
+	}
+	signedURL, err := url.Parse(string(signedContent))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sign := signedURL.Query().Get("sign")
+	accountID, identity, err := auth.VerifyAccountStreamSign(sign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if accountID != 7 || identity != "42" {
+		t.Fatalf("accountID=%d identity=%q", accountID, identity)
+	}
+	signParts := strings.Split(sign, ":")
+	expiresAt, err := strconv.ParseInt(signParts[1], 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if expiresAt < before || expiresAt > after {
+		t.Fatalf("signature expiry = %d, want between %d and %d", expiresAt, before, after)
 	}
 }

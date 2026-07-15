@@ -9,60 +9,52 @@ const (
 	AccountTypeOpenList = "openlist"
 	AccountTypeWebDAV   = "webdav"
 
-	WebDAVPlaybackModeProxy            = "proxy"
-	WebDAVPlaybackModeUpstreamRedirect = "upstream-redirect"
+	PlaybackModeProxy    = "proxy"
+	PlaybackModeRedirect = "redirect"
 
 	NotifyTypeWebhook  = "webhook"
 	NotifyTypeTelegram = "telegram"
 )
 
-func IsValidWebDAVPlaybackMode(mode string) bool {
-	return mode == WebDAVPlaybackModeProxy || mode == WebDAVPlaybackModeUpstreamRedirect
+func IsValidPlaybackMode(mode string) bool {
+	return mode == PlaybackModeProxy || mode == PlaybackModeRedirect
 }
 
-func NormalizeWebDAVPlaybackMode(mode string) string {
-	if !IsValidWebDAVPlaybackMode(mode) {
-		return WebDAVPlaybackModeProxy
+func DefaultPlaybackMode(accountType string) string {
+	switch accountType {
+	case AccountType123Pan, AccountTypeOpenList:
+		return PlaybackModeRedirect
+	default:
+		return PlaybackModeProxy
+	}
+}
+
+func NormalizePlaybackMode(mode, accountType string) string {
+	if !IsValidPlaybackMode(mode) {
+		return DefaultPlaybackMode(accountType)
 	}
 	return mode
 }
 
-func WebDAVPlaybackModeUsesUpstreamRedirect(mode string) bool {
-	return NormalizeWebDAVPlaybackMode(mode) == WebDAVPlaybackModeUpstreamRedirect
-}
-
 type User struct {
 	gorm.Model
-	Username        string `gorm:"unique;not null"`
-	PasswordHash    string `gorm:"not null"`
-	TokenVersion    int    `gorm:"default:1"`
-	PasswordVersion int    `gorm:"column:password_version;default:0"`
-
-	NotifyType     string `gorm:"default:'webhook'" json:"NotifyType"`
-	WebhookURL     string `json:"WebhookURL"`
-	TelegramToken  string `json:"TelegramToken"`
-	TelegramChatID string `json:"TelegramChatID"`
-
-	NotifyOnComplete bool `gorm:"default:true" json:"NotifyOnComplete"`
-	NotifyOnError    bool `gorm:"default:true" json:"NotifyOnError"`
-	NotifyOnStop     bool `gorm:"default:true" json:"NotifyOnStop"`
-	NotifyOnManual   bool `gorm:"default:true" json:"NotifyOnManual"`
+	Username     string `gorm:"unique;not null"`
+	PasswordHash string `gorm:"not null"`
+	TokenVersion int    `gorm:"default:1"`
 
 	SiteTitle string `gorm:"default:'CloudStream'" json:"SiteTitle"`
 	Theme     string `gorm:"default:'light'" json:"Theme"`
 
-	NeedsPasswordReminder            bool   `gorm:"default:false" json:"NeedsPasswordReminder"`
-	PasswordReminderShown            bool   `gorm:"default:false" json:"PasswordReminderShown"`
-	NotificationMigrationFingerprint string `json:"-"`
+	NeedsPasswordReminder bool `gorm:"default:false" json:"NeedsPasswordReminder"`
+	PasswordReminderShown bool `gorm:"default:false" json:"PasswordReminderShown"`
 }
 
 type Notification struct {
 	gorm.Model
-	UserID       uint   `gorm:"not null;index;uniqueIndex:idx_notification_user_name" json:"UserID"`
-	Name         string `gorm:"not null;uniqueIndex:idx_notification_user_name" json:"Name"`
-	Type         string `gorm:"not null" json:"Type"`
-	Version      int    `gorm:"not null;default:1" json:"Version"`
-	LegacySource string `gorm:"index" json:"-"`
+	UserID  uint   `gorm:"not null;index;uniqueIndex:idx_notification_user_name" json:"UserID"`
+	Name    string `gorm:"not null;uniqueIndex:idx_notification_user_name" json:"Name"`
+	Type    string `gorm:"not null" json:"Type"`
+	Version int    `gorm:"not null;default:1" json:"Version"`
 
 	WebhookURL     string `json:"WebhookURL"`
 	TelegramToken  string `json:"TelegramToken"`
@@ -77,6 +69,7 @@ type Notification struct {
 
 type Account struct {
 	gorm.Model
+	Version      int    `gorm:"not null;default:1" json:"Version"`
 	Name         string `gorm:"unique;not null" json:"Name"`
 	Type         string `gorm:"not null;default:'123pan'" json:"Type"`
 	ClientID     string `json:"ClientID"`
@@ -88,32 +81,31 @@ type Account struct {
 	OpenListUsername string `json:"OpenListUsername"`
 	OpenListPassword string `json:"OpenListPassword"`
 
-	WebDAVURL          string `json:"WebDAVURL"`
-	WebDAVUsername     string `json:"WebDAVUsername"`
-	WebDAVPassword     string `json:"WebDAVPassword"`
-	WebDAVPlaybackMode string `gorm:"not null;default:'proxy'" json:"WebDAVPlaybackMode"`
-	WebDAVDirectLink   bool   `gorm:"default:false" json:"WebDAVDirectLink"`
+	WebDAVURL      string `json:"WebDAVURL"`
+	WebDAVUsername string `json:"WebDAVUsername"`
+	WebDAVPassword string `json:"WebDAVPassword"`
 
 	StrmBaseURL         string `json:"StrmBaseURL"`
+	PlaybackMode        string `gorm:"not null" json:"PlaybackMode"`
+	EnableStreamSign    bool   `gorm:"default:false" json:"EnableStreamSign"`
+	SignExpireHours     int    `gorm:"default:0" json:"SignExpireHours"`
 	CacheTTL            int    `gorm:"default:30" json:"CacheTTL"`
 	CustomCachePolicies string `gorm:"type:text" json:"CustomCachePolicies"`
 }
 
 type Task struct {
 	gorm.Model
-	Name            string `gorm:"unique;not null" json:"Name"`
-	AccountID       uint   `gorm:"not null" json:"AccountID"`
-	SourceFolderID  string `gorm:"not null" json:"SourceFolderID"`
-	LocalPath       string `gorm:"not null" json:"LocalPath"`
-	Cron            string `gorm:"not null" json:"Cron"`
-	Enabled         bool   `gorm:"default:true" json:"Enabled"`
-	Overwrite       bool   `gorm:"default:false" json:"Overwrite"`
-	SyncDelete      bool   `gorm:"default:false" json:"SyncDelete"`
-	EncodePath      bool   `gorm:"default:false" json:"EncodePath"`
-	SignExpireHours int    `gorm:"default:0" json:"SignExpireHours"` // 签名有效期(小时)，0=永不过期
-	StrmExtensions  string `gorm:"default:'mp4,mkv,ts,iso'" json:"StrmExtensions"`
-	MetaExtensions  string `gorm:"default:'jpg,jpeg,png,webp,srt,ass,sub'" json:"MetaExtensions"`
-	Threads         int    `gorm:"default:4" json:"Threads"`
+	Name           string `gorm:"unique;not null" json:"Name"`
+	AccountID      uint   `gorm:"not null" json:"AccountID"`
+	SourceFolderID string `gorm:"not null" json:"SourceFolderID"`
+	LocalPath      string `gorm:"not null" json:"LocalPath"`
+	Cron           string `gorm:"not null" json:"Cron"`
+	Enabled        bool   `gorm:"default:true" json:"Enabled"`
+	Overwrite      bool   `gorm:"default:false" json:"Overwrite"`
+	SyncDelete     bool   `gorm:"default:false" json:"SyncDelete"`
+	StrmExtensions string `gorm:"default:'mp4,mkv,ts,iso'" json:"StrmExtensions"`
+	MetaExtensions string `gorm:"default:'jpg,jpeg,png,webp,srt,ass,sub'" json:"MetaExtensions"`
+	Threads        int    `gorm:"default:4" json:"Threads"`
 
 	ProcessedCount int    `gorm:"default:0" json:"ProcessedCount"`
 	LastRunStatus  string `gorm:"default:''" json:"LastRunStatus"`
@@ -127,7 +119,8 @@ type TaskFile struct {
 
 type MediaServer struct {
 	gorm.Model
-	Name string `gorm:"unique;not null" json:"Name"`
+	Version int    `gorm:"not null;default:1" json:"Version"`
+	Name    string `gorm:"unique;not null" json:"Name"`
 
 	ServerType string `gorm:"not null;default:'Emby'" json:"ServerType"`
 	ServerAddr string `gorm:"not null" json:"ServerAddr"`

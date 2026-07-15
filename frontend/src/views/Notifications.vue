@@ -4,8 +4,8 @@
    <n-space justify="space-between" align="center">
     <h3>通知管理</h3>
     <n-space>
-     <n-button :loading="loading" :disabled="loading || savePending || testPending" @click="fetchData">刷新</n-button>
-     <n-button type="primary" :disabled="savePending || testPending || !loaded" @click="openModal(null)">添加</n-button>
+     <n-button :loading="loading" :disabled="loading || detailPending || savePending || testPending" @click="fetchData">刷新</n-button>
+     <n-button type="primary" :disabled="detailPending || savePending || testPending || !loaded" @click="openModal(null)">添加</n-button>
     </n-space>
    </n-space>
   </n-card>
@@ -31,7 +31,7 @@
        <template #footer>
         <n-space size="small">
          <n-button size="tiny" ghost :loading="rowAction(row.ID) === 'test'" :disabled="isRowBusy(row.ID)" @click.stop="testSaved(row)">测试</n-button>
-         <n-button size="tiny" ghost :disabled="isRowBusy(row.ID)" @click.stop="openModal(row)">编辑</n-button>
+          <n-button size="tiny" ghost :loading="isDetailLoading(row.ID)" :disabled="detailPending || isRowBusy(row.ID)" @click.stop="openModal(row)">编辑</n-button>
          <n-button size="tiny" type="error" ghost :loading="rowAction(row.ID) === 'delete'" :disabled="isRowBusy(row.ID)" @click.stop="handleDelete(row)">删除</n-button>
         </n-space>
        </template>
@@ -43,7 +43,7 @@
   </div>
 
   <n-modal v-model:show="showModal" preset="card" title="通知配置" style="width: 620px; max-width: 95%" :closable="!savePending && !testPending" :mask-closable="!savePending && !testPending" :close-on-esc="!savePending && !testPending">
-   <n-form label-placement="top" :disabled="savePending || testPending || secretPending">
+    <n-form label-placement="top" :disabled="savePending || testPending">
     <n-form-item label="名称">
      <n-input v-model:value="form.Name" maxlength="64" placeholder="例如：运维群通知" />
     </n-form-item>
@@ -54,16 +54,16 @@
 
     <template v-if="form.Type === 'webhook'">
      <n-form-item label="Webhook URL">
-      <n-input :type="secretVisible.webhook_url ? 'text' : 'password'" autocomplete="off" v-model:value="form.WebhookURL" :placeholder="form.ID && originalBinding?.HasWebhookURL && originalBinding.Type === 'webhook' ? '点击眼睛查看，或直接输入新值' : 'https://...'" @update:value="value => markSecretEdited('webhook_url', value)">
-       <template #suffix><n-button text :loading="pendingSecretField === 'webhook_url'" :disabled="secretPending && pendingSecretField !== 'webhook_url'" @mousedown.prevent @click.stop="toggleSecretVisibility('webhook_url')"><template #icon><n-icon><EyeInvisibleOutlined v-if="secretVisible.webhook_url" /><EyeOutlined v-else /></n-icon></template></n-button></template>
+        <n-input :type="secretVisible.webhook_url ? 'text' : 'password'" autocomplete="off" v-model:value="form.WebhookURL" placeholder="https://...">
+        <template #suffix><n-button text @mousedown.prevent @click.stop="toggleSecretVisibility('webhook_url')"><template #icon><n-icon><EyeInvisibleOutlined v-if="secretVisible.webhook_url" /><EyeOutlined v-else /></n-icon></template></n-button></template>
       </n-input>
      </n-form-item>
     </template>
 
     <template v-else>
      <n-form-item label="Telegram Bot Token">
-      <n-input :type="secretVisible.telegram_token ? 'text' : 'password'" autocomplete="off" v-model:value="form.TelegramToken" :placeholder="form.ID && originalBinding?.HasTelegramToken && originalBinding.Type === 'telegram' ? '点击眼睛查看，或直接输入新值' : 'Bot Token'" @update:value="value => markSecretEdited('telegram_token', value)">
-       <template #suffix><n-button text :loading="pendingSecretField === 'telegram_token'" :disabled="secretPending && pendingSecretField !== 'telegram_token'" @mousedown.prevent @click.stop="toggleSecretVisibility('telegram_token')"><template #icon><n-icon><EyeInvisibleOutlined v-if="secretVisible.telegram_token" /><EyeOutlined v-else /></n-icon></template></n-button></template>
+        <n-input :type="secretVisible.telegram_token ? 'text' : 'password'" autocomplete="off" v-model:value="form.TelegramToken" placeholder="Bot Token">
+        <template #suffix><n-button text @mousedown.prevent @click.stop="toggleSecretVisibility('telegram_token')"><template #icon><n-icon><EyeInvisibleOutlined v-if="secretVisible.telegram_token" /><EyeOutlined v-else /></n-icon></template></n-button></template>
       </n-input>
      </n-form-item>
      <n-form-item label="Telegram Chat ID">
@@ -84,8 +84,9 @@
     </n-space>
 
     <n-space justify="end" style="margin-top: 24px">
-     <n-button :loading="testPending" :disabled="savePending || testPending || secretPending" @click="testDraft">测试通知</n-button>
-     <n-button type="primary" :loading="savePending" :disabled="savePending || testPending || secretPending" @click="submit">保存</n-button>
+     <n-button :disabled="savePending || testPending" @click="closeModal">取消</n-button>
+     <n-button :loading="testPending" :disabled="savePending || testPending" @click="testDraft">测试通知</n-button>
+     <n-button type="primary" :loading="savePending" :disabled="savePending || testPending" @click="submit">保存</n-button>
     </n-space>
    </n-form>
   </n-modal>
@@ -97,7 +98,7 @@ import { h, onMounted, reactive, ref, watch } from 'vue'
 import { NButton, NIcon, NSpace, NTag, useDialog, useMessage } from 'naive-ui'
 import api from '../api'
 import { EyeInvisibleOutlined, EyeOutlined } from '@vicons/antd'
-import { useSecretFields } from '../composables/useSecretFields'
+import { useSecretVisibility } from '../composables/useSecretVisibility'
 
 const message = useMessage()
 const dialog = useDialog()
@@ -106,12 +107,14 @@ const loading = ref(false)
 const loaded = ref(false)
 const loadAttempted = ref(false)
 const showModal = ref(false)
+const detailPending = ref(false)
+const detailPendingId = ref(0)
 const savePending = ref(false)
 const testPending = ref(false)
 const rowPending = reactive(new Map())
 const deleteConfirming = reactive(new Set())
 let fetchSeq = 0
-let originalBinding = null
+let detailSeq = 0
 
 const defaultForm = {
  ID: 0,
@@ -154,7 +157,7 @@ const columns = [
  { title: '通知事件', key: 'events', minWidth: 220, ellipsis: { tooltip: true }, render: eventSummary },
  { title: '操作', key: 'actions', fixed: 'right', width: 190, render(row) { return h(NSpace, { size: 'small' }, { default: () => [
   h(NButton, { size: 'tiny', loading: rowAction(row.ID) === 'test', disabled: isRowBusy(row.ID), onClick: () => testSaved(row) }, { default: () => '测试' }),
-  h(NButton, { size: 'tiny', disabled: isRowBusy(row.ID), onClick: () => openModal(row) }, { default: () => '编辑' }),
+  h(NButton, { size: 'tiny', loading: isDetailLoading(row.ID), disabled: detailPending.value || isRowBusy(row.ID), onClick: () => openModal(row) }, { default: () => '编辑' }),
   h(NButton, { size: 'tiny', type: 'error', loading: rowAction(row.ID) === 'delete', disabled: isRowBusy(row.ID), onClick: () => handleDelete(row) }, { default: () => '删除' })
  ] }) } }
 ]
@@ -178,93 +181,71 @@ const fetchData = async () => {
  }
 }
 
-const secretValue = (field) => field === 'webhook_url' ? form.WebhookURL : form.TelegramToken
-
-const setSecretValue = (field, value) => {
- if (field === 'webhook_url') form.WebhookURL = value
- else form.TelegramToken = value
-}
-
-const hasStoredSecret = (field) => {
- if (!form.ID || !originalBinding || form.ID !== originalBinding.ID || form.Version !== originalBinding.Version || form.Type !== originalBinding.Type) return false
- if (field === 'webhook_url') return form.Type === 'webhook' && originalBinding.HasWebhookURL
- if (field === 'telegram_token') return form.Type === 'telegram' && originalBinding.HasTelegramToken
- return false
-}
-
-const notificationSecretContextKey = (field) => JSON.stringify({
- ID: form.ID,
- Version: form.Version,
- Type: form.Type,
- field
-})
-
-const revealNotificationSecret = async (field) => {
- if (!hasStoredSecret(field)) throw new Error('secret binding changed')
- const res = await api.post(`/notifications/${form.ID}/secrets/reveal`, { field, Version: form.Version })
- return res.data?.value ?? ''
-}
-
 const {
  visible: secretVisible,
- pending: secretPending,
- pendingField: pendingSecretField,
  toggle: toggleSecretVisibility,
- markEdited: markSecretEdited,
- clearField: clearSecretField,
- reset: resetSecrets,
- valueForSubmit: secretValueForSubmit
-} = useSecretFields({
- fields: ['webhook_url', 'telegram_token'],
- getValue: secretValue,
- setValue: setSecretValue,
- hasStoredValue: hasStoredSecret,
- reveal: revealNotificationSecret,
- contextKey: notificationSecretContextKey
-})
+ reset: resetSecretVisibility
+} = useSecretVisibility(['webhook_url', 'telegram_token'])
 
 const clearSecrets = () => {
- resetSecrets()
- originalBinding = null
+ form.WebhookURL = ''
+ form.TelegramToken = ''
+ resetSecretVisibility()
 }
 
 watch(showModal, (visible) => {
  if (!visible) clearSecrets()
 }, { flush: 'sync' })
 
-watch(() => form.Type, (type) => {
- if (type !== 'webhook') clearSecretField('webhook_url')
- if (type !== 'telegram') clearSecretField('telegram_token')
-}, { flush: 'sync' })
+const isDetailLoading = (id) => detailPending.value && detailPendingId.value === id
 
-const openModal = (row) => {
- resetSecrets()
- if (row) {
-  Object.assign(form, {
-   ...defaultForm,
-   ID: row.ID,
-   Version: row.Version,
-   Name: row.Name,
-   Type: row.Type,
-   TelegramChatID: row.TelegramChatID || '',
-   Enabled: row.Enabled,
-   NotifyOnComplete: row.NotifyOnComplete,
-   NotifyOnError: row.NotifyOnError,
-   NotifyOnStop: row.NotifyOnStop,
-   NotifyOnManual: row.NotifyOnManual
-  })
-  originalBinding = {
-   ID: row.ID,
-   Version: row.Version,
-   Type: row.Type,
-   HasWebhookURL: row.HasWebhookURL === true,
-   HasTelegramToken: row.HasTelegramToken === true
-  }
- } else {
-  Object.assign(form, defaultForm)
-  originalBinding = null
+const populateForm = (notification) => {
+ Object.assign(form, defaultForm, {
+  ID: notification.ID || 0,
+  Version: notification.Version || 0,
+  Name: notification.Name || '',
+  Type: notification.Type || 'webhook',
+  WebhookURL: notification.WebhookURL || '',
+  TelegramToken: notification.TelegramToken || '',
+  TelegramChatID: notification.TelegramChatID || '',
+  Enabled: notification.Enabled ?? true,
+  NotifyOnComplete: notification.NotifyOnComplete ?? true,
+  NotifyOnError: notification.NotifyOnError ?? true,
+  NotifyOnStop: notification.NotifyOnStop ?? true,
+  NotifyOnManual: notification.NotifyOnManual ?? true
+ })
+ resetSecretVisibility()
+}
+
+const openModal = async (row) => {
+ if (detailPending.value || savePending.value || testPending.value) return
+ if (!row) {
+  ++detailSeq
+  populateForm(defaultForm)
+  showModal.value = true
+  return
  }
- showModal.value = true
+
+ const requestId = ++detailSeq
+ detailPending.value = true
+ detailPendingId.value = row.ID
+ try {
+  const res = await api.get(`/notifications/${row.ID}`)
+  if (requestId !== detailSeq) return
+  populateForm(res.data || {})
+  showModal.value = true
+ } catch (e) {
+ } finally {
+  if (requestId === detailSeq) {
+   detailPending.value = false
+   detailPendingId.value = 0
+  }
+ }
+}
+
+const closeModal = () => {
+ if (savePending.value || testPending.value) return
+ showModal.value = false
 }
 
 const validateForm = () => {
@@ -273,15 +254,13 @@ const validateForm = () => {
   return false
  }
  if (form.Type === 'webhook') {
-  const canReuse = form.ID && originalBinding?.Type === 'webhook' && originalBinding.HasWebhookURL
-  if (!form.WebhookURL.trim() && !canReuse) {
+  if (!form.WebhookURL.trim()) {
    message.warning('请输入 Webhook URL')
    return false
   }
   return true
  }
- const canReuseToken = form.ID && originalBinding?.Type === 'telegram' && originalBinding.HasTelegramToken
- if (!form.TelegramToken.trim() && !canReuseToken) {
+ if (!form.TelegramToken.trim()) {
   message.warning('请输入 Telegram Bot Token')
   return false
  }
@@ -293,18 +272,25 @@ const validateForm = () => {
 }
 
 const buildPayload = () => ({
- ...form,
+ ID: form.ID,
+ Version: form.Version,
  Name: form.Name.trim(),
- WebhookURL: form.Type === 'webhook' ? secretValueForSubmit('webhook_url').trim() : '',
- TelegramToken: form.Type === 'telegram' ? secretValueForSubmit('telegram_token').trim() : '',
- TelegramChatID: form.Type === 'telegram' ? form.TelegramChatID.trim() : ''
+ Type: form.Type,
+ WebhookURL: form.WebhookURL.trim(),
+ TelegramToken: form.TelegramToken.trim(),
+ TelegramChatID: form.TelegramChatID.trim(),
+ Enabled: form.Enabled,
+ NotifyOnComplete: form.NotifyOnComplete,
+ NotifyOnError: form.NotifyOnError,
+ NotifyOnStop: form.NotifyOnStop,
+ NotifyOnManual: form.NotifyOnManual
 })
 
 const testDraft = async () => {
- if (testPending.value || savePending.value || secretPending.value || !validateForm()) return
+ if (testPending.value || savePending.value || !validateForm()) return
  testPending.value = true
  try {
-  await api.post('/notifications/test', buildPayload())
+  await api.post('/notifications/test', { ...buildPayload(), ID: 0 })
   message.success('测试通知发送成功')
  } catch (e) {
  } finally {
@@ -325,7 +311,7 @@ const testSaved = async (row) => {
 }
 
 const submit = async () => {
- if (savePending.value || testPending.value || secretPending.value || !validateForm()) return
+ if (savePending.value || testPending.value || !validateForm()) return
  savePending.value = true
  try {
   const payload = buildPayload()

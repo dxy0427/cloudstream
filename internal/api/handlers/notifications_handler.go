@@ -34,60 +34,6 @@ type notificationMutationRequest struct {
 	Version          *int    `json:"Version"`
 }
 
-type revealNotificationSecretRequest struct {
-	Field   string `json:"field" binding:"required"`
-	Version int    `json:"Version" binding:"required"`
-}
-
-func RevealNotificationSecretHandler(c *gin.Context) {
-	notificationID, ok := parseNotificationID(c)
-	if !ok {
-		return
-	}
-	var req revealNotificationSecretRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.Version < 1 {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "凭据请求无效"})
-		return
-	}
-	user, ok := currentUser(c)
-	if !ok {
-		return
-	}
-	var notification models.Notification
-	if err := database.DB.Where("id = ? AND user_id = ?", notificationID, user.ID).First(&notification).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "通知目标未找到"})
-		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取通知凭据失败"})
-		}
-		return
-	}
-	if notification.Version != req.Version {
-		c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "通知配置已发生变化，请刷新后重试"})
-		return
-	}
-
-	var value string
-	switch req.Field {
-	case "webhook_url":
-		if notification.Type != models.NotifyTypeWebhook {
-			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "当前通知目标不使用 Webhook URL"})
-			return
-		}
-		value = notification.WebhookURL
-	case "telegram_token":
-		if notification.Type != models.NotifyTypeTelegram {
-			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "当前通知目标不使用 Telegram Token"})
-			return
-		}
-		value = notification.TelegramToken
-	default:
-		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "不支持的凭据类型"})
-		return
-	}
-	respondSecretValue(c, req.Field, value, "当前通知目标未保存该凭据")
-}
-
 func currentUser(c *gin.Context) (models.User, bool) {
 	username, _ := c.Get("username")
 	var user models.User
@@ -109,7 +55,17 @@ func sanitizeNotification(notification models.Notification) gin.H {
 		"Enabled": notification.Enabled, "NotifyOnComplete": notification.NotifyOnComplete,
 		"NotifyOnError": notification.NotifyOnError, "NotifyOnStop": notification.NotifyOnStop,
 		"NotifyOnManual": notification.NotifyOnManual,
-		"HasWebhookURL":  notification.WebhookURL != "", "HasTelegramToken": notification.TelegramToken != "",
+	}
+}
+
+func notificationDetail(notification models.Notification) gin.H {
+	return gin.H{
+		"ID": notification.ID, "CreatedAt": notification.CreatedAt, "UpdatedAt": notification.UpdatedAt,
+		"Name": notification.Name, "Type": notification.Type, "Version": notification.Version,
+		"WebhookURL": notification.WebhookURL, "TelegramToken": notification.TelegramToken, "TelegramChatID": notification.TelegramChatID,
+		"Enabled": notification.Enabled, "NotifyOnComplete": notification.NotifyOnComplete,
+		"NotifyOnError": notification.NotifyOnError, "NotifyOnStop": notification.NotifyOnStop,
+		"NotifyOnManual": notification.NotifyOnManual,
 	}
 }
 
@@ -128,6 +84,29 @@ func ListNotificationsHandler(c *gin.Context) {
 		data = append(data, sanitizeNotification(notification))
 	}
 	c.JSON(http.StatusOK, gin.H{"code": 0, "data": data})
+}
+
+func GetNotificationHandler(c *gin.Context) {
+	setSensitiveResponseHeaders(c)
+	notificationID, ok := parseNotificationID(c)
+	if !ok {
+		return
+	}
+	user, ok := currentUser(c)
+	if !ok {
+		return
+	}
+
+	var notification models.Notification
+	if err := database.DB.Where("id = ? AND user_id = ?", notificationID, user.ID).First(&notification).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "通知目标未找到"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取通知详情失败"})
+		}
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": notificationDetail(notification)})
 }
 
 func CreateNotificationHandler(c *gin.Context) {
@@ -155,7 +134,7 @@ func CreateNotificationHandler(c *gin.Context) {
 		notification = models.Notification{UserID: user.ID}
 		notification.Version = 1
 		applyNotificationDefaults(&notification)
-		if err := applyNotificationRequest(&notification, req, nil); err != nil {
+		if err := applyNotificationRequest(&notification, req); err != nil {
 			return newAPIMutationError(http.StatusBadRequest, err.Error())
 		}
 		requested := notification
@@ -203,7 +182,7 @@ func UpdateNotificationHandler(c *gin.Context) {
 		if req.Version == nil || *req.Version != stored.Version {
 			return newAPIMutationError(http.StatusConflict, "通知配置已发生变化，请刷新后重试")
 		}
-		if err := applyNotificationRequest(&notification, req, &stored); err != nil {
+		if err := applyNotificationRequest(&notification, req); err != nil {
 			return newAPIMutationError(http.StatusBadRequest, err.Error())
 		}
 		notification.Version = stored.Version + 1
@@ -271,7 +250,6 @@ func TestNotificationHandler(c *gin.Context) {
 	}
 
 	var notification models.Notification
-	var stored *models.Notification
 	if req.ID != 0 {
 		var existing models.Notification
 		if err := database.DB.Where("id = ? AND user_id = ?", req.ID, user.ID).First(&existing).Error; err != nil {
@@ -283,7 +261,6 @@ func TestNotificationHandler(c *gin.Context) {
 			return
 		}
 		notification = existing
-		stored = &existing
 		if req.Version == nil || *req.Version != existing.Version {
 			c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "通知配置已发生变化，请刷新后重试"})
 			return
@@ -292,7 +269,7 @@ func TestNotificationHandler(c *gin.Context) {
 		notification.UserID = user.ID
 		applyNotificationDefaults(&notification)
 	}
-	if err := applyNotificationRequest(&notification, req, stored); err != nil {
+	if err := applyNotificationRequest(&notification, req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": err.Error()})
 		return
 	}
@@ -311,7 +288,7 @@ func applyNotificationDefaults(notification *models.Notification) {
 	notification.NotifyOnManual = true
 }
 
-func applyNotificationRequest(notification *models.Notification, req notificationMutationRequest, stored *models.Notification) error {
+func applyNotificationRequest(notification *models.Notification, req notificationMutationRequest) error {
 	if req.Name != nil {
 		notification.Name = strings.TrimSpace(*req.Name)
 	}
@@ -333,6 +310,15 @@ func applyNotificationRequest(notification *models.Notification, req notificatio
 	if req.NotifyOnManual != nil {
 		notification.NotifyOnManual = *req.NotifyOnManual
 	}
+	if req.WebhookURL != nil {
+		notification.WebhookURL = strings.TrimSpace(*req.WebhookURL)
+	}
+	if req.TelegramToken != nil {
+		notification.TelegramToken = strings.TrimSpace(*req.TelegramToken)
+	}
+	if req.TelegramChatID != nil {
+		notification.TelegramChatID = strings.TrimSpace(*req.TelegramChatID)
+	}
 
 	if notification.Name == "" {
 		return errors.New("通知名称不能为空")
@@ -340,12 +326,9 @@ func applyNotificationRequest(notification *models.Notification, req notificatio
 	if len([]rune(notification.Name)) > 64 {
 		return errors.New("通知名称不能超过 64 个字符")
 	}
-	typeChanged := stored != nil && notification.Type != stored.Type
 	switch notification.Type {
 	case models.NotifyTypeWebhook:
-		if req.WebhookURL != nil && strings.TrimSpace(*req.WebhookURL) != "" {
-			notification.WebhookURL = strings.TrimSpace(*req.WebhookURL)
-		} else if stored == nil || typeChanged {
+		if notification.WebhookURL == "" {
 			return errors.New("Webhook URL 不能为空")
 		}
 		if err := validateWebhookURL(notification.WebhookURL); err != nil {
@@ -354,16 +337,6 @@ func applyNotificationRequest(notification *models.Notification, req notificatio
 		notification.TelegramToken = ""
 		notification.TelegramChatID = ""
 	case models.NotifyTypeTelegram:
-		if req.TelegramToken != nil && strings.TrimSpace(*req.TelegramToken) != "" {
-			notification.TelegramToken = strings.TrimSpace(*req.TelegramToken)
-		} else if stored == nil || typeChanged {
-			return errors.New("Telegram Token 不能为空")
-		}
-		if req.TelegramChatID != nil {
-			notification.TelegramChatID = strings.TrimSpace(*req.TelegramChatID)
-		} else if stored == nil || typeChanged {
-			return errors.New("Telegram Chat ID 不能为空")
-		}
 		if notification.TelegramToken == "" || notification.TelegramChatID == "" {
 			return errors.New("Telegram Token 和 Chat ID 不能为空")
 		}

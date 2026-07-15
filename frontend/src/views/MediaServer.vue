@@ -3,7 +3,7 @@
  <n-card>
   <n-space justify="space-between" align="center">
   <h3>媒体服务器</h3>
-  <n-button type="primary" :disabled="savePending || testPending" @click="openModal(null)">添加</n-button>
+  <n-button type="primary" :disabled="detailPending || savePending || testPending" @click="openModal(null)">添加</n-button>
   </n-space>
  </n-card>
 
@@ -29,7 +29,7 @@
       </template>
       <template #footer>
        <n-space size="small">
-         <n-button size="tiny" ghost :disabled="isDeleting(row.ID)" @click.stop="openModal(row)">编辑</n-button>
+          <n-button size="tiny" ghost :loading="isDetailLoading(row.ID)" :disabled="detailPending || isDeleting(row.ID)" @click.stop="openModal(row)">编辑</n-button>
          <n-button size="tiny" type="error" ghost :loading="isDeleting(row.ID)" :disabled="isDeleting(row.ID)" @click.stop="handleDelete(row)">删除</n-button>
        </n-space>
       </template>
@@ -41,7 +41,7 @@
  </div>
 
  <n-modal v-model:show="showModal" preset="card" title="媒体服务器配置" style="width: 700px; max-width: 95%" :closable="!savePending && !testPending" :mask-closable="!savePending && !testPending" :close-on-esc="!savePending && !testPending">
-  <n-form ref="formRef" :model="form" label-placement="top" label-width="auto" :disabled="savePending || testPending || apiKeyPending">
+   <n-form ref="formRef" :model="form" label-placement="top" label-width="auto" :disabled="savePending || testPending">
   <n-form-item label="名称" path="Name">
    <n-input v-model:value="form.Name" placeholder="服务器备注名称" />
   </n-form-item>
@@ -55,8 +55,8 @@
   </n-form-item>
 
   <n-form-item label="API Key" path="APIKey">
-     <n-input :type="apiKeyVisibility.api_key ? 'text' : 'password'" autocomplete="off" v-model:value="form.APIKey" :placeholder="form.ID && form.HasAPIKey ? '点击眼睛查看，或直接输入新值' : 'Emby/Jellyfin API Key'" @update:value="value => markApiKeyEdited('api_key', value)">
-      <template #suffix><n-button text :loading="apiKeyPending" @mousedown.prevent @click.stop="toggleApiKeyVisibility('api_key')"><template #icon><n-icon><EyeInvisibleOutlined v-if="apiKeyVisibility.api_key" /><EyeOutlined v-else /></n-icon></template></n-button></template>
+      <n-input :type="apiKeyVisibility.api_key ? 'text' : 'password'" autocomplete="off" v-model:value="form.APIKey" placeholder="Emby/Jellyfin API Key">
+       <template #suffix><n-button text @mousedown.prevent @click.stop="toggleApiKeyVisibility('api_key')"><template #icon><n-icon><EyeInvisibleOutlined v-if="apiKeyVisibility.api_key" /><EyeOutlined v-else /></n-icon></template></n-button></template>
      </n-input>
   </n-form-item>
 
@@ -140,8 +140,9 @@
   <n-divider />
 
   <n-space justify="end">
-    <n-button :loading="testPending" :disabled="testPending || savePending || apiKeyPending" @click="testConnection">测试连接</n-button>
-    <n-button type="primary" :loading="savePending" :disabled="savePending || testPending || apiKeyPending" @click="submit">保存</n-button>
+    <n-button :disabled="savePending || testPending" @click="closeModal">取消</n-button>
+    <n-button :loading="testPending" :disabled="testPending || savePending" @click="testConnection">测试连接</n-button>
+    <n-button type="primary" :loading="savePending" :disabled="savePending || testPending" @click="submit">保存</n-button>
   </n-space>
   </n-form>
  </n-modal>
@@ -153,23 +154,26 @@ import { ref, reactive, onMounted, h, watch } from 'vue'
 import { NButton, NIcon, NSpace, NTag, useMessage, useDialog } from 'naive-ui'
 import api from '../api'
 import { EyeInvisibleOutlined, EyeOutlined } from '@vicons/antd'
-import { useSecretFields } from '../composables/useSecretFields'
+import { useSecretVisibility } from '../composables/useSecretVisibility'
 
 const message = useMessage()
 const dialog = useDialog()
 const data = ref([])
 const loading = ref(false)
 const showModal = ref(false)
+const detailPending = ref(false)
+const detailPendingId = ref(0)
 const savePending = ref(false)
 const testPending = ref(false)
 const deletingIds = reactive(new Set())
 const deleteConfirming = reactive(new Set())
 const clientListArray = ref([])
 const pathMappingsArray = ref([])
-let originalBinding = null
 let fetchSeq = 0
-const form = reactive({ 
+let detailSeq = 0
+const defaultForm = {
  ID: 0, 
+ Version: 0,
  Name: '', 
  ServerType: 'Emby', 
  ServerAddr: '', 
@@ -185,9 +189,9 @@ const form = reactive({
  ResolveStrmLinks: true,
  UaPassthrough: false,
  PathMappings: '[]',
-  HasAPIKey: false,
  Port: 8091
-})
+}
+const form = reactive({ ...defaultForm })
 
 const serverTypeOptions = [
  { label: 'Emby', value: 'Emby' },
@@ -218,7 +222,7 @@ const columns = [
  { title: '状态', key: 'Enabled', width: 80, render(row) { return h(NTag, { type: row.Enabled ? 'success' : 'default', size: 'small' }, { default: () => row.Enabled ? '启用' : '禁用' }) } },
  { title: '操作', key: 'actions', width: 140, render(row) {
   return h(NSpace, { size: 'small' }, { default: () => [
-   h(NButton, { size: 'tiny', disabled: isDeleting(row.ID), onClick: () => openModal(row) }, { default: () => '编辑' }),
+   h(NButton, { size: 'tiny', loading: isDetailLoading(row.ID), disabled: detailPending.value || isDeleting(row.ID), onClick: () => openModal(row) }, { default: () => '编辑' }),
    h(NButton, { size: 'tiny', type: 'error', loading: isDeleting(row.ID), disabled: isDeleting(row.ID), onClick: () => handleDelete(row) }, { default: () => '删除' })
   ]})
  }
@@ -237,55 +241,15 @@ const fetchData = async () => {
  }
 }
 
-const normalizeAddress = (value) => (value || '').trim().replace(/\/+$/, '')
-
-const apiKeyContextKey = () => JSON.stringify({
- ID: form.ID,
- UpdatedAt: form.UpdatedAt,
- ServerType: form.ServerType,
- ServerAddr: normalizeAddress(form.ServerAddr)
-})
-
-const apiKeyBindingMatches = () => Boolean(
- form.ID &&
- originalBinding &&
- form.ID === originalBinding.ID &&
- form.UpdatedAt === originalBinding.UpdatedAt &&
- form.ServerType === originalBinding.ServerType &&
- normalizeAddress(form.ServerAddr) === originalBinding.ServerAddr
-)
-
-const revealApiKey = async () => {
- if (!apiKeyBindingMatches()) {
-  message.warning('服务器地址或类型已变更，请直接输入新的 API Key')
-  throw new Error('secret binding changed')
- }
- const res = await api.post(`/mediaservers/${form.ID}/secrets/reveal`, {
-  field: 'api_key', serverType: form.ServerType, serverAddr: form.ServerAddr, updatedAt: form.UpdatedAt
- })
- return res.data?.value ?? ''
-}
-
 const {
  visible: apiKeyVisibility,
- pending: apiKeyPending,
  toggle: toggleApiKeyVisibility,
- markEdited: markApiKeyEdited,
- reset: resetApiKey,
- valueForSubmit: apiKeyValueForSubmit,
- hasExplicitValue: hasExplicitApiKey
-} = useSecretFields({
- fields: ['api_key'],
- getValue: () => form.APIKey,
- setValue: (_field, value) => { form.APIKey = value },
- hasStoredValue: () => Boolean(form.ID && form.HasAPIKey),
- reveal: revealApiKey,
- contextKey: apiKeyContextKey
-})
+ reset: resetApiKeyVisibility
+} = useSecretVisibility(['api_key'])
 
 const clearApiKey = () => {
- resetApiKey()
- originalBinding = null
+ form.APIKey = ''
+ resetApiKeyVisibility()
 }
 
 watch(showModal, (visible) => {
@@ -298,68 +262,107 @@ const showResponseWarning = (res) => {
  }
 }
 
-const openModal = (row) => {
- resetApiKey()
- if (row) {
-  Object.assign(form, row)
-  originalBinding = {
-   ServerType: row.ServerType,
-   ServerAddr: normalizeAddress(row.ServerAddr),
-   ID: row.ID,
-   UpdatedAt: row.UpdatedAt
-  }
- } else {
-  Object.assign(form, {
-  ID: 0, 
-  Name: '', 
-  ServerType: 'Emby', 
-  ServerAddr: '', 
-  APIKey: '',
-  Enabled: true,
-  CacheEnable: true,
-  HttpStrmTTL: 1,
-  ClientEnable: false,
-  ClientMode: 'BlackList',
-  ClientList: '[]',
-  HttpStrmEnable: true,
-  DisableTranscode: true,
-  ResolveStrmLinks: true,
-  UaPassthrough: false,
-  PathMappings: '[]',
-	  HasAPIKey: false,
-  Port: 8091
+const isDetailLoading = (id) => detailPending.value && detailPendingId.value === id
+
+const populateForm = (server) => {
+ Object.assign(form, defaultForm, {
+  ID: server.ID || 0,
+  Version: server.Version || 0,
+  Name: server.Name || '',
+  ServerType: server.ServerType || 'Emby',
+  ServerAddr: server.ServerAddr || '',
+  APIKey: server.APIKey || '',
+  Enabled: server.Enabled ?? true,
+  CacheEnable: server.CacheEnable ?? true,
+  HttpStrmTTL: Number.isFinite(server.HttpStrmTTL) ? server.HttpStrmTTL : 1,
+  ClientEnable: server.ClientEnable ?? false,
+  ClientMode: server.ClientMode || 'BlackList',
+  ClientList: server.ClientList || '[]',
+  HttpStrmEnable: server.HttpStrmEnable ?? true,
+  DisableTranscode: server.DisableTranscode ?? true,
+  ResolveStrmLinks: server.ResolveStrmLinks ?? true,
+  UaPassthrough: server.UaPassthrough ?? false,
+  PathMappings: server.PathMappings || '[]',
+  Port: Number.isFinite(server.Port) ? server.Port : 8091
  })
-  originalBinding = null
- }
- form.APIKey = ''
  clientListArray.value = parseArray(form.ClientList)
  pathMappingsArray.value = parseArray(form.PathMappings)
- showModal.value = true
+ resetApiKeyVisibility()
 }
 
 const preparePayload = () => ({
- ...form,
- APIKey: apiKeyValueForSubmit('api_key'),
+ ID: form.ID,
+ Version: form.Version,
+ Name: form.Name,
+ ServerType: form.ServerType,
+ ServerAddr: form.ServerAddr,
+ APIKey: form.APIKey,
+ Enabled: form.Enabled,
+ CacheEnable: form.CacheEnable,
+ HttpStrmTTL: form.HttpStrmTTL,
+ ClientEnable: form.ClientEnable,
+ ClientMode: form.ClientMode,
  ClientList: JSON.stringify(clientListArray.value),
- PathMappings: JSON.stringify(pathMappingsArray.value)
+ HttpStrmEnable: form.HttpStrmEnable,
+ DisableTranscode: form.DisableTranscode,
+ ResolveStrmLinks: form.ResolveStrmLinks,
+ UaPassthrough: form.UaPassthrough,
+ PathMappings: JSON.stringify(pathMappingsArray.value),
+ Port: form.Port
 })
 
-const validateApiKeyBinding = () => {
- if (!form.ID || hasExplicitApiKey('api_key') || !originalBinding) return true
- const typeChanged = form.ServerType !== originalBinding.ServerType
- const addressChanged = normalizeAddress(form.ServerAddr) !== originalBinding.ServerAddr
- if (typeChanged || addressChanged) {
-  message.warning('服务器地址或类型已变更，请重新输入 API Key')
+const openModal = async (row) => {
+ if (detailPending.value || savePending.value || testPending.value) return
+ if (!row) {
+  ++detailSeq
+  populateForm(defaultForm)
+  showModal.value = true
+  return
+ }
+
+ const requestId = ++detailSeq
+ detailPending.value = true
+ detailPendingId.value = row.ID
+ try {
+  const res = await api.get(`/mediaservers/${row.ID}`)
+  if (requestId !== detailSeq) return
+  populateForm(res.data || {})
+  showModal.value = true
+ } catch (e) {
+ } finally {
+  if (requestId === detailSeq) {
+   detailPending.value = false
+   detailPendingId.value = 0
+  }
+ }
+}
+
+const closeModal = () => {
+ if (savePending.value || testPending.value) return
+ showModal.value = false
+}
+
+const validateForm = () => {
+ if (!form.Name.trim()) {
+  message.warning('请输入服务器名称')
+  return false
+ }
+ if (!form.ServerAddr.trim()) {
+  message.warning('请输入服务器地址')
+  return false
+ }
+ if (!form.APIKey.trim()) {
+  message.warning('请输入 API Key')
   return false
  }
  return true
 }
 
 const testConnection = async () => {
- if (testPending.value || savePending.value || apiKeyPending.value || !validateApiKeyBinding()) return
+ if (testPending.value || savePending.value || !validateForm()) return
  testPending.value = true
  try { 
-   const res = await api.post('/mediaservers/test', preparePayload())
+   const res = await api.post('/mediaservers/test', { ...preparePayload(), ID: 0 })
   message.success(res.message) 
   showResponseWarning(res)
  } catch (e) {
@@ -369,7 +372,7 @@ const testConnection = async () => {
 }
 
 const submit = async () => {
- if (savePending.value || testPending.value || apiKeyPending.value || !validateApiKeyBinding()) return
+ if (savePending.value || testPending.value || !validateForm()) return
  savePending.value = true
  try {
   const payload = preparePayload()

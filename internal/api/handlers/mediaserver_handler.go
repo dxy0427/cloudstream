@@ -60,31 +60,33 @@ func ListMediaServersHandler(c *gin.Context) {
 func sanitizeMediaServer(server models.MediaServer) gin.H {
 	return gin.H{
 		"ID": server.ID, "CreatedAt": server.CreatedAt, "UpdatedAt": server.UpdatedAt,
-		"Name": server.Name, "ServerType": server.ServerType, "ServerAddr": server.ServerAddr,
+		"Version": server.Version,
+		"Name":    server.Name, "ServerType": server.ServerType, "ServerAddr": server.ServerAddr,
 		"CacheEnable": server.CacheEnable, "HttpStrmTTL": server.HttpStrmTTL,
 		"ClientEnable": server.ClientEnable, "ClientMode": server.ClientMode, "ClientList": server.ClientList,
 		"HttpStrmEnable": server.HttpStrmEnable, "DisableTranscode": server.DisableTranscode,
 		"ResolveStrmLinks": server.ResolveStrmLinks, "UaPassthrough": server.UaPassthrough,
 		"PathMappings": server.PathMappings, "Enabled": server.Enabled, "Port": mediaserver.ProxyPort,
-		"HasAPIKey": server.APIKey != "",
 	}
 }
 
-type revealMediaServerSecretRequest struct {
-	Field      string `json:"field" binding:"required"`
-	ServerType string `json:"serverType" binding:"required"`
-	ServerAddr string `json:"serverAddr" binding:"required"`
-	UpdatedAt  string `json:"updatedAt" binding:"required"`
+func mediaServerDetail(server models.MediaServer) gin.H {
+	return gin.H{
+		"ID": server.ID, "CreatedAt": server.CreatedAt, "UpdatedAt": server.UpdatedAt,
+		"Version": server.Version,
+		"Name":    server.Name, "ServerType": server.ServerType, "ServerAddr": server.ServerAddr, "APIKey": server.APIKey,
+		"CacheEnable": server.CacheEnable, "HttpStrmTTL": server.HttpStrmTTL,
+		"ClientEnable": server.ClientEnable, "ClientMode": server.ClientMode, "ClientList": server.ClientList,
+		"HttpStrmEnable": server.HttpStrmEnable, "DisableTranscode": server.DisableTranscode,
+		"ResolveStrmLinks": server.ResolveStrmLinks, "UaPassthrough": server.UaPassthrough,
+		"PathMappings": server.PathMappings, "Enabled": server.Enabled, "Port": mediaserver.ProxyPort,
+	}
 }
 
-func RevealMediaServerSecretHandler(c *gin.Context) {
+func GetMediaServerHandler(c *gin.Context) {
+	setSensitiveResponseHeaders(c)
 	serverID, ok := parseMediaServerID(c)
 	if !ok {
-		return
-	}
-	var req revealMediaServerSecretRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.Field != "api_key" {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "凭据类型无效"})
 		return
 	}
 	var server models.MediaServer
@@ -92,18 +94,11 @@ func RevealMediaServerSecretHandler(c *gin.Context) {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "媒体服务器未找到"})
 		} else {
-			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取媒体服务器凭据失败"})
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取媒体服务器详情失败"})
 		}
 		return
 	}
-	if !validateSecretRevealTimestamp(c, req.UpdatedAt, server.UpdatedAt, "媒体服务器配置已发生变化，请刷新后重试") {
-		return
-	}
-	if req.ServerType != server.ServerType || normalizeMediaServerAddress(req.ServerAddr) != normalizeMediaServerAddress(server.ServerAddr) {
-		c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "媒体服务器配置已发生变化，请刷新后重试"})
-		return
-	}
-	respondSecretValue(c, req.Field, server.APIKey, "当前媒体服务器未保存 API Key")
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": mediaServerDetail(server)})
 }
 
 func normalizeMediaServerAddress(value string) string {
@@ -235,6 +230,7 @@ func CreateMediaServerHandler(c *gin.Context) {
 }
 
 type mediaServerUpdateRequest struct {
+	Version          *int    `json:"Version"`
 	Name             *string `json:"Name"`
 	ServerType       *string `json:"ServerType"`
 	ServerAddr       *string `json:"ServerAddr"`
@@ -271,13 +267,15 @@ func UpdateMediaServerHandler(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "媒体服务器未找到"})
 		return
 	}
-	originalServerType := server.ServerType
-	originalServerAddr := normalizeMediaServerAddress(server.ServerAddr)
-	server.ServerAddr = originalServerAddr
+	server.ServerAddr = normalizeMediaServerAddress(server.ServerAddr)
 
 	var req mediaServerUpdateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "参数错误"})
+		return
+	}
+	if req.Version == nil || *req.Version != server.Version {
+		c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "媒体服务器配置已发生变化，请刷新后重试"})
 		return
 	}
 
@@ -290,13 +288,8 @@ func UpdateMediaServerHandler(c *gin.Context) {
 	if req.ServerAddr != nil {
 		server.ServerAddr = normalizeMediaServerAddress(*req.ServerAddr)
 	}
-	apiKeySubmitted := req.APIKey != nil && strings.TrimSpace(*req.APIKey) != ""
-	if apiKeySubmitted {
+	if req.APIKey != nil {
 		server.APIKey = strings.TrimSpace(*req.APIKey)
-	}
-	if (server.ServerType != originalServerType || server.ServerAddr != originalServerAddr) && !apiKeySubmitted {
-		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "服务器地址或类型变化时必须重新提交 API Key"})
-		return
 	}
 	if req.CacheEnable != nil {
 		server.CacheEnable = *req.CacheEnable
@@ -342,7 +335,9 @@ func UpdateMediaServerHandler(c *gin.Context) {
 		return
 	}
 
+	server.Version++
 	updates := map[string]interface{}{
+		"version":            server.Version,
 		"name":               server.Name,
 		"server_type":        server.ServerType,
 		"server_addr":        server.ServerAddr,
@@ -360,7 +355,7 @@ func UpdateMediaServerHandler(c *gin.Context) {
 		"enabled":            server.Enabled,
 		"port":               mediaserver.ProxyPort,
 	}
-	result := database.DB.Model(&models.MediaServer{}).Where("id = ?", serverID).Updates(updates)
+	result := database.DB.Model(&models.MediaServer{}).Where("id = ? AND version = ?", serverID, server.Version-1).Updates(updates)
 	if result.Error != nil {
 		log.Error().Err(result.Error).Uint("serverID", serverID).Msg("更新媒体服务器失败")
 		if isMutationUniqueConstraintError(result.Error) {
@@ -371,7 +366,7 @@ func UpdateMediaServerHandler(c *gin.Context) {
 		return
 	}
 	if result.RowsAffected == 0 {
-		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "媒体服务器未找到"})
+		c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "媒体服务器配置已发生变化，请刷新后重试"})
 		return
 	}
 	if err := database.DB.First(&server, serverID).Error; err != nil {
@@ -424,27 +419,6 @@ func TestMediaServerConnectionHandler(c *gin.Context) {
 	}
 	server.ServerAddr = normalizeMediaServerAddress(server.ServerAddr)
 	server.APIKey = strings.TrimSpace(server.APIKey)
-	if server.ID != 0 && server.APIKey == "" {
-		if uint64(server.ID) > uint64(^uint32(0)) {
-			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "无效的媒体服务器ID"})
-			return
-		}
-		var stored models.MediaServer
-		if err := database.DB.First(&stored, server.ID).Error; err != nil {
-			if !errors.Is(err, gorm.ErrRecordNotFound) {
-				log.Error().Err(err).Uint("serverID", server.ID).Msg("获取媒体服务器失败")
-				c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "获取媒体服务器失败"})
-				return
-			}
-			c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "媒体服务器未找到"})
-			return
-		}
-		if server.ServerType != stored.ServerType || normalizeMediaServerAddress(server.ServerAddr) != normalizeMediaServerAddress(stored.ServerAddr) {
-			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "服务器地址或类型变化时必须重新提交 API Key"})
-			return
-		}
-		server.APIKey = stored.APIKey
-	}
 
 	if ok, msg := validateMediaServer(&server); !ok {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": msg})

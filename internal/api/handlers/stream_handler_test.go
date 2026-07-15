@@ -65,6 +65,149 @@ func TestErrorTrackingReaderCapturesUpstreamFailure(t *testing.T) {
 	}
 }
 
+func TestProxyStreamURLForwardsMediaHeadersAndFiltersCredentials(t *testing.T) {
+	var receivedAuthorization string
+	var receivedCookie string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuthorization = r.Header.Get("Authorization")
+		receivedCookie = r.Header.Get("Cookie")
+		if r.Header.Get("Range") != "bytes=0-3" {
+			t.Errorf("Range = %q", r.Header.Get("Range"))
+		}
+		if r.Header.Get("If-Match") != `"etag"` {
+			t.Errorf("If-Match = %q", r.Header.Get("If-Match"))
+		}
+		if r.Header.Get("Accept-Encoding") != "identity" {
+			t.Errorf("Accept-Encoding = %q", r.Header.Get("Accept-Encoding"))
+		}
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Content-Range", "bytes 0-3/4")
+		w.Header().Set("Set-Cookie", "upstream=secret")
+		w.Header().Set("Connection", "keep-alive")
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write([]byte("data"))
+	}))
+	defer upstream.Close()
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodGet, "/stream", nil)
+	ctx.Request.Header.Set("Range", "bytes=0-3")
+	ctx.Request.Header.Set("If-Match", `"etag"`)
+	ctx.Request.Header.Set("Authorization", "Bearer client-secret")
+	ctx.Request.Header.Set("Cookie", "session=secret")
+	proxyStreamURL(ctx, 1, upstream.URL+"/video.mp4")
+
+	if recorder.Code != http.StatusPartialContent || recorder.Body.String() != "data" {
+		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
+	}
+	if receivedAuthorization != "" || receivedCookie != "" {
+		t.Fatalf("credentials leaked: Authorization=%q Cookie=%q", receivedAuthorization, receivedCookie)
+	}
+	if recorder.Header().Get("Content-Type") != "video/mp4" || recorder.Header().Get("Content-Range") != "bytes 0-3/4" {
+		t.Fatalf("media headers missing: %v", recorder.Header())
+	}
+	if recorder.Header().Get("Set-Cookie") != "" || recorder.Header().Get("Connection") != "" {
+		t.Fatalf("unsafe response headers forwarded: %v", recorder.Header())
+	}
+}
+
+func TestProxyStreamURLFollowsRedirectAndSupportsHead(t *testing.T) {
+	var targetMethod string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetMethod = r.Method
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Content-Length", "42")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/video.mp4", http.StatusSeeOther)
+	}))
+	defer source.Close()
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodHead, "/stream", nil)
+	proxyStreamURL(ctx, 1, source.URL+"/start")
+
+	if recorder.Code != http.StatusOK || targetMethod != http.MethodHead {
+		t.Fatalf("status=%d targetMethod=%q", recorder.Code, targetMethod)
+	}
+	if recorder.Body.Len() != 0 || recorder.Header().Get("Content-Length") != "42" {
+		t.Fatalf("HEAD body=%q headers=%v", recorder.Body.String(), recorder.Header())
+	}
+}
+
+func TestProxyStreamURLPreservesConditionalAndRangeStatuses(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		status          int
+		responseHeaders http.Header
+		wantHeader      string
+		wantValue       string
+		forbiddenHeader string
+		forbiddenValue  string
+	}{
+		{
+			name: "not modified", status: http.StatusNotModified,
+			responseHeaders: http.Header{"ETag": []string{`"etag"`}, "Content-Length": []string{"9"}},
+			wantHeader:      "ETag", wantValue: `"etag"`, forbiddenHeader: "Content-Length", forbiddenValue: "9",
+		},
+		{
+			name: "range not satisfiable", status: http.StatusRequestedRangeNotSatisfiable,
+			responseHeaders: http.Header{"Content-Range": []string{"bytes */42"}, "Content-Length": []string{"9"}},
+			wantHeader:      "Content-Range", wantValue: "bytes */42", forbiddenHeader: "Content-Length", forbiddenValue: "9",
+		},
+		{
+			name: "precondition failed", status: http.StatusPreconditionFailed,
+			responseHeaders: http.Header{"ETag": []string{`"new-etag"`}, "Content-Length": []string{"9"}},
+			wantHeader:      "ETag", wantValue: `"new-etag"`, forbiddenHeader: "Content-Length", forbiddenValue: "9",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				for key, values := range test.responseHeaders {
+					for _, value := range values {
+						w.Header().Add(key, value)
+					}
+				}
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte("sensitive"))
+			}))
+			defer upstream.Close()
+
+			recorder := httptest.NewRecorder()
+			ctx, _ := gin.CreateTestContext(recorder)
+			ctx.Request = httptest.NewRequest(http.MethodGet, "/stream", nil)
+			proxyStreamURL(ctx, 1, upstream.URL)
+			if recorder.Code != test.status || recorder.Header().Get(test.wantHeader) != test.wantValue {
+				t.Fatalf("status=%d headers=%v", recorder.Code, recorder.Header())
+			}
+			if recorder.Body.Len() != 0 || recorder.Header().Get(test.forbiddenHeader) == test.forbiddenValue {
+				t.Fatalf("body=%q headers=%v", recorder.Body.String(), recorder.Header())
+			}
+		})
+	}
+}
+
+func TestProxyStreamURLMapsUpstreamErrorsAndRejectsUnsafeURL(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "private upstream detail", http.StatusUnauthorized)
+	}))
+	defer upstream.Close()
+
+	for _, streamURL := range []string{upstream.URL, "https://user:password@example.test/video.mp4"} {
+		recorder := httptest.NewRecorder()
+		ctx, _ := gin.CreateTestContext(recorder)
+		ctx.Request = httptest.NewRequest(http.MethodGet, "/stream", nil)
+		proxyStreamURL(ctx, 1, streamURL)
+		if recorder.Code != http.StatusBadGateway || recorder.Body.String() != "Upstream service unavailable" {
+			t.Fatalf("URL=%q status=%d body=%q", streamURL, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
 type failingReader struct{ err error }
 
 func (reader failingReader) Read([]byte) (int, error) {
@@ -111,12 +254,12 @@ func TestWebDAVRedirectModePassesThroughUpstreamRedirect(t *testing.T) {
 	defer upstream.Close()
 
 	account := models.Account{
-		Name:               "redirect-dav",
-		Type:               models.AccountTypeWebDAV,
-		WebDAVURL:          upstream.URL,
-		WebDAVUsername:     "user",
-		WebDAVPassword:     "secret",
-		WebDAVPlaybackMode: models.WebDAVPlaybackModeUpstreamRedirect,
+		Name:           "redirect-dav",
+		Type:           models.AccountTypeWebDAV,
+		WebDAVURL:      upstream.URL,
+		WebDAVUsername: "user",
+		WebDAVPassword: "secret",
+		PlaybackMode:   models.PlaybackModeRedirect,
 	}
 	if err := db.Create(&account).Error; err != nil {
 		t.Fatal(err)
@@ -151,10 +294,10 @@ func TestWebDAVRedirectModeRejectsProxiedFileResponse(t *testing.T) {
 	defer upstream.Close()
 
 	account := models.Account{
-		Name:               "proxy-policy-dav",
-		Type:               models.AccountTypeWebDAV,
-		WebDAVURL:          upstream.URL,
-		WebDAVPlaybackMode: models.WebDAVPlaybackModeUpstreamRedirect,
+		Name:         "proxy-policy-dav",
+		Type:         models.AccountTypeWebDAV,
+		WebDAVURL:    upstream.URL,
+		PlaybackMode: models.PlaybackModeRedirect,
 	}
 	if err := db.Create(&account).Error; err != nil {
 		t.Fatal(err)
@@ -173,12 +316,12 @@ func TestWebDAVRedirectModeRejectsProxiedFileResponse(t *testing.T) {
 	}
 }
 
-func TestWebDAVPlaybackModeIsAuthoritativeAndUnknownFallsBackToProxy(t *testing.T) {
+func TestWebDAVModeIsAuthoritativeAndUnknownFallsBackToProxy(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		mode string
 	}{
-		{name: "proxy", mode: models.WebDAVPlaybackModeProxy},
+		{name: "proxy", mode: models.PlaybackModeProxy},
 		{name: "unknown", mode: "unknown-mode"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -191,10 +334,10 @@ func TestWebDAVPlaybackModeIsAuthoritativeAndUnknownFallsBackToProxy(t *testing.
 			defer upstream.Close()
 
 			account := models.Account{
-				Name:               "mode-authority-" + test.name,
-				Type:               models.AccountTypeWebDAV,
-				WebDAVURL:          upstream.URL,
-				WebDAVPlaybackMode: test.mode,
+				Name:         "mode-authority-" + test.name,
+				Type:         models.AccountTypeWebDAV,
+				WebDAVURL:    upstream.URL,
+				PlaybackMode: test.mode,
 			}
 			if err := db.Create(&account).Error; err != nil {
 				t.Fatal(err)
@@ -213,7 +356,7 @@ func TestWebDAVPlaybackModeIsAuthoritativeAndUnknownFallsBackToProxy(t *testing.
 	}
 }
 
-func TestSignedWebDAVRedirectModeSupportsHead(t *testing.T) {
+func TestAccountSignedWebDAVRedirectModeSupportsHead(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := openHandlerTestDB(t)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -225,28 +368,16 @@ func TestSignedWebDAVRedirectModeSupportsHead(t *testing.T) {
 	defer upstream.Close()
 
 	account := models.Account{
-		Name:               "signed-direct-dav",
-		Type:               models.AccountTypeWebDAV,
-		WebDAVURL:          upstream.URL,
-		WebDAVPlaybackMode: models.WebDAVPlaybackModeUpstreamRedirect,
+		Name:             "signed-direct-dav",
+		Type:             models.AccountTypeWebDAV,
+		WebDAVURL:        upstream.URL,
+		PlaybackMode:     models.PlaybackModeRedirect,
+		EnableStreamSign: true,
 	}
 	if err := db.Create(&account).Error; err != nil {
 		t.Fatal(err)
 	}
-	task := models.Task{
-		Name:           "signed-task",
-		AccountID:      account.ID,
-		SourceFolderID: "/",
-		LocalPath:      t.TempDir(),
-		Cron:           "0 * * * *",
-		Enabled:        true,
-		EncodePath:     true,
-		Threads:        1,
-	}
-	if err := db.Create(&task).Error; err != nil {
-		t.Fatal(err)
-	}
-	sign, err := auth.SignStreamURL(task.ID, account.ID, "/media/video.mkv", 1)
+	sign, err := auth.SignAccountStreamURL(account.ID, "/media/video.mkv", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -262,6 +393,35 @@ func TestSignedWebDAVRedirectModeSupportsHead(t *testing.T) {
 	}
 	if recorder.Body.Len() != 0 {
 		t.Fatalf("HEAD response body = %q", recorder.Body.String())
+	}
+}
+
+func TestAccountSignedStreamRequiresSigningToRemainEnabled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t)
+	account := models.Account{
+		Name:             "disabled-sign-dav",
+		Type:             models.AccountTypeWebDAV,
+		WebDAVURL:        "https://dav.example",
+		PlaybackMode:     models.PlaybackModeProxy,
+		EnableStreamSign: false,
+	}
+	if err := db.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	sign, err := auth.SignAccountStreamURL(account.ID, "/media/video.mkv", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	router := gin.New()
+	router.GET("/api/v1/stream/s/*path", UnifiedStreamHandler)
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/stream/s/placeholder?sign="+url.QueryEscape(sign), nil)
+	router.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusForbidden {
+		t.Fatalf("status=%d body=%q", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -281,7 +441,7 @@ func TestWebDAVRedirectModePassesNotModifiedAndRangeErrors(t *testing.T) {
 				w.WriteHeader(test.status)
 			}))
 			defer upstream.Close()
-			account := models.Account{Type: models.AccountTypeWebDAV, WebDAVURL: upstream.URL, WebDAVPlaybackMode: models.WebDAVPlaybackModeUpstreamRedirect}
+			account := models.Account{Type: models.AccountTypeWebDAV, WebDAVURL: upstream.URL, PlaybackMode: models.PlaybackModeRedirect}
 			client := webdav.NewClient(account)
 			recorder := httptest.NewRecorder()
 			ctx, _ := gin.CreateTestContext(recorder)
@@ -477,8 +637,8 @@ func TestFollowWebDAVRedirectsKeepsHeadForSeeOther(t *testing.T) {
 		Header:     http.Header{"Location": []string{target.URL}},
 		Body:       io.NopCloser(strings.NewReader("")),
 	}
-	client := webDAVNoRedirectHTTPClient(target.Client())
-	final, err := followWebDAVRedirects(context.Background(), client, response, http.MethodHead, nil)
+	client := noRedirectHTTPClient(target.Client())
+	final, err := followStreamRedirects(context.Background(), client, response, http.MethodHead, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

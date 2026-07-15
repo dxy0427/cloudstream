@@ -35,29 +35,19 @@ func UnifiedStreamHandler(c *gin.Context) {
 	var account models.Account
 
 	if sign != "" {
-		taskID, accID, realIdentity, err := auth.VerifyStreamSign(sign)
+		accID, realIdentity, err := auth.VerifyAccountStreamSign(sign)
 		if err != nil {
 			c.String(http.StatusForbidden, "Invalid signature")
 			return
 		}
 		accountID = accID
 
-		var task models.Task
-		if err := database.DB.First(&task, taskID).Error; err != nil {
-			c.String(http.StatusNotFound, "Task not found")
-			return
-		}
-		if task.AccountID != accountID {
-			c.String(http.StatusForbidden, "Task/account mismatch")
-			return
-		}
-		if !task.Enabled || !task.EncodePath {
-			c.String(http.StatusForbidden, "Signed access is disabled for this task")
-			return
-		}
-
 		if err := database.DB.First(&account, accountID).Error; err != nil {
 			c.String(http.StatusNotFound, "Account not found")
+			return
+		}
+		if !account.EnableStreamSign {
+			c.String(http.StatusForbidden, "Signed access is disabled for this account")
 			return
 		}
 
@@ -125,13 +115,12 @@ func UnifiedStreamHandler(c *gin.Context) {
 			c.String(http.StatusBadRequest, "WebDAV requires path identifier")
 			return
 		}
-		if models.WebDAVPlaybackModeUsesUpstreamRedirect(account.WebDAVPlaybackMode) {
+		if models.NormalizePlaybackMode(account.PlaybackMode, account.Type) == models.PlaybackModeRedirect {
 			redirectWebDAVDownload(c, cl, pathStr)
 			return
-		} else {
-			proxyWebDAVDownload(c, cl, pathStr)
-			return
 		}
+		proxyWebDAVDownload(c, cl, pathStr)
+		return
 	case *pan123.Client:
 		downloadURL, err = cl.GetDownloadURLContext(c.Request.Context(), identifier)
 	}
@@ -147,7 +136,11 @@ func UnifiedStreamHandler(c *gin.Context) {
 		c.String(http.StatusBadGateway, "Upstream service unavailable")
 		return
 	}
-	c.Header("Cache-Control", "no-store")
-	c.Header("Referrer-Policy", "no-referrer")
-	c.Redirect(http.StatusFound, downloadURL)
+	if models.NormalizePlaybackMode(account.PlaybackMode, account.Type) == models.PlaybackModeRedirect {
+		c.Header("Cache-Control", "no-store")
+		c.Header("Referrer-Policy", "no-referrer")
+		c.Redirect(http.StatusFound, downloadURL)
+		return
+	}
+	proxyStreamURL(c, accountID, downloadURL)
 }

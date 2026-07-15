@@ -113,14 +113,13 @@ func TestContextRequestsCancelPromptly(t *testing.T) {
 	}
 }
 
-func TestNewClientInfersLegacyEmptyAuthMode(t *testing.T) {
-	tokenClient := NewClient(models.Account{OpenListToken: "token"})
-	if tokenClient.AuthMode != "token" || tokenClient.StaticToken != "token" {
-		t.Fatalf("legacy token account was not normalized: %+v", tokenClient)
+func TestNewClientRejectsInvalidAuthMode(t *testing.T) {
+	client := NewClient(models.Account{OpenListAuthMode: "invalid", OpenListToken: "token"})
+	if client.AuthMode != "invalid" || client.StaticToken != "" {
+		t.Fatalf("invalid auth mode was normalized: %+v", client)
 	}
-	passwordClient := NewClient(models.Account{OpenListUsername: "user", OpenListPassword: "secret"})
-	if passwordClient.AuthMode != "password" || passwordClient.Username != "user" || passwordClient.Password != "secret" {
-		t.Fatalf("legacy password account was not normalized: %+v", passwordClient)
+	if _, err := client.getTokenContext(context.Background(), "test"); err == nil {
+		t.Fatal("invalid auth mode was accepted")
 	}
 }
 

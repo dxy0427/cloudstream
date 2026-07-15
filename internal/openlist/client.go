@@ -92,13 +92,6 @@ func NewClient(account models.Account) *Client {
 	}
 	base = strings.TrimRight(base, "/")
 	authMode := strings.TrimSpace(account.OpenListAuthMode)
-	if authMode != "token" && authMode != "password" {
-		if strings.TrimSpace(account.OpenListToken) != "" {
-			authMode = "token"
-		} else {
-			authMode = "password"
-		}
-	}
 
 	client := &Client{
 		AccountID:           account.ID,

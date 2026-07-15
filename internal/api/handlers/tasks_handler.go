@@ -47,9 +47,6 @@ func validateTask(tx *gorm.DB, task *models.Task) error {
 		return fmt.Errorf("本地路径不能是根目录")
 	}
 	task.LocalPath = cleanPath
-	if task.SignExpireHours < 0 {
-		return fmt.Errorf("直链有效期不能为负数")
-	}
 	if task.Threads < 1 || task.Threads > 16 {
 		return fmt.Errorf("并发线程必须在 1 到 16 之间")
 	}
@@ -76,25 +73,23 @@ func buildTaskList() ([]gin.H, error) {
 	result := make([]gin.H, 0, len(tasks))
 	for _, task := range tasks {
 		result = append(result, gin.H{
-			"ID":              task.ID,
-			"CreatedAt":       task.CreatedAt,
-			"UpdatedAt":       task.UpdatedAt,
-			"Name":            task.Name,
-			"AccountID":       task.AccountID,
-			"SourceFolderID":  task.SourceFolderID,
-			"LocalPath":       task.LocalPath,
-			"Cron":            task.Cron,
-			"Enabled":         task.Enabled,
-			"Overwrite":       task.Overwrite,
-			"SyncDelete":      task.SyncDelete,
-			"EncodePath":      task.EncodePath,
-			"SignExpireHours": task.SignExpireHours,
-			"StrmExtensions":  task.StrmExtensions,
-			"MetaExtensions":  task.MetaExtensions,
-			"Threads":         task.Threads,
-			"ProcessedCount":  task.ProcessedCount,
-			"LastRunStatus":   task.LastRunStatus,
-			"IsRunning":       core.IsTaskRunning(task.ID),
+			"ID":             task.ID,
+			"CreatedAt":      task.CreatedAt,
+			"UpdatedAt":      task.UpdatedAt,
+			"Name":           task.Name,
+			"AccountID":      task.AccountID,
+			"SourceFolderID": task.SourceFolderID,
+			"LocalPath":      task.LocalPath,
+			"Cron":           task.Cron,
+			"Enabled":        task.Enabled,
+			"Overwrite":      task.Overwrite,
+			"SyncDelete":     task.SyncDelete,
+			"StrmExtensions": task.StrmExtensions,
+			"MetaExtensions": task.MetaExtensions,
+			"Threads":        task.Threads,
+			"ProcessedCount": task.ProcessedCount,
+			"LastRunStatus":  task.LastRunStatus,
+			"IsRunning":      core.IsTaskRunning(task.ID),
 		})
 	}
 	return result, nil
@@ -150,19 +145,17 @@ func StreamTasksHandler(c *gin.Context) {
 }
 
 type taskCreateRequest struct {
-	Name            string `json:"Name"`
-	AccountID       uint   `json:"AccountID"`
-	SourceFolderID  string `json:"SourceFolderID"`
-	LocalPath       string `json:"LocalPath"`
-	Cron            string `json:"Cron"`
-	Enabled         *bool  `json:"Enabled"`
-	Overwrite       bool   `json:"Overwrite"`
-	SyncDelete      bool   `json:"SyncDelete"`
-	EncodePath      bool   `json:"EncodePath"`
-	SignExpireHours int    `json:"SignExpireHours"`
-	StrmExtensions  string `json:"StrmExtensions"`
-	MetaExtensions  string `json:"MetaExtensions"`
-	Threads         int    `json:"Threads"`
+	Name           string `json:"Name"`
+	AccountID      uint   `json:"AccountID"`
+	SourceFolderID string `json:"SourceFolderID"`
+	LocalPath      string `json:"LocalPath"`
+	Cron           string `json:"Cron"`
+	Enabled        *bool  `json:"Enabled"`
+	Overwrite      bool   `json:"Overwrite"`
+	SyncDelete     bool   `json:"SyncDelete"`
+	StrmExtensions string `json:"StrmExtensions"`
+	MetaExtensions string `json:"MetaExtensions"`
+	Threads        int    `json:"Threads"`
 }
 
 func CreateTaskHandler(c *gin.Context) {
@@ -187,7 +180,7 @@ func CreateTaskHandler(c *gin.Context) {
 	task := models.Task{
 		Name: req.Name, AccountID: req.AccountID, SourceFolderID: req.SourceFolderID,
 		LocalPath: req.LocalPath, Cron: req.Cron, Enabled: enabled, Overwrite: req.Overwrite,
-		SyncDelete: req.SyncDelete, EncodePath: req.EncodePath, SignExpireHours: req.SignExpireHours,
+		SyncDelete:     req.SyncDelete,
 		StrmExtensions: req.StrmExtensions, MetaExtensions: req.MetaExtensions, Threads: req.Threads,
 	}
 
@@ -228,19 +221,17 @@ func CreateTaskHandler(c *gin.Context) {
 }
 
 type taskUpdateRequest struct {
-	Name            *string `json:"Name"`
-	AccountID       *uint   `json:"AccountID"`
-	SourceFolderID  *string `json:"SourceFolderID"`
-	LocalPath       *string `json:"LocalPath"`
-	Cron            *string `json:"Cron"`
-	Enabled         *bool   `json:"Enabled"`
-	Overwrite       *bool   `json:"Overwrite"`
-	SyncDelete      *bool   `json:"SyncDelete"`
-	EncodePath      *bool   `json:"EncodePath"`
-	SignExpireHours *int    `json:"SignExpireHours"`
-	StrmExtensions  *string `json:"StrmExtensions"`
-	MetaExtensions  *string `json:"MetaExtensions"`
-	Threads         *int    `json:"Threads"`
+	Name           *string `json:"Name"`
+	AccountID      *uint   `json:"AccountID"`
+	SourceFolderID *string `json:"SourceFolderID"`
+	LocalPath      *string `json:"LocalPath"`
+	Cron           *string `json:"Cron"`
+	Enabled        *bool   `json:"Enabled"`
+	Overwrite      *bool   `json:"Overwrite"`
+	SyncDelete     *bool   `json:"SyncDelete"`
+	StrmExtensions *string `json:"StrmExtensions"`
+	MetaExtensions *string `json:"MetaExtensions"`
+	Threads        *int    `json:"Threads"`
 }
 
 func UpdateTaskHandler(c *gin.Context) {
@@ -300,12 +291,6 @@ func UpdateTaskHandler(c *gin.Context) {
 		if req.SyncDelete != nil {
 			task.SyncDelete = *req.SyncDelete
 		}
-		if req.EncodePath != nil {
-			task.EncodePath = *req.EncodePath
-		}
-		if req.SignExpireHours != nil {
-			task.SignExpireHours = *req.SignExpireHours
-		}
 		if req.StrmExtensions != nil {
 			task.StrmExtensions = *req.StrmExtensions
 		}
@@ -328,19 +313,17 @@ func UpdateTaskHandler(c *gin.Context) {
 		}
 
 		result := tx.Model(&models.Task{}).Where("id = ?", taskID).Updates(map[string]any{
-			"name":              task.Name,
-			"account_id":        task.AccountID,
-			"source_folder_id":  task.SourceFolderID,
-			"local_path":        task.LocalPath,
-			"cron":              task.Cron,
-			"enabled":           task.Enabled,
-			"overwrite":         task.Overwrite,
-			"sync_delete":       task.SyncDelete,
-			"encode_path":       task.EncodePath,
-			"sign_expire_hours": task.SignExpireHours,
-			"strm_extensions":   task.StrmExtensions,
-			"meta_extensions":   task.MetaExtensions,
-			"threads":           task.Threads,
+			"name":             task.Name,
+			"account_id":       task.AccountID,
+			"source_folder_id": task.SourceFolderID,
+			"local_path":       task.LocalPath,
+			"cron":             task.Cron,
+			"enabled":          task.Enabled,
+			"overwrite":        task.Overwrite,
+			"sync_delete":      task.SyncDelete,
+			"strm_extensions":  task.StrmExtensions,
+			"meta_extensions":  task.MetaExtensions,
+			"threads":          task.Threads,
 		})
 		if result.Error != nil {
 			return result.Error

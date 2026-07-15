@@ -784,8 +784,8 @@ func createStrmFile(ctx context.Context, client *pan123.Client, accountType stri
 	}
 
 	var streamURL string
-	if task.EncodePath {
-		sign, err := auth.SignStreamURL(task.ID, task.AccountID, realIdentity, task.SignExpireHours)
+	if client.Account.EnableStreamSign {
+		sign, err := auth.SignAccountStreamURL(task.AccountID, realIdentity, client.Account.SignExpireHours)
 		if err != nil {
 			return fmt.Errorf("生成签名失败: %w", err)
 		}

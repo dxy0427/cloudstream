@@ -103,8 +103,8 @@ func InitRouter() *gin.Engine {
 			accounts := authorized.Group("/accounts")
 			{
 				accounts.GET("", handlers.ListAccountsHandler)
+				accounts.GET("/:id", handlers.GetAccountHandler)
 				accounts.POST("", handlers.CreateAccountHandler)
-				accounts.POST("/:id/secrets/reveal", handlers.RevealAccountSecretHandler)
 				accounts.PUT("/:id", handlers.UpdateAccountHandler)
 				accounts.DELETE("/:id", handlers.DeleteAccountHandler)
 			}
@@ -112,9 +112,9 @@ func InitRouter() *gin.Engine {
 			notifications := authorized.Group("/notifications")
 			{
 				notifications.GET("", handlers.ListNotificationsHandler)
+				notifications.GET("/:id", handlers.GetNotificationHandler)
 				notifications.POST("", handlers.CreateNotificationHandler)
 				notifications.POST("/test", handlers.TestNotificationHandler)
-				notifications.POST("/:id/secrets/reveal", handlers.RevealNotificationSecretHandler)
 				notifications.PUT("/:id", handlers.UpdateNotificationHandler)
 				notifications.DELETE("/:id", handlers.DeleteNotificationHandler)
 			}
@@ -138,8 +138,8 @@ func InitRouter() *gin.Engine {
 			mediaservers := authorized.Group("/mediaservers")
 			{
 				mediaservers.GET("", handlers.ListMediaServersHandler)
+				mediaservers.GET("/:id", handlers.GetMediaServerHandler)
 				mediaservers.POST("", handlers.CreateMediaServerHandler)
-				mediaservers.POST("/:id/secrets/reveal", handlers.RevealMediaServerSecretHandler)
 				mediaservers.PUT("/:id", handlers.UpdateMediaServerHandler)
 				mediaservers.DELETE("/:id", handlers.DeleteMediaServerHandler)
 				mediaservers.POST("/test", handlers.TestMediaServerConnectionHandler)
