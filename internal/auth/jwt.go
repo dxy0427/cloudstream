@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -23,7 +24,11 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-var jwtSecret []byte
+var (
+	jwtSecret     []byte
+	jwtSecretOnce sync.Once
+	jwtSecretErr  error
+)
 
 const (
 	secretFileName      = ".jwt_secret"
@@ -32,27 +37,35 @@ const (
 	contextTokenExpiry  = "exp"
 )
 
-func init() {
+func InitializeJWTSecret() error {
+	jwtSecretOnce.Do(func() {
+		jwtSecretErr = loadOrCreateJWTSecret()
+	})
+	return jwtSecretErr
+}
+
+func loadOrCreateJWTSecret() error {
 	fullPath := filepath.Join(secretDirPath, secretFileName)
 	secret, err := os.ReadFile(fullPath)
 	if err == nil && len(secret) >= 32 {
 		jwtSecret = secret
 		log.Info().Str("path", fullPath).Msg("已从文件加载 JWT 密钥")
-		return
+		return nil
 	}
 	log.Warn().Str("path", fullPath).Msg("JWT 密钥文件不存在或无效，正在生成新的密钥...")
 	newSecret := make([]byte, 32)
 	if _, err := rand.Read(newSecret); err != nil {
-		log.Fatal().Err(err).Msg("无法生成新的 JWT 密钥")
+		return fmt.Errorf("无法生成 JWT 密钥: %w", err)
 	}
 	if err := os.MkdirAll(secretDirPath, 0o750); err != nil {
-		log.Fatal().Err(err).Msg("无法创建用于存储密钥的目录")
+		return fmt.Errorf("无法创建用于存储 JWT 密钥的目录: %w", err)
 	}
 	if err := os.WriteFile(fullPath, newSecret, 0o600); err != nil {
-		log.Fatal().Err(err).Msg("无法保存新的 JWT 密钥到文件")
+		return fmt.Errorf("无法保存 JWT 密钥: %w", err)
 	}
 	jwtSecret = newSecret
 	log.Info().Str("path", fullPath).Msg("已成功生成并保存新的 JWT 密钥")
+	return nil
 }
 
 type LoginRequest struct {
@@ -122,6 +135,9 @@ func isTrustedLocalProxy(c *gin.Context) bool {
 }
 
 func generateToken(username string, tokenVersion int) (string, error) {
+	if err := InitializeJWTSecret(); err != nil {
+		return "", err
+	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"username": username,
 		"version":  tokenVersion,
@@ -133,6 +149,10 @@ func generateToken(username string, tokenVersion int) (string, error) {
 
 func JWTAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if err := InitializeJWTSecret(); err != nil {
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "认证服务不可用"})
+			return
+		}
 		var tokenString string
 		if authHeader := c.GetHeader("Authorization"); authHeader != "" {
 			if strings.HasPrefix(authHeader, "Bearer ") {
@@ -211,8 +231,8 @@ func numericClaimAsInt(value interface{}) (int, bool) {
 }
 
 func SignAccountStreamURL(accountID uint, realIdentity string, expireHours int) (string, error) {
-	if len(jwtSecret) == 0 {
-		return "", fmt.Errorf("secret not initialized")
+	if err := InitializeJWTSecret(); err != nil {
+		return "", err
 	}
 	if accountID == 0 {
 		return "", fmt.Errorf("account id is required")
@@ -249,6 +269,9 @@ func SignAccountStreamURL(accountID uint, realIdentity string, expireHours int) 
 }
 
 func VerifyAccountStreamSign(signStr string) (uint, string, error) {
+	if err := InitializeJWTSecret(); err != nil {
+		return 0, "", err
+	}
 	parts := strings.Split(signStr, ":")
 	if len(parts) != 5 {
 		return 0, "", fmt.Errorf("invalid sign format")

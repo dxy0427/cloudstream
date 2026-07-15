@@ -1,7 +1,9 @@
 package utils
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 
 	"golang.org/x/crypto/bcrypt"
@@ -30,4 +32,12 @@ func IsSHA256Hex(s string) bool {
 func SHA256Hex(s string) string {
 	h := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(h[:])
+}
+
+func GenerateRandomPassword() (string, error) {
+	randomBytes := make([]byte, 24)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(randomBytes), nil
 }

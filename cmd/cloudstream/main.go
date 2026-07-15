@@ -1,7 +1,9 @@
 package main
 
 import (
+	"cloudstream/internal/admin"
 	"cloudstream/internal/api"
+	"cloudstream/internal/auth"
 	"cloudstream/internal/core"
 	"cloudstream/internal/database"
 	"cloudstream/internal/logger"
@@ -18,11 +20,24 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+const databasePath = "./data/cloudstream.db"
+
 func main() {
+	if len(os.Args) > 1 {
+		if err := admin.Run(os.Args[1:], databasePath, os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if err := auth.InitializeJWTSecret(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	logger.Init()
 
-	const dbPath = "./data/cloudstream.db"
-	if err := database.ConnectDatabase(dbPath); err != nil {
+	if err := database.ConnectDatabase(databasePath); err != nil {
 		log.Fatal().Err(err).Msg("无法连接到数据库")
 	}
 

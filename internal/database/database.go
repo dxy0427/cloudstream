@@ -3,9 +3,8 @@ package database
 import (
 	"cloudstream/internal/models"
 	"cloudstream/internal/utils"
-	"crypto/rand"
-	"encoding/base64"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 
@@ -17,31 +16,72 @@ import (
 
 var DB *gorm.DB
 
-func ConnectDatabase(dbPath string) error {
-	var err error
+func openSQLiteDatabase(dbPath string) (*gorm.DB, error) {
+	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{
+		Logger:         logger.Default.LogMode(logger.Silent),
+		TranslateError: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("连接数据库失败: %w", err)
+	}
 
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0755); err != nil {
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	sqlDB.SetMaxOpenConns(1)
+	sqlDB.SetMaxIdleConns(1)
+	sqlDB.SetConnMaxLifetime(0)
+	return db, nil
+}
+
+func OpenExistingDatabase(dbPath string) (*gorm.DB, error) {
+	info, err := os.Stat(dbPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("数据库不存在: %s", dbPath)
+		}
+		return nil, fmt.Errorf("检查数据库失败: %w", err)
+	}
+	if info.IsDir() {
+		return nil, fmt.Errorf("数据库路径是目录: %s", dbPath)
+	}
+
+	absolutePath, err := filepath.Abs(dbPath)
+	if err != nil {
+		return nil, fmt.Errorf("解析数据库路径失败: %w", err)
+	}
+	dsn := (&url.URL{Scheme: "file", Path: filepath.ToSlash(absolutePath), RawQuery: "mode=rw"}).String()
+	db, err := openSQLiteDatabase(dsn)
+	if err != nil {
+		return nil, err
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := sqlDB.Exec("PRAGMA busy_timeout=5000;"); err != nil {
+		_ = sqlDB.Close()
+		return nil, fmt.Errorf("设置 busy_timeout 失败: %w", err)
+	}
+	return db, nil
+}
+
+func ConnectDatabase(dbPath string) error {
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0750); err != nil {
 		return fmt.Errorf("创建数据目录失败: %w", err)
 	}
 
-	dbConfig := &gorm.Config{
-		Logger:         logger.Default.LogMode(logger.Silent),
-		TranslateError: true,
-	}
-
-	DB, err = gorm.Open(sqlite.Open(dbPath), dbConfig)
+	var err error
+	DB, err = openSQLiteDatabase(dbPath)
 	if err != nil {
-		return fmt.Errorf("连接数据库失败: %w", err)
+		return err
 	}
 
 	sqlDB, err := DB.DB()
 	if err != nil {
 		return err
 	}
-
-	sqlDB.SetMaxOpenConns(1)
-	sqlDB.SetMaxIdleConns(1)
-	sqlDB.SetConnMaxLifetime(0)
 
 	if _, err := sqlDB.Exec("PRAGMA journal_mode=WAL;"); err != nil {
 		log.Warn().Err(err).Msg("开启 SQLite WAL 模式失败，性能可能受限")
@@ -101,9 +141,9 @@ func initialAdminPassword() (string, bool, error) {
 		return password, false, nil
 	}
 
-	randomBytes := make([]byte, 24)
-	if _, err := rand.Read(randomBytes); err != nil {
+	password, err := utils.GenerateRandomPassword()
+	if err != nil {
 		return "", false, fmt.Errorf("生成初始管理员密码失败: %w", err)
 	}
-	return base64.RawURLEncoding.EncodeToString(randomBytes), true, nil
+	return password, true, nil
 }

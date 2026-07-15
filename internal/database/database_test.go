@@ -2,12 +2,42 @@ package database
 
 import (
 	"cloudstream/internal/models"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
+
+func TestOpenExistingDatabaseDoesNotCreateMissingFile(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "missing", "cloudstream.db")
+	if _, err := OpenExistingDatabase(dbPath); err == nil || !strings.Contains(err.Error(), "数据库不存在") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Fatalf("missing database was created: %v", err)
+	}
+}
+
+func TestOpenExistingDatabaseUsesReadWriteMode(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "current.db")
+	if err := os.WriteFile(dbPath, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := OpenExistingDatabase(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestAccountModelUsesCurrentPlaybackColumn(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "current.db")), &gorm.Config{})
