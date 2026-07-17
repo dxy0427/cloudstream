@@ -85,13 +85,12 @@ func StreamSystemLogsHandler(c *gin.Context) {
 		return
 	}
 
-	logs, cursor, err := core.ReadRecentLogsWithCursor()
-	if err == nil && len(logs) > 0 {
-		for _, line := range logs {
-			c.SSEvent("", line)
-		}
-		flusher.Flush()
+	logs, cursor, err := core.ReadRecentLogsWithCursorContext(c.Request.Context())
+	if err != nil {
+		return
 	}
+	c.SSEvent("snapshot", logs)
+	flusher.Flush()
 
 	pollTicker := time.NewTicker(2 * time.Second)
 	heartbeatTicker := time.NewTicker(15 * time.Second)
@@ -102,13 +101,11 @@ func StreamSystemLogsHandler(c *gin.Context) {
 		case <-c.Request.Context().Done():
 			return
 		case <-pollTicker.C:
-			lines, newCursor, err := core.ReadLogsFromCursor(cursor)
+			lines, newCursor, err := core.ReadLogsFromCursorContext(c.Request.Context(), cursor)
 			if err == nil {
 				cursor = newCursor
-				for _, line := range lines {
-					c.SSEvent("", line)
-				}
 				if len(lines) > 0 {
+					c.SSEvent("logs", lines)
 					flusher.Flush()
 				}
 			}

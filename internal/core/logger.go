@@ -1,8 +1,8 @@
 package core
 
 import (
-	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -15,7 +15,11 @@ import (
 // LogFilePath 与 internal/logger/logger.go 中保持一致
 const LogFilePath = "./data/cloudstream.log"
 
-const maxLogLineBytes = 256 * 1024
+const (
+	maxLogLineBytes   = 256 * 1024
+	maxRecentLogLines = 200
+	logReadChunkBytes = 64 * 1024
+)
 
 type LogCursor struct {
 	Offset   int64
@@ -23,6 +27,10 @@ type LogCursor struct {
 }
 
 func tailLines(path string, maxLines int) ([]string, LogCursor, error) {
+	return tailLinesContext(context.Background(), path, maxLines)
+}
+
+func tailLinesContext(ctx context.Context, path string, maxLines int) ([]string, LogCursor, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -32,39 +40,35 @@ func tailLines(path string, maxLines int) ([]string, LogCursor, error) {
 	}
 	defer file.Close()
 
-	lines := make([]string, 0, maxLines)
-	if err := readLogLines(file, func(line string) {
-		formatted := normalizeLogLine(line)
-		if formatted != "" {
-			lines = append(lines, formatted)
-		}
-		if len(lines) > maxLines {
-			lines = lines[1:]
-		}
-	}); err != nil {
-		return nil, LogCursor{}, err
-	}
-	offset, err := file.Seek(0, io.SeekEnd)
-	if err != nil {
-		return nil, LogCursor{}, err
-	}
 	info, err := file.Stat()
 	if err != nil {
 		return nil, LogCursor{}, err
 	}
-	return lines, LogCursor{Offset: offset, FileInfo: info}, nil
+	lines, err := readTailLogLines(ctx, file, 0, info.Size(), maxLines)
+	if err != nil {
+		return nil, LogCursor{}, err
+	}
+	return lines, LogCursor{Offset: info.Size(), FileInfo: info}, nil
 }
 
 func ReadRecentLogs() ([]string, error) {
-	lines, _, err := tailLines(LogFilePath, 300)
+	lines, _, err := tailLines(LogFilePath, maxRecentLogLines)
 	return lines, err
 }
 
 func ReadRecentLogsWithCursor() ([]string, LogCursor, error) {
-	return tailLines(LogFilePath, 300)
+	return ReadRecentLogsWithCursorContext(context.Background())
+}
+
+func ReadRecentLogsWithCursorContext(ctx context.Context) ([]string, LogCursor, error) {
+	return tailLinesContext(ctx, LogFilePath, maxRecentLogLines)
 }
 
 func ReadLogsFromCursor(cursor LogCursor) ([]string, LogCursor, error) {
+	return ReadLogsFromCursorContext(context.Background(), cursor)
+}
+
+func ReadLogsFromCursorContext(ctx context.Context, cursor LogCursor) ([]string, LogCursor, error) {
 	file, err := os.Open(LogFilePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -78,68 +82,84 @@ func ReadLogsFromCursor(cursor LogCursor) ([]string, LogCursor, error) {
 	if err != nil {
 		return nil, cursor, err
 	}
-	offset := cursor.Offset
-	if cursor.FileInfo == nil || !os.SameFile(cursor.FileInfo, info) || offset > info.Size() {
-		offset = 0
+	startOffset := cursor.Offset
+	if cursor.FileInfo == nil || !os.SameFile(cursor.FileInfo, info) || startOffset < 0 || startOffset > info.Size() {
+		startOffset = 0
 	}
-	if _, err := file.Seek(offset, io.SeekStart); err != nil {
+	lines, err := readTailLogLines(ctx, file, startOffset, info.Size(), maxRecentLogLines)
+	if err != nil {
 		return nil, cursor, err
 	}
+	return lines, LogCursor{Offset: info.Size(), FileInfo: info}, nil
+}
 
-	lines := []string{}
-	if err := readLogLines(file, func(line string) {
-		formatted := normalizeLogLine(line)
+func readTailLogLines(ctx context.Context, file *os.File, startOffset, endOffset int64, maxLines int) ([]string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if maxLines <= 0 || endOffset <= startOffset {
+		return []string{}, nil
+	}
+
+	position := endOffset
+	newlineCount := 0
+	chunks := make([][]byte, 0, 4)
+	for position > startOffset && newlineCount <= maxLines {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		readSize := int64(logReadChunkBytes)
+		if available := position - startOffset; available < readSize {
+			readSize = available
+		}
+		readOffset := position - readSize
+		chunk := make([]byte, int(readSize))
+		n, err := file.ReadAt(chunk, readOffset)
+		if err != nil && err != io.EOF {
+			return nil, err
+		}
+		if n == 0 {
+			break
+		}
+		chunk = chunk[:n]
+		chunks = append(chunks, chunk)
+		newlineCount += bytes.Count(chunk, []byte{'\n'})
+		position = readOffset
+	}
+
+	totalBytes := 0
+	for _, chunk := range chunks {
+		totalBytes += len(chunk)
+	}
+	data := make([]byte, 0, totalBytes)
+	for i := len(chunks) - 1; i >= 0; i-- {
+		data = append(data, chunks[i]...)
+	}
+	parts := bytes.Split(data, []byte{'\n'})
+	lines := make([]string, 0, maxLines)
+	for i := len(parts) - 1; i >= 0 && len(lines) < maxLines; i-- {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if i == len(parts)-1 && len(parts[i]) == 0 {
+			continue
+		}
+		if i == 0 && position > startOffset {
+			break
+		}
+		line := bytes.TrimSuffix(parts[i], []byte{'\r'})
+		if len(line) > maxLogLineBytes {
+			line = line[:maxLogLineBytes]
+		}
+		formatted := normalizeLogLine(string(line))
 		if formatted != "" {
 			lines = append(lines, formatted)
 		}
-	}); err != nil {
-		return nil, cursor, err
 	}
-	newOffset, err := file.Seek(0, io.SeekCurrent)
-	if err != nil {
-		return lines, cursor, err
+	for left, right := 0, len(lines)-1; left < right; left, right = left+1, right-1 {
+		lines[left], lines[right] = lines[right], lines[left]
 	}
-	return lines, LogCursor{Offset: newOffset, FileInfo: info}, nil
-}
-
-func readLogLines(reader io.Reader, handle func(string)) error {
-	buffered := bufio.NewReaderSize(reader, 64*1024)
-	for {
-		line, err := readBoundedLogLine(buffered)
-		if len(line) > 0 {
-			handle(string(bytes.TrimSuffix(line, []byte{'\r'})))
-		}
-		if err == io.EOF {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-	}
-}
-
-func readBoundedLogLine(reader *bufio.Reader) ([]byte, error) {
-	line := make([]byte, 0, 64*1024)
-	for {
-		fragment, err := reader.ReadSlice('\n')
-		fragment = bytes.TrimSuffix(fragment, []byte{'\n'})
-		remaining := maxLogLineBytes - len(line)
-		if remaining > 0 {
-			if len(fragment) > remaining {
-				fragment = fragment[:remaining]
-			}
-			line = append(line, fragment...)
-		}
-		if err == nil {
-			return line, nil
-		}
-		if err == io.EOF {
-			return line, io.EOF
-		}
-		if err != bufio.ErrBufferFull {
-			return nil, err
-		}
-	}
+	return lines, nil
 }
 
 var (

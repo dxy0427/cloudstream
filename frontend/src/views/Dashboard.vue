@@ -24,7 +24,7 @@
 
       <template v-if="canRenderLogs">
         <div ref="logContainerRef" v-if="displayLogs.length > 0" class="log-panel">
-          <div v-for="(line, idx) in displayLogs" :key="idx" :class="['log-line', levelClass(line)]">{{ line }}</div>
+          <div v-for="line in displayLogs" :key="line.id" :class="['log-line', levelClass(line.text)]">{{ line.text }}</div>
         </div>
         <n-empty v-else description="暂无系统日志" style="padding: 24px 0;" />
       </template>
@@ -36,7 +36,7 @@
 <script setup>
 defineOptions({ name: 'Dashboard' })
 
-import { reactive, ref, onMounted, onUnmounted, onActivated, onDeactivated, computed, nextTick, watch } from 'vue'
+import { reactive, ref, onMounted, onUnmounted, onActivated, onDeactivated, computed, watch } from 'vue'
 import api from '../api'
 
 const stats = reactive({ accounts: 0, tasks: 0, runningTasks: 0 })
@@ -50,12 +50,11 @@ const hasEverConnected = ref(false)
 let eventSource = null
 let reconnectTimer = null
 let statsTimer = null
-let resumeTimer = null
-let scrollTimer = null
 let scrollRafId = null
 let isActive = false
-let clearLogsOnOpen = false
+let wasDeactivated = false
 let streamGeneration = 0
+let nextLogId = 1
 
 const levelOptions = [
   { label: '全部', value: 'ALL' },
@@ -77,12 +76,12 @@ const canRenderLogs = computed(() => streamStatus.value === 'connected' || hasEv
 const filteredLogs = computed(() => {
   if (!canRenderLogs.value) return []
   if (levelFilter.value === 'ALL') return logs.value
-  return logs.value.filter(line => line.includes(`[${levelFilter.value}]`))
+  return logs.value.filter(line => line.text.includes(`[${levelFilter.value}]`))
 })
 
 const displayLogs = computed(() => filteredLogs.value.slice(-200))
 
-const shouldAutoScroll = () => canRenderLogs.value && autoScroll.value
+const shouldAutoScroll = () => isActive && canRenderLogs.value && autoScroll.value
 
 const scrollToBottomNow = () => {
   if (!shouldAutoScroll()) return
@@ -91,32 +90,19 @@ const scrollToBottomNow = () => {
 }
 
 const cancelPendingScroll = () => {
-  if (scrollTimer) {
-    clearTimeout(scrollTimer)
-    scrollTimer = null
-  }
   if (scrollRafId !== null) {
     cancelAnimationFrame(scrollRafId)
     scrollRafId = null
   }
 }
 
-const ensureScrollToBottom = async () => {
-  if (!shouldAutoScroll()) return
-  cancelPendingScroll()
-  await nextTick()
-  if (!shouldAutoScroll()) return
-  scrollToBottomNow()
+const scheduleScrollToBottom = () => {
+  if (!shouldAutoScroll() || scrollRafId !== null) return
   scrollRafId = requestAnimationFrame(() => {
     scrollRafId = null
     if (!shouldAutoScroll()) return
     scrollToBottomNow()
   })
-  scrollTimer = setTimeout(() => {
-    scrollTimer = null
-    if (!shouldAutoScroll()) return
-    scrollToBottomNow()
-  }, 60)
 }
 
 watch(autoScroll, (enabled) => {
@@ -124,16 +110,28 @@ watch(autoScroll, (enabled) => {
     cancelPendingScroll()
     return
   }
-  if (canRenderLogs.value) ensureScrollToBottom()
-})
+  scheduleScrollToBottom()
+}, { flush: 'post' })
 
-watch(displayLogs, () => {
-  if (canRenderLogs.value) ensureScrollToBottom()
-}, { deep: true })
+watch(displayLogs, scheduleScrollToBottom, { flush: 'post' })
 
-watch(canRenderLogs, (enabled) => {
-  if (enabled) ensureScrollToBottom()
-})
+const createLogEntries = (lines) => lines
+  .filter(line => typeof line === 'string' && line)
+  .map(text => ({ id: nextLogId++, text }))
+
+const applyLogBatch = (event, replace) => {
+  let lines
+  try {
+    lines = JSON.parse(event.data)
+  } catch {
+    return
+  }
+  if (!Array.isArray(lines)) return
+  const entries = createLogEntries(lines)
+  logs.value = replace ? entries.slice(-200) : [...logs.value, ...entries].slice(-200)
+  hasEverConnected.value = true
+  streamStatus.value = 'connected'
+}
 
 const levelClass = (line) => {
   if (line.includes('[WARN]')) return 'log-warn'
@@ -168,36 +166,29 @@ const closeLogStream = () => {
 const connectLogStream = () => {
   if (!isActive || eventSource || document.visibilityState !== 'visible') return
   streamStatus.value = 'connecting'
-  // 后端每次连接都会先推送历史日志，成功建立后再清空旧快照。
-  clearLogsOnOpen = true
   // EventSource 同源请求自动携带 HTTP-only Cookie，无需手动传 token
   const source = new EventSource('/api/v1/logs/stream')
   const generation = ++streamGeneration
   eventSource = source
   source.onopen = () => {
     if (!isActive || eventSource !== source) return
-    if (clearLogsOnOpen) {
-      logs.value = []
-      clearLogsOnOpen = false
-    }
     streamStatus.value = 'connected'
     hasEverConnected.value = true
-    ensureScrollToBottom()
   }
-  source.onmessage = (event) => {
+  source.addEventListener('snapshot', (event) => {
     if (!isActive || eventSource !== source) return
-    if (event.data) {
-      logs.value.push(event.data)
-      if (logs.value.length > 200) logs.value = logs.value.slice(-200)
-      if (canRenderLogs.value) ensureScrollToBottom()
-    }
-  }
+    applyLogBatch(event, true)
+  })
+  source.addEventListener('logs', (event) => {
+    if (!isActive || eventSource !== source) return
+    applyLogBatch(event, false)
+  })
   source.onerror = () => {
     if (eventSource !== source) return
     // EventSource 在 401 时 readyState 会进入 CLOSED；停止无意义重连并走登录
     const closed = source.readyState === EventSource.CLOSED
     closeLogStream()
-		streamStatus.value = closed ? 'reconnecting' : 'disconnected'
+    streamStatus.value = closed ? 'reconnecting' : 'disconnected'
     if (!isActive || document.visibilityState !== 'visible') {
       streamStatus.value = 'disconnected'
       return
@@ -259,30 +250,23 @@ onMounted(() => {
 
 onActivated(() => {
   isActive = true
+  if (!wasDeactivated) return
+  wasDeactivated = false
   if (!statsTimer) startStatsRefresh()
-  if (autoScroll.value && canRenderLogs.value) ensureScrollToBottom()
-  if (resumeTimer) clearTimeout(resumeTimer)
-  resumeTimer = setTimeout(() => {
-    if (!isActive) return
-    if (!eventSource) connectLogStream()
-    loadStats().catch(() => {})
-    if (autoScroll.value && canRenderLogs.value) ensureScrollToBottom()
-    resumeTimer = null
-  }, 120)
+  if (!eventSource) connectLogStream()
+  loadStats().catch(() => {})
+  scheduleScrollToBottom()
 })
 
 onDeactivated(() => {
   isActive = false
+  wasDeactivated = true
   stopStatsRefresh()
   closeLogStream()
   streamStatus.value = 'disconnected'
   if (reconnectTimer) {
     clearTimeout(reconnectTimer)
     reconnectTimer = null
-  }
-  if (resumeTimer) {
-    clearTimeout(resumeTimer)
-    resumeTimer = null
   }
   cancelPendingScroll()
 })
@@ -291,7 +275,6 @@ onUnmounted(() => {
   isActive = false
   closeLogStream()
   if (reconnectTimer) clearTimeout(reconnectTimer)
-  if (resumeTimer) clearTimeout(resumeTimer)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   cancelPendingScroll()
   stopStatsRefresh()

@@ -237,7 +237,6 @@ func (c *Client) invalidateCacheFingerprint(fingerprint string) {
 	cacheMutex.Lock()
 	delete(globalTokenCache, c.tokenCacheKey(fingerprint))
 	cacheMutex.Unlock()
-	log.Warn().Uint("accountID", c.AccountID).Msg("OpenList Token 已被标记为失效，下次请求将重新登录")
 }
 
 func (c *Client) login() (string, error) {

@@ -91,12 +91,15 @@ const rowPending = reactive(new Map())
 const deleteConfirming = reactive(new Set())
 let eventSource = null
 let reconnectTimer = null
+let snapshotFallbackTimer = null
 let reconnectNeedsAuth = false
 let httpRequestSeq = 0
 let streamSnapshotSeq = 0
 let currentStreamHasSnapshot = false
 let unmounted = false
-let mutationRefreshActive = false
+let accountRequestController = null
+let taskRequestController = null
+let taskRequestAuthoritative = false
 
 const defaultForm = {
   ID: 0, Name: '', AccountID: null, SourceFolderID: '0', LocalPath: '/app/strm/', Cron: '0 */2 * * *', Enabled: true, Overwrite: false, SyncDelete: false, Threads: 4,
@@ -114,11 +117,19 @@ const columns = [
 ]
 
 const loadAccounts = async () => {
+  accountRequestController?.abort()
+  const controller = new AbortController()
+  accountRequestController = controller
   try {
-    const accRes = await api.get('/accounts')
+    const accRes = await api.get('/accounts', { signal: controller.signal, skipErrorToast: true })
+    if (unmounted || accountRequestController !== controller) return
     accountOptions.value = (accRes.data || []).map(a => ({ label: a.Name, value: a.ID }))
   } catch (e) {
-    // 错误已由 api 拦截器全局弹出提示
+    if (e?.code !== 'ERR_CANCELED') {
+      message.error(e?.response?.data?.message || '加载云账户失败')
+    }
+  } finally {
+    if (accountRequestController === controller) accountRequestController = null
   }
 }
 
@@ -132,18 +143,26 @@ const loadTasksFromHttp = async ({ showLoading = false, authoritative = false } 
   if (unmounted) return false
   const requestId = ++httpRequestSeq
   const snapshotAtStart = streamSnapshotSeq
+  taskRequestController?.abort()
+  const controller = new AbortController()
+  taskRequestController = controller
+  taskRequestAuthoritative = authoritative
   if (showLoading && data.value.length === 0) loading.value = true
   try {
-    const res = await api.get('/tasks')
-    if (unmounted || requestId !== httpRequestSeq || (!authoritative && snapshotAtStart !== streamSnapshotSeq)) return false
+    const res = await api.get('/tasks', { signal: controller.signal, skipErrorToast: true })
+    if (unmounted || requestId !== httpRequestSeq || snapshotAtStart !== streamSnapshotSeq) return false
     data.value = Array.isArray(res.data) ? res.data : []
     return true
   } catch (e) {
     // 保留已有 SSE/HTTP 快照
     return false
   } finally {
-    if (!unmounted && requestId === httpRequestSeq && (authoritative || snapshotAtStart === streamSnapshotSeq)) {
+    if (!unmounted && requestId === httpRequestSeq && snapshotAtStart === streamSnapshotSeq) {
       loading.value = false
+    }
+    if (taskRequestController === controller) {
+      taskRequestController = null
+      taskRequestAuthoritative = false
     }
   }
 }
@@ -152,22 +171,15 @@ const closeTaskStream = () => {
   const source = eventSource
   eventSource = null
   currentStreamHasSnapshot = false
+  if (snapshotFallbackTimer) {
+    clearTimeout(snapshotFallbackTimer)
+    snapshotFallbackTimer = null
+  }
   if (source) source.close()
 }
 
 const refreshTasksAfterMutation = async () => {
-	mutationRefreshActive = true
-	closeTaskStream()
-  if (reconnectTimer) {
-    clearTimeout(reconnectTimer)
-    reconnectTimer = null
-  }
-	try {
-		await loadTasksFromHttp({ authoritative: true })
-	} finally {
-		mutationRefreshActive = false
-	}
-	if (!unmounted && document.visibilityState === 'visible') connectTaskStream()
+  await loadTasksFromHttp({ authoritative: true })
 }
 
 const scheduleReconnect = (requireAuth = false) => {
@@ -175,7 +187,7 @@ const scheduleReconnect = (requireAuth = false) => {
   if (reconnectTimer || unmounted || document.visibilityState !== 'visible') return
   reconnectTimer = setTimeout(async () => {
     reconnectTimer = null
-		if (unmounted || mutationRefreshActive || document.visibilityState !== 'visible' || eventSource) return
+    if (unmounted || document.visibilityState !== 'visible' || eventSource) return
     const shouldProbeAuth = reconnectNeedsAuth
     reconnectNeedsAuth = false
     if (shouldProbeAuth) {
@@ -186,15 +198,21 @@ const scheduleReconnect = (requireAuth = false) => {
         return
       }
     }
-		if (!mutationRefreshActive) connectTaskStream()
+    connectTaskStream()
   }, 3000)
 }
 
 const connectTaskStream = () => {
-	if (eventSource || mutationRefreshActive || unmounted || document.visibilityState !== 'visible') return
+  if (eventSource || unmounted || document.visibilityState !== 'visible') return
   // EventSource 同源请求自动携带 HTTP-only Cookie，无需手动传 token
   const source = new EventSource('/api/v1/tasks/stream')
   eventSource = source
+  snapshotFallbackTimer = setTimeout(() => {
+    snapshotFallbackTimer = null
+    if (eventSource === source && !currentStreamHasSnapshot) {
+      loadTasksFromHttp({ showLoading: true }).catch(() => {})
+    }
+  }, 5000)
   source.onopen = () => {
     if (eventSource !== source) return
     reconnectNeedsAuth = false
@@ -205,12 +223,21 @@ const connectTaskStream = () => {
       const snapshot = JSON.parse(event.data)
       if (!Array.isArray(snapshot)) throw new Error('invalid tasks snapshot')
       currentStreamHasSnapshot = true
+      if (snapshotFallbackTimer) {
+        clearTimeout(snapshotFallbackTimer)
+        snapshotFallbackTimer = null
+      }
+      if (taskRequestAuthoritative) return
+      taskRequestController?.abort()
       streamSnapshotSeq++
-      httpRequestSeq++
       data.value = snapshot
       loading.value = false
     } catch (e) {
       if (!currentStreamHasSnapshot) {
+        if (snapshotFallbackTimer) {
+          clearTimeout(snapshotFallbackTimer)
+          snapshotFallbackTimer = null
+        }
         loading.value = false
         loadTasksFromHttp().catch(() => {})
       }
@@ -233,6 +260,7 @@ const connectTaskStream = () => {
 const handleVisibilityChange = () => {
   if (document.visibilityState !== 'visible') {
     closeTaskStream()
+    taskRequestController?.abort()
     if (reconnectTimer) {
       clearTimeout(reconnectTimer)
       reconnectTimer = null
@@ -241,13 +269,11 @@ const handleVisibilityChange = () => {
   }
   if (reconnectNeedsAuth) scheduleReconnect(true)
   else connectTaskStream()
-  loadTasksFromHttp().catch(() => {})
 }
 
 onMounted(() => {
   loadAccounts()
   connectTaskStream()
-  loadTasksFromHttp({ showLoading: true }).catch(() => {})
   document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
@@ -255,6 +281,8 @@ onUnmounted(() => {
   unmounted = true
   httpRequestSeq++
   closeTaskStream()
+  accountRequestController?.abort()
+  taskRequestController?.abort()
   if (reconnectTimer) clearTimeout(reconnectTimer)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
 })

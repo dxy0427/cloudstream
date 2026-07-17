@@ -4,6 +4,7 @@ import (
 	"cloudstream/internal/core"
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -65,9 +66,9 @@ func taskNameExists(tx *gorm.DB, name string, excludeID uint) (bool, error) {
 	return count > 0, nil
 }
 
-func buildTaskList() ([]gin.H, error) {
+func buildTaskList(ctx context.Context) ([]gin.H, error) {
 	var tasks []models.Task
-	if err := database.DB.Order("id desc").Find(&tasks).Error; err != nil {
+	if err := database.DB.WithContext(ctx).Order("id desc").Find(&tasks).Error; err != nil {
 		return nil, err
 	}
 	result := make([]gin.H, 0, len(tasks))
@@ -96,7 +97,7 @@ func buildTaskList() ([]gin.H, error) {
 }
 
 func ListTasksHandler(c *gin.Context) {
-	tasks, err := buildTaskList()
+	tasks, err := buildTaskList(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "获取任务列表失败"})
 		return
@@ -118,7 +119,7 @@ func StreamTasksHandler(c *gin.Context) {
 
 	var lastPayload string
 	sendSnapshot := func() {
-		tasks, err := buildTaskList()
+		tasks, err := buildTaskList(c.Request.Context())
 		if err != nil {
 			return
 		}

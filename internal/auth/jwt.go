@@ -214,7 +214,7 @@ func SessionStillValid(c *gin.Context) bool {
 	}
 
 	var count int64
-	if err := database.DB.Model(&models.User{}).
+	if err := database.DB.WithContext(c.Request.Context()).Model(&models.User{}).
 		Where("username = ? AND token_version = ?", username, version).
 		Count(&count).Error; err != nil {
 		return false
