@@ -105,7 +105,7 @@
    <n-form-item label="禁用转码" path="DisableTranscode">
     <n-switch v-model:value="form.DisableTranscode" />
     <template #feedback>
-     保留客户端兼容性判断，但不允许服务器转码；不支持原始编码的设备可能无法播放
+     仅禁止 HTTPStrm 通过媒体服务器转码，普通媒体不受影响
     </template>
    </n-form-item>
 

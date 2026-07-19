@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -285,7 +286,7 @@ func (m *Manager) HandleProxy(c *gin.Context, serverID uint, upstreamPath string
 	// PlaybackInfo 拦截
 	if strings.Contains(strings.ToLower(path), "/playbackinfo") {
 		log.Info().Uint("server_id", serverID).Str("client_ip", c.ClientIP()).Msg("拦截 PlaybackInfo 请求")
-		proxy.ReverseProxy(c, upstreamPath, cfg.HttpStrm.DisableTranscode)
+		proxy.ReverseProxy(c, upstreamPath, cfg.HttpStrm.Enable)
 		return
 	}
 
@@ -319,12 +320,17 @@ func (m *Manager) HandleProxy(c *gin.Context, serverID uint, upstreamPath string
 
 	log.Info().Uint("server_id", serverID).Str("item_id", itemId).Str("source_id", mediaSourceId).Msg("接收到播放请求")
 
-	realPath, err := proxy.mediaServer.GetItemInfo(itemId, mediaSourceId, accessToken)
+	itemInfo, err := proxy.mediaServer.GetItemInfo(itemId, mediaSourceId, accessToken)
 	if err != nil {
 		log.Error().Err(err).Uint("server_id", serverID).Msg("获取路径失败，回源代理")
 		proxy.ReverseProxy(c, upstreamPath, false)
 		return
 	}
+	if !itemInfo.IsHTTPStrm() {
+		proxy.ReverseProxy(c, upstreamPath, false)
+		return
+	}
+	realPath := itemInfo.MediaPath
 
 	// 处理 HTTPStrm
 	realURL, err := url.Parse(realPath)
@@ -392,35 +398,73 @@ func (s *ProxyServer) resolveHTTPStrm(ctx context.Context, cacheKey, targetPath,
 		log.Warn().Str("target", urlForLog(targetPath)).Str("error", errorWithoutURL(err)).Msg("Strm 链接无效")
 		return targetPath
 	}
+	resolveCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	allowPrivateRedirects, err := URLTargetsPrivateNetwork(resolveCtx, parsedTarget)
+	if err != nil {
+		log.Warn().Str("target", urlForLog(targetPath)).Str("error", errorWithoutURL(err)).Msg("无法验证 Strm 链接目标")
+		return targetPath
+	}
+	resolveClient, closeResolveClient := s.resolveClient(allowPrivateRedirects)
+	defer closeResolveClient()
 
 	log.Info().Str("target", urlForLog(targetPath)).Msg("开始解析 Strm 链接")
-	req, err := http.NewRequestWithContext(ctx, method, targetPath, nil)
-	if err != nil {
-		log.Warn().Str("error", errorWithoutURL(err)).Msg("创建 Strm 解析请求失败")
-		return targetPath
+	currentURL := targetPath
+	visited := make(map[string]struct{}, 10)
+	redirected := false
+	redirects := 0
+	for {
+		if _, exists := visited[currentURL]; exists {
+			log.Warn().Msg("Strm 链接存在循环重定向")
+			return targetPath
+		}
+		visited[currentURL] = struct{}{}
+
+		req, err := http.NewRequestWithContext(resolveCtx, method, currentURL, nil)
+		if err != nil {
+			log.Warn().Str("error", errorWithoutURL(err)).Msg("创建 Strm 解析请求失败")
+			return targetPath
+		}
+		if s.cfg.HttpStrm.UaPassthrough {
+			req.Header.Set("User-Agent", userAgent)
+		} else {
+			req.Header.Set("User-Agent", "Mozilla/5.0")
+		}
+		resp, err := resolveClient.Do(req)
+		if err != nil {
+			log.Warn().Str("method", method).Str("error", errorWithoutURL(err)).Msg("解析失败")
+			return targetPath
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 32<<10))
+		_ = resp.Body.Close()
+		if !isRedirectStatus(resp.StatusCode) {
+			if !redirected || resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+				log.Warn().Str("method", method).Int("status", resp.StatusCode).Msg("Strm 链接未返回重定向")
+				return targetPath
+			}
+			targetPath = currentURL
+			break
+		}
+		location, err := resp.Location()
+		if err != nil || !isHTTPURL(location) {
+			log.Warn().Str("method", method).Str("error", errorWithoutURL(err)).Msg("Strm 重定向地址无效")
+			return targetPath
+		}
+		if redirects >= 10 {
+			log.Warn().Msg("Strm 链接重定向次数超过限制")
+			return targetPath
+		}
+		if !allowPrivateRedirects {
+			private, err := URLTargetsPrivateNetwork(resolveCtx, location)
+			if err != nil || private {
+				log.Warn().Str("target", urlForLog(location.String())).Str("error", errorWithoutURL(err)).Msg("拒绝 Strm 链接重定向到私有网络")
+				return targetPath
+			}
+		}
+		currentURL = location.String()
+		redirected = true
+		redirects++
 	}
-	if s.cfg.HttpStrm.UaPassthrough {
-		req.Header.Set("User-Agent", userAgent)
-	} else {
-		req.Header.Set("User-Agent", "Mozilla/5.0")
-	}
-	resp, err := s.httpClient.Do(req)
-	if err != nil {
-		log.Warn().Str("method", method).Str("error", errorWithoutURL(err)).Msg("解析失败")
-		return targetPath
-	}
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 32<<10))
-	_ = resp.Body.Close()
-	if !isRedirectStatus(resp.StatusCode) {
-		log.Warn().Str("method", method).Int("status", resp.StatusCode).Msg("Strm 链接未返回重定向")
-		return targetPath
-	}
-	location, err := resp.Location()
-	if err != nil || !isHTTPURL(location) {
-		log.Warn().Str("method", method).Str("error", errorWithoutURL(err)).Msg("Strm 重定向地址无效")
-		return targetPath
-	}
-	targetPath = location.String()
 	log.Info().Str("method", method).Str("target", urlForLog(targetPath)).Msg("解析成功")
 	if s.cfg.Cache.Enable {
 		ttl := time.Duration(s.cfg.Cache.HttpStrmTTL) * time.Minute
@@ -428,6 +472,109 @@ func (s *ProxyServer) resolveHTTPStrm(ctx context.Context, cacheKey, targetPath,
 		log.Info().Dur("ttl", ttl).Msg("已缓存直链")
 	}
 	return targetPath
+}
+
+func (s *ProxyServer) resolveClient(allowPrivate bool) (*http.Client, func()) {
+	if allowPrivate {
+		return s.httpClient, func() {}
+	}
+	transport := s.transport.Clone()
+	transport.Proxy = nil
+	transport.DialContext = safePublicDialContext
+	client := &http.Client{
+		Transport: transport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	return client, transport.CloseIdleConnections
+}
+
+func safePublicDialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil {
+		return nil, err
+	}
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	dialer := &net.Dialer{Timeout: 10 * time.Second, KeepAlive: 30 * time.Second}
+	var lastErr error
+	for _, address := range addresses {
+		if isPrivateNetworkIP(address.IP) {
+			continue
+		}
+		connection, err := dialer.DialContext(ctx, network, net.JoinHostPort(address.IP.String(), port))
+		if err == nil {
+			return connection, nil
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, fmt.Errorf("target resolves only to private network addresses")
+}
+
+func URLTargetsPrivateNetwork(ctx context.Context, target *url.URL) (bool, error) {
+	if !isHTTPURL(target) {
+		return false, fmt.Errorf("invalid HTTP URL")
+	}
+	host := target.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return true, nil
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return isPrivateNetworkIP(ip), nil
+	}
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return false, err
+	}
+	if len(addresses) == 0 {
+		return false, fmt.Errorf("target has no IP addresses")
+	}
+	for _, address := range addresses {
+		if isPrivateNetworkIP(address.IP) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func isPrivateNetworkIP(ip net.IP) bool {
+	if ip == nil || !ip.IsGlobalUnicast() || ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+		return true
+	}
+	for _, network := range nonPublicNetworks {
+		if network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+var nonPublicNetworks = mustParseCIDRs(
+	"100.64.0.0/10",
+	"192.0.0.0/24",
+	"192.0.2.0/24",
+	"198.18.0.0/15",
+	"198.51.100.0/24",
+	"203.0.113.0/24",
+	"2001:db8::/32",
+)
+
+func mustParseCIDRs(values ...string) []*net.IPNet {
+	networks := make([]*net.IPNet, 0, len(values))
+	for _, value := range values {
+		_, network, err := net.ParseCIDR(value)
+		if err != nil {
+			panic(err)
+		}
+		networks = append(networks, network)
+	}
+	return networks
 }
 
 func allowProxyClient(c *gin.Context, cfg ClientFilterConf) bool {
@@ -468,9 +615,13 @@ func requestAccessToken(c *gin.Context) string {
 			return token
 		}
 	}
-	for _, parameter := range []string{"api_key", "apiKey", "token"} {
-		if token := strings.TrimSpace(c.Query(parameter)); token != "" {
-			return token
+	for key, values := range c.Request.URL.Query() {
+		if isMediaTokenQueryKey(key) {
+			for _, value := range values {
+				if token := strings.TrimSpace(value); token != "" {
+					return token
+				}
+			}
 		}
 	}
 	if authorization := strings.TrimSpace(c.GetHeader("Authorization")); strings.HasPrefix(strings.ToLower(authorization), "bearer ") {
@@ -485,6 +636,10 @@ func requestAccessToken(c *gin.Context) string {
 		}
 	}
 	return ""
+}
+
+func isMediaTokenQueryKey(key string) bool {
+	return strings.EqualFold(key, "api_key") || strings.EqualFold(key, "apiKey") || strings.EqualFold(key, "token") || strings.EqualFold(key, "X-Emby-Token")
 }
 
 func applyPathMappings(target string, mappings []PathMapping) string {

@@ -29,6 +29,8 @@ type proxyRequestContextKey struct{}
 type proxyRequestOptions struct {
 	target             *url.URL
 	modifyPlaybackInfo bool
+	playbackItemID     string
+	playbackToken      string
 }
 
 // ProxyServer 媒体服务器代理
@@ -316,6 +318,8 @@ func (s *ProxyServer) ReverseProxy(c *gin.Context, upstreamPath string, modifyRe
 	options := proxyRequestOptions{
 		target:             target,
 		modifyPlaybackInfo: modifyResponse,
+		playbackItemID:     extractItemId(upstreamPath),
+		playbackToken:      requestAccessToken(c),
 	}
 	ctx := context.WithValue(c.Request.Context(), proxyRequestContextKey{}, options)
 	s.reverseProxy.ServeHTTP(c.Writer, c.Request.WithContext(ctx))
@@ -390,7 +394,7 @@ func (s *ProxyServer) modifyProxyResponse(resp *http.Response) error {
 		return fmt.Errorf("unsupported PlaybackInfo content encoding")
 	}
 
-	newBody := s.modifyPlaybackInfo(respBody)
+	newBody := s.modifyPlaybackInfo(respBody, options.playbackItemID, options.playbackToken)
 	resp.Header.Del("Content-Encoding")
 	resp.Header.Del("ETag")
 	resp.Header.Del("Content-MD5")
@@ -505,8 +509,8 @@ func errorWithoutURL(err error) string {
 	return err.Error()
 }
 
-func (s *ProxyServer) modifyPlaybackInfo(body []byte) []byte {
-	if !s.cfg.HttpStrm.DisableTranscode {
+func (s *ProxyServer) modifyPlaybackInfo(body []byte, requestItemID, accessToken string) []byte {
+	if !s.cfg.HttpStrm.Enable || accessToken == "" {
 		return body
 	}
 
@@ -515,18 +519,50 @@ func (s *ProxyServer) modifyPlaybackInfo(body []byte) []byte {
 	sources := gjson.Get(jsonStr, "MediaSources").Array()
 	for i := range sources {
 		prefix := fmt.Sprintf("MediaSources.%d", i)
-		jsonStr, _ = sjson.Set(jsonStr, prefix+".SupportsTranscoding", false)
-
 		dUrl := gjson.Get(jsonStr, prefix+".DirectStreamUrl").String()
-		if dUrl != "" {
-			parsedURL, err := url.Parse(dUrl)
-			if err == nil {
-				query := parsedURL.Query()
-				query.Set("Emby2Alist", "true")
-				parsedURL.RawQuery = query.Encode()
-				jsonStr, _ = sjson.Set(jsonStr, prefix+".DirectStreamUrl", parsedURL.String())
+		mediaSourceID := gjson.Get(jsonStr, prefix+".Id").String()
+		itemID := gjson.Get(jsonStr, prefix+".ItemId").String()
+		if itemID == "" {
+			itemID = requestItemID
+		}
+		if itemID == "" || mediaSourceID == "" {
+			continue
+		}
+		itemInfo, err := s.mediaServer.GetItemInfo(itemID, mediaSourceID, accessToken)
+		if err != nil || !itemInfo.IsHTTPStrm() {
+			continue
+		}
+
+		jsonStr, _ = sjson.Set(jsonStr, prefix+".SupportsDirectPlay", true)
+		if s.cfg.HttpStrm.DisableTranscode {
+			jsonStr, _ = sjson.Set(jsonStr, prefix+".SupportsTranscoding", false)
+			for _, field := range []string{"TranscodingUrl", "TranscodingContainer", "TranscodingSubProtocol", "TrancodeLiveStartIndex"} {
+				jsonStr, _ = sjson.Delete(jsonStr, prefix+"."+field)
 			}
 		}
+
+		directURL := &url.URL{Path: "/Videos/" + itemID + "/stream"}
+		query := directURL.Query()
+		query.Set("MediaSourceId", mediaSourceID)
+		query.Set("Static", "true")
+		credentialFound := false
+		if parsedDirectURL, err := url.Parse(dUrl); err == nil {
+			for key, values := range parsedDirectURL.Query() {
+				if isMediaTokenQueryKey(key) {
+					for _, value := range values {
+						if value = strings.TrimSpace(value); value != "" {
+							query.Add(key, value)
+							credentialFound = true
+						}
+					}
+				}
+			}
+		}
+		if !credentialFound {
+			query.Set("api_key", accessToken)
+		}
+		directURL.RawQuery = query.Encode()
+		jsonStr, _ = sjson.Set(jsonStr, prefix+".DirectStreamUrl", directURL.String())
 	}
 
 	return []byte(jsonStr)

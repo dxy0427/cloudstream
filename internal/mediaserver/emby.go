@@ -36,7 +36,7 @@ func (e *EmbyClient) Ping() error {
 	return nil
 }
 
-func (e *EmbyClient) GetItemInfo(itemId string, mediaSourceId string, accessToken string) (string, error) {
+func (e *EmbyClient) GetItemInfo(itemId string, mediaSourceId string, accessToken string) (MediaItemInfo, error) {
 	url := fmt.Sprintf("%s/Items", e.host)
 	req := e.client.R().
 		SetQueryParam("Ids", itemId).
@@ -48,18 +48,18 @@ func (e *EmbyClient) GetItemInfo(itemId string, mediaSourceId string, accessToke
 
 	resp, err := req.Get(url)
 	if err != nil {
-		return "", err
+		return MediaItemInfo{}, err
 	}
 	if resp.StatusCode() != 200 {
-		return "", fmt.Errorf("emby api error: %d", resp.StatusCode())
+		return MediaItemInfo{}, fmt.Errorf("emby api error: %d", resp.StatusCode())
 	}
 
 	var res commonItemsResponse
 	if err := json.Unmarshal(resp.Body(), &res); err != nil {
-		return "", err
+		return MediaItemInfo{}, err
 	}
 
-	return commonGetItemPath(res, mediaSourceId)
+	return commonGetItemInfo(res, mediaSourceId)
 }
 
 func (e *EmbyClient) authenticatedRequest() *resty.Request {

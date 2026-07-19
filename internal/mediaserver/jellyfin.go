@@ -36,7 +36,7 @@ func (j *JellyfinClient) Ping() error {
 	return nil
 }
 
-func (j *JellyfinClient) GetItemInfo(itemId string, mediaSourceId string, accessToken string) (string, error) {
+func (j *JellyfinClient) GetItemInfo(itemId string, mediaSourceId string, accessToken string) (MediaItemInfo, error) {
 	url := fmt.Sprintf("%s/Items", j.host)
 	req := j.client.R().
 		SetQueryParam("Ids", itemId).
@@ -49,18 +49,18 @@ func (j *JellyfinClient) GetItemInfo(itemId string, mediaSourceId string, access
 
 	resp, err := req.Get(url)
 	if err != nil {
-		return "", err
+		return MediaItemInfo{}, err
 	}
 	if resp.StatusCode() != 200 {
-		return "", fmt.Errorf("jellyfin api error: %d", resp.StatusCode())
+		return MediaItemInfo{}, fmt.Errorf("jellyfin api error: %d", resp.StatusCode())
 	}
 
 	var res commonItemsResponse
 	if err := json.Unmarshal(resp.Body(), &res); err != nil {
-		return "", err
+		return MediaItemInfo{}, err
 	}
 
-	return commonGetItemPath(res, mediaSourceId)
+	return commonGetItemInfo(res, mediaSourceId)
 }
 
 func (j *JellyfinClient) authenticatedRequest() *resty.Request {

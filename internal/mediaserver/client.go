@@ -10,8 +10,22 @@ import (
 const ProxyPort = 8091
 
 type MediaServerClient interface {
-	GetItemInfo(itemId string, mediaSourceId string, accessToken string) (string, error)
+	GetItemInfo(itemId string, mediaSourceId string, accessToken string) (MediaItemInfo, error)
 	Ping() error
+}
+
+type MediaItemInfo struct {
+	ItemPath  string
+	MediaPath string
+	Protocol  string
+}
+
+func (info MediaItemInfo) IsHTTPStrm() bool {
+	if !strings.HasSuffix(strings.ToLower(strings.TrimSpace(info.ItemPath)), ".strm") || !strings.EqualFold(info.Protocol, "Http") {
+		return false
+	}
+	parsed, err := url.Parse(strings.TrimSpace(info.MediaPath))
+	return err == nil && isHTTPURL(parsed)
 }
 
 func NewClient(backendType, host, apiKey string) MediaServerClient {
@@ -33,35 +47,27 @@ type commonItemsResponse struct {
 	} `json:"Items"`
 }
 
-func commonGetItemPath(res commonItemsResponse, mediaSourceId string) (string, error) {
+func commonGetItemInfo(res commonItemsResponse, mediaSourceId string) (MediaItemInfo, error) {
 	if len(res.Items) == 0 {
-		return "", fmt.Errorf("item not found")
+		return MediaItemInfo{}, fmt.Errorf("item not found")
 	}
 
 	rawItem := res.Items[0]
-	targetPath := rawItem.Path
 
 	if mediaSourceId != "" {
 		for _, ms := range rawItem.MediaSources {
 			if ms.Id == mediaSourceId {
-				targetPath = ms.Path
-				if ms.Protocol == "Http" && ms.Path != "" {
-					return ms.Path, nil
-				}
-				return targetPath, nil
+				return MediaItemInfo{ItemPath: rawItem.Path, MediaPath: ms.Path, Protocol: ms.Protocol}, nil
 			}
 		}
-		return "", fmt.Errorf("media source %q not found", mediaSourceId)
+		return MediaItemInfo{}, fmt.Errorf("media source %q not found", mediaSourceId)
 	}
 
 	if len(rawItem.MediaSources) > 0 {
 		mediaSource := rawItem.MediaSources[0]
-		targetPath = mediaSource.Path
-		if mediaSource.Protocol == "Http" && mediaSource.Path != "" {
-			return mediaSource.Path, nil
-		}
+		return MediaItemInfo{ItemPath: rawItem.Path, MediaPath: mediaSource.Path, Protocol: mediaSource.Protocol}, nil
 	}
-	return targetPath, nil
+	return MediaItemInfo{ItemPath: rawItem.Path, MediaPath: rawItem.Path}, nil
 }
 
 // PathMapping 路径映射配置

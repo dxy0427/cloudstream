@@ -4,9 +4,11 @@ import (
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -19,19 +21,23 @@ import (
 )
 
 type recordingMediaClient struct {
-	path      string
+	info      MediaItemInfo
+	infoByID  map[string]MediaItemInfo
 	calls     atomic.Int32
 	itemID    string
 	sourceID  string
 	accessKey string
 }
 
-func (c *recordingMediaClient) GetItemInfo(itemID, sourceID, accessKey string) (string, error) {
+func (c *recordingMediaClient) GetItemInfo(itemID, sourceID, accessKey string) (MediaItemInfo, error) {
 	c.calls.Add(1)
 	c.itemID = itemID
 	c.sourceID = sourceID
 	c.accessKey = accessKey
-	return c.path, nil
+	if info, ok := c.infoByID[sourceID]; ok {
+		return info, nil
+	}
+	return c.info, nil
 }
 
 func (c *recordingMediaClient) Ping() error { return nil }
@@ -106,7 +112,15 @@ func TestHTTPStrmUsesCallerTokenAndGETResolver(t *testing.T) {
 	var resolverMethod string
 	resolver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resolverMethod = r.Method
-		http.Redirect(w, r, "https://storage.example/video.mp4", http.StatusFound)
+		switch r.URL.Path {
+		case "/video.mp4":
+			http.Redirect(w, r, "/middle.mp4", http.StatusFound)
+			return
+		case "/middle.mp4":
+			http.Redirect(w, r, "/final.mp4", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer resolver.Close()
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -115,7 +129,7 @@ func TestHTTPStrmUsesCallerTokenAndGETResolver(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	client := &recordingMediaClient{path: "http://source.invalid/video.mp4"}
+	client := &recordingMediaClient{info: MediaItemInfo{ItemPath: "/media/video.strm", MediaPath: "http://source.invalid/video.mp4", Protocol: "Http"}}
 	proxy := NewProxyServer(&Config{
 		Server: ServerConf{Addr: upstream.URL, Auth: "configured-admin-key"},
 		HttpStrm: HttpStrmConf{
@@ -133,7 +147,7 @@ func TestHTTPStrmUsesCallerTokenAndGETResolver(t *testing.T) {
 	ctx.Request.Header.Set("X-Emby-Token", "caller-token")
 	manager.HandleProxy(ctx, 1, "/videos/item-42/stream")
 
-	if recorder.Code != http.StatusFound || recorder.Header().Get("Location") != "https://storage.example/video.mp4" {
+	if recorder.Code != http.StatusFound || recorder.Header().Get("Location") != resolver.URL+"/final.mp4" {
 		t.Fatalf("status=%d location=%q", recorder.Code, recorder.Header().Get("Location"))
 	}
 	if resolverMethod != http.MethodGet {
@@ -148,14 +162,18 @@ func TestHTTPStrmHEADUsesHEADResolver(t *testing.T) {
 	var resolverMethod string
 	resolver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resolverMethod = r.Method
-		http.Redirect(w, r, "https://storage.example/video.mp4", http.StatusFound)
+		if r.URL.Path == "/video.mp4" {
+			http.Redirect(w, r, "/final.mp4", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer resolver.Close()
 	proxy := NewProxyServer(&Config{Server: ServerConf{Addr: "https://example.com"}, HttpStrm: HttpStrmConf{ResolveStrmLinks: true}})
 	defer proxy.Close()
 
 	resolved := proxy.resolveHTTPStrm(context.Background(), "head-resolver", resolver.URL+"/video.mp4", http.MethodHead, "test")
-	if resolved != "https://storage.example/video.mp4" {
+	if resolved != resolver.URL+"/final.mp4" {
 		t.Fatalf("resolved URL=%q", resolved)
 	}
 	if resolverMethod != http.MethodHead {
@@ -168,10 +186,14 @@ func TestHTTPStrmCacheSeparatesGETAndHEAD(t *testing.T) {
 	var calls atomic.Int32
 	resolver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
-		http.Redirect(w, r, "https://storage.example/"+strings.ToLower(r.Method)+".mp4", http.StatusFound)
+		if r.URL.Path == "/video.mp4" {
+			http.Redirect(w, r, "/"+strings.ToLower(r.Method)+".mp4", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer resolver.Close()
-	client := &recordingMediaClient{path: resolver.URL + "/video.mp4"}
+	client := &recordingMediaClient{info: MediaItemInfo{ItemPath: "/media/video.strm", MediaPath: resolver.URL + "/video.mp4", Protocol: "Http"}}
 	proxy := NewProxyServer(&Config{
 		Server:   ServerConf{Addr: "https://example.com"},
 		Cache:    CacheConf{Enable: true, HttpStrmTTL: 1},
@@ -202,13 +224,31 @@ func TestHTTPStrmCacheSeparatesGETAndHEAD(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = response.Body.Close()
-		wantLocation := "https://storage.example/" + strings.ToLower(method) + ".mp4"
+		wantLocation := resolver.URL + "/" + strings.ToLower(method) + ".mp4"
 		if response.StatusCode != http.StatusFound || response.Header.Get("Location") != wantLocation {
 			t.Fatalf("method=%s status=%d location=%q", method, response.StatusCode, response.Header.Get("Location"))
 		}
 	}
-	if calls.Load() != 2 {
+	if calls.Load() != 4 {
 		t.Fatalf("resolver calls=%d", calls.Load())
+	}
+}
+
+func TestRemoteHTTPMediaThatIsNotSTRMFallsBackToUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer upstream.Close()
+	client := &recordingMediaClient{info: MediaItemInfo{ItemPath: "/media/video.mkv", MediaPath: "https://remote.example/video.mkv", Protocol: "Http"}}
+	proxy := NewProxyServer(&Config{Server: ServerConf{Addr: upstream.URL}, HttpStrm: HttpStrmConf{Enable: true}})
+	defer proxy.Close()
+	proxy.mediaServer = client
+	manager := &Manager{servers: map[uint]*ProxyServer{1: proxy}}
+
+	status := requestManagerProxy(t, manager, "/videos/item-42/stream", "caller-token")
+	if status != http.StatusNoContent || client.calls.Load() != 1 {
+		t.Fatalf("status=%d itemCalls=%d", status, client.calls.Load())
 	}
 }
 
@@ -220,7 +260,7 @@ func TestHTTPStrmDoesNotUseConfiguredKeyForAnonymousRequest(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer upstream.Close()
-	client := &recordingMediaClient{path: "https://storage.example/video.mp4"}
+	client := &recordingMediaClient{info: MediaItemInfo{ItemPath: "/media/video.strm", MediaPath: "https://storage.example/video.mp4", Protocol: "Http"}}
 	proxy := NewProxyServer(&Config{Server: ServerConf{Addr: upstream.URL, Auth: "configured-admin-key"}, HttpStrm: HttpStrmConf{Enable: true}})
 	defer proxy.Close()
 	proxy.mediaServer = client
@@ -247,7 +287,7 @@ func TestHTTPStrmDisabledOrMissingItemSkipsItemLookup(t *testing.T) {
 				w.WriteHeader(http.StatusNoContent)
 			}))
 			defer upstream.Close()
-			client := &recordingMediaClient{path: "https://storage.example/video.mp4"}
+			client := &recordingMediaClient{info: MediaItemInfo{ItemPath: "/media/video.strm", MediaPath: "https://storage.example/video.mp4", Protocol: "Http"}}
 			proxy := NewProxyServer(&Config{Server: ServerConf{Addr: upstream.URL}, HttpStrm: HttpStrmConf{Enable: test.enabled}})
 			defer proxy.Close()
 			proxy.mediaServer = client
@@ -308,12 +348,19 @@ func TestRequestAccessTokenSupportsEmbyAuthorization(t *testing.T) {
 	}
 }
 
-func TestPlaybackInfoModificationSetsURLQueryAndClearsValidators(t *testing.T) {
-	proxy := NewProxyServer(&Config{Server: ServerConf{Addr: "https://example.com"}, HttpStrm: HttpStrmConf{DisableTranscode: true}})
+func TestPlaybackInfoModificationOnlyDisablesHTTPStrmTranscoding(t *testing.T) {
+	proxy := NewProxyServer(&Config{Server: ServerConf{Addr: "https://example.com"}, HttpStrm: HttpStrmConf{Enable: true, DisableTranscode: true}})
 	defer proxy.Close()
-	body := `{"MediaSources":[{"DirectStreamUrl":"/Videos/1/stream?x=1#part","SupportsDirectPlay":false,"SupportsDirectStream":false,"SupportsTranscoding":true}]}`
+	proxy.mediaServer = &recordingMediaClient{infoByID: map[string]MediaItemInfo{
+		"http-source":  {ItemPath: "/media/http-video.strm", MediaPath: "https://list.example/video.mkv", Protocol: "Http"},
+		"local-source": {ItemPath: "/media/video.mkv", MediaPath: "https://remote.example/video.mkv", Protocol: "Http"},
+	}}
+	body := `{"MediaSources":[` +
+		`{"Id":"http-source","ItemId":"1","Path":"https://list.example/video.mkv","DirectStreamUrl":"/Videos/1/master.m3u8?api_key=caller-token&x=1","SupportsDirectPlay":false,"SupportsDirectStream":false,"SupportsTranscoding":true,"TranscodingUrl":"/Videos/1/master.m3u8","TranscodingContainer":"ts","TranscodingSubProtocol":"hls"},` +
+		`{"Id":"local-source","ItemId":"2","Path":"/media/video.mkv","DirectStreamUrl":"/Videos/2/master.m3u8","SupportsDirectPlay":false,"SupportsDirectStream":false,"SupportsTranscoding":true,"TranscodingUrl":"/Videos/2/master.m3u8"}` +
+		`]}`
 	request := httptest.NewRequest(http.MethodPost, "/Items/1/PlaybackInfo", nil)
-	request = request.WithContext(context.WithValue(request.Context(), proxyRequestContextKey{}, proxyRequestOptions{modifyPlaybackInfo: true}))
+	request = request.WithContext(context.WithValue(request.Context(), proxyRequestContextKey{}, proxyRequestOptions{modifyPlaybackInfo: true, playbackItemID: "1", playbackToken: "caller-token"}))
 	response := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     http.Header{"ETag": []string{`"old"`}, "Content-MD5": []string{"old"}},
@@ -327,14 +374,112 @@ func TestPlaybackInfoModificationSetsURLQueryAndClearsValidators(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(modified)
-	if !strings.Contains(text, `"DirectStreamUrl":"/Videos/1/stream?Emby2Alist=true&x=1#part"`) ||
-		!strings.Contains(text, `"SupportsDirectPlay":false`) || !strings.Contains(text, `"SupportsDirectStream":false`) ||
-		!strings.Contains(text, `"SupportsTranscoding":false`) {
-		t.Fatalf("modified body=%s", text)
+	var result struct {
+		MediaSources []struct {
+			ID                     string `json:"Id"`
+			DirectStreamURL        string `json:"DirectStreamUrl"`
+			SupportsDirectPlay     bool   `json:"SupportsDirectPlay"`
+			SupportsDirectStream   bool   `json:"SupportsDirectStream"`
+			SupportsTranscoding    bool   `json:"SupportsTranscoding"`
+			TranscodingURL         string `json:"TranscodingUrl"`
+			TranscodingContainer   string `json:"TranscodingContainer"`
+			TranscodingSubProtocol string `json:"TranscodingSubProtocol"`
+		} `json:"MediaSources"`
+	}
+	if err := json.Unmarshal(modified, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.MediaSources) != 2 {
+		t.Fatalf("media sources=%d", len(result.MediaSources))
+	}
+	httpSource := result.MediaSources[0]
+	if !httpSource.SupportsDirectPlay || httpSource.SupportsDirectStream || httpSource.SupportsTranscoding ||
+		httpSource.TranscodingURL != "" || httpSource.TranscodingContainer != "" || httpSource.TranscodingSubProtocol != "" ||
+		httpSource.DirectStreamURL != "/Videos/1/stream?MediaSourceId=http-source&Static=true&api_key=caller-token" {
+		t.Fatalf("HTTPStrm source=%+v", httpSource)
+	}
+	localSource := result.MediaSources[1]
+	if localSource.SupportsDirectPlay || localSource.SupportsDirectStream || !localSource.SupportsTranscoding ||
+		localSource.TranscodingURL != "/Videos/2/master.m3u8" || localSource.DirectStreamURL != "/Videos/2/master.m3u8" {
+		t.Fatalf("local source was modified: %+v", localSource)
 	}
 	if response.Header.Get("ETag") != "" || response.Header.Get("Content-MD5") != "" || response.Header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("unsafe response headers=%v", response.Header)
+	}
+}
+
+func TestPlaybackInfoHTTPStrmCanKeepTranscodingEnabled(t *testing.T) {
+	proxy := NewProxyServer(&Config{Server: ServerConf{Addr: "https://example.com"}, HttpStrm: HttpStrmConf{Enable: true, DisableTranscode: false}})
+	defer proxy.Close()
+	proxy.mediaServer = &recordingMediaClient{info: MediaItemInfo{ItemPath: "/media/video.strm", MediaPath: "https://list.example/video.mkv", Protocol: "Http"}}
+	body := []byte(`{"MediaSources":[{"Id":"http-source","ItemId":"1","Path":"https://list.example/video.mkv","DirectStreamUrl":"/Videos/1/master.m3u8?api_key=caller-token","SupportsDirectPlay":false,"SupportsTranscoding":true,"TranscodingUrl":"/Videos/1/master.m3u8"}]}`)
+	modified := proxy.modifyPlaybackInfo(body, "1", "caller-token")
+	text := string(modified)
+	if !strings.Contains(text, `"SupportsDirectPlay":true`) || !strings.Contains(text, `"SupportsTranscoding":true`) ||
+		!strings.Contains(text, `"TranscodingUrl":"/Videos/1/master.m3u8"`) ||
+		!strings.Contains(text, `"DirectStreamUrl":"/Videos/1/stream?MediaSourceId=http-source&Static=true&api_key=caller-token"`) {
+		t.Fatalf("modified body=%s", text)
+	}
+}
+
+func TestPlaybackInfoFallsBackToCallerTokenWhenDirectURLCredentialIsEmpty(t *testing.T) {
+	proxy := NewProxyServer(&Config{Server: ServerConf{Addr: "https://example.com"}, HttpStrm: HttpStrmConf{Enable: true}})
+	defer proxy.Close()
+	proxy.mediaServer = &recordingMediaClient{info: MediaItemInfo{ItemPath: "/media/video.strm", MediaPath: "https://list.example/video.mkv", Protocol: "Http"}}
+	body := []byte(`{"MediaSources":[{"Id":"http-source","ItemId":"1","Path":"https://list.example/video.mkv","DirectStreamUrl":"/Videos/1/master.m3u8?X-Emby-Token=","SupportsDirectPlay":false}]}`)
+	modified := string(proxy.modifyPlaybackInfo(body, "1", "caller-token"))
+	if !strings.Contains(modified, `"DirectStreamUrl":"/Videos/1/stream?MediaSourceId=http-source&Static=true&api_key=caller-token"`) {
+		t.Fatalf("modified body=%s", modified)
+	}
+}
+
+func TestPrivateNetworkTargetDetection(t *testing.T) {
+	for _, rawURL := range []string{
+		"http://127.0.0.1/video",
+		"http://[::1]/video",
+		"http://localhost/video",
+		"http://169.254.169.254/latest/meta-data",
+		"http://100.64.0.1/video",
+		"http://198.18.0.1/video",
+		"http://192.0.2.1/video",
+		"http://[2001:db8::1]/video",
+	} {
+		target, err := url.Parse(rawURL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		private, err := URLTargetsPrivateNetwork(context.Background(), target)
+		if err != nil || !private {
+			t.Fatalf("URL=%s private=%v error=%v", rawURL, private, err)
+		}
+	}
+}
+
+func TestResolveHTTPStrmDoesNotCacheFailedTerminalResponse(t *testing.T) {
+	var calls atomic.Int32
+	resolver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.URL.Path == "/video.mp4" {
+			http.Redirect(w, r, "/expired.mp4", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer resolver.Close()
+	proxy := NewProxyServer(&Config{
+		Server:   ServerConf{Addr: "https://example.com"},
+		Cache:    CacheConf{Enable: true, HttpStrmTTL: 1},
+		HttpStrm: HttpStrmConf{ResolveStrmLinks: true},
+	})
+	defer proxy.Close()
+	original := resolver.URL + "/video.mp4"
+	for range 2 {
+		if resolved := proxy.resolveHTTPStrm(context.Background(), "failed-terminal", original, http.MethodGet, "test"); resolved != original {
+			t.Fatalf("resolved URL=%q", resolved)
+		}
+	}
+	if calls.Load() != 4 {
+		t.Fatalf("resolver calls=%d", calls.Load())
 	}
 }
 
@@ -358,7 +503,11 @@ func TestResolveHTTPStrmCoalescesConcurrentMisses(t *testing.T) {
 	resolver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		time.Sleep(20 * time.Millisecond)
-		http.Redirect(w, r, "https://storage.example/video.mp4", http.StatusFound)
+		if r.URL.Path == "/video.mp4" {
+			http.Redirect(w, r, "/final.mp4", http.StatusFound)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer resolver.Close()
 	proxy := NewProxyServer(&Config{
@@ -375,11 +524,11 @@ func TestResolveHTTPStrmCoalescesConcurrentMisses(t *testing.T) {
 		}()
 	}
 	for range 2 {
-		if result := <-results; result != "https://storage.example/video.mp4" {
+		if result := <-results; result != resolver.URL+"/final.mp4" {
 			t.Fatalf("resolved URL=%q", result)
 		}
 	}
-	if calls.Load() != 1 {
+	if calls.Load() != 2 {
 		t.Fatalf("resolver calls=%d", calls.Load())
 	}
 }
