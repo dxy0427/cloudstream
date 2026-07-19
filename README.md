@@ -27,7 +27,7 @@ docker run -d \
 
 首次启动的用户名为 `admin`。未设置 `CLOUDSTREAM_ADMIN_PASSWORD` 时，随机密码只会在容器日志中显示一次，可通过 `docker logs cloudstream` 查看。修改云账户的 STRM 签名开关后，需以覆盖模式执行关联任务，重写已有 STRM 文件。
 
-推送分支或 tag 不会自动构建镜像。在 GitHub Actions 页面手动运行“构建 CloudStream 镜像”，选择要构建的分支并指定镜像标签和目标平台；后端测试、前端测试和 Docker 构建全部通过后才会推送指定标签及提交 SHA 标签。
+推送分支或 tag 不会自动构建镜像。在 GitHub Actions 页面打开“手动构建 YSTRM 镜像到 GHCR”，点击 Run workflow 后选择 `v2`，并指定镜像标签和目标平台；`v2` 分支中的工作流会先运行后端和前端测试，全部通过后再推送指定标签及提交 SHA 标签。
 
 ## Docker 管理员密码重置
 
