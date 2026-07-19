@@ -515,8 +515,6 @@ func (s *ProxyServer) modifyPlaybackInfo(body []byte) []byte {
 	sources := gjson.Get(jsonStr, "MediaSources").Array()
 	for i := range sources {
 		prefix := fmt.Sprintf("MediaSources.%d", i)
-		jsonStr, _ = sjson.Set(jsonStr, prefix+".SupportsDirectPlay", true)
-		jsonStr, _ = sjson.Set(jsonStr, prefix+".SupportsDirectStream", true)
 		jsonStr, _ = sjson.Set(jsonStr, prefix+".SupportsTranscoding", false)
 
 		dUrl := gjson.Get(jsonStr, prefix+".DirectStreamUrl").String()

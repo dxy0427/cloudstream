@@ -330,7 +330,7 @@ func (m *Manager) HandleProxy(c *gin.Context, serverID uint, upstreamPath string
 	realURL, err := url.Parse(realPath)
 	if err == nil && isHTTPURL(realURL) {
 		// 缓存检查
-		cacheKey := fmt.Sprintf("strm:%d:%s", serverID, realPath)
+		cacheKey := fmt.Sprintf("strm:%d:%s:%s", serverID, c.Request.Method, realPath)
 		if cfg.HttpStrm.UaPassthrough {
 			userAgentHash := sha256.Sum256([]byte(c.Request.UserAgent()))
 			cacheKey += fmt.Sprintf(":ua:%x", userAgentHash[:8])
@@ -346,7 +346,7 @@ func (m *Manager) HandleProxy(c *gin.Context, serverID uint, upstreamPath string
 		targetPath := applyPathMappings(realPath, cfg.HttpStrm.PathMappings)
 
 		if cfg.HttpStrm.ResolveStrmLinks {
-			targetPath = proxy.resolveHTTPStrm(c.Request.Context(), cacheKey, targetPath, c.Request.UserAgent())
+			targetPath = proxy.resolveHTTPStrm(c.Request.Context(), cacheKey, targetPath, c.Request.Method, c.Request.UserAgent())
 		} else {
 			// 如果没有开启解析302，但开启了缓存，也缓存替换后的路径
 			if cfg.Cache.Enable {
@@ -364,7 +364,7 @@ func (m *Manager) HandleProxy(c *gin.Context, serverID uint, upstreamPath string
 	proxy.ReverseProxy(c, upstreamPath, false)
 }
 
-func (s *ProxyServer) resolveHTTPStrm(ctx context.Context, cacheKey, targetPath, userAgent string) string {
+func (s *ProxyServer) resolveHTTPStrm(ctx context.Context, cacheKey, targetPath, method, userAgent string) string {
 	s.resolveMu.Lock()
 	if flight, exists := s.resolveFlights[cacheKey]; exists {
 		s.resolveMu.Unlock()
@@ -394,45 +394,38 @@ func (s *ProxyServer) resolveHTTPStrm(ctx context.Context, cacheKey, targetPath,
 	}
 
 	log.Info().Str("target", urlForLog(targetPath)).Msg("开始解析 Strm 链接")
-	for _, method := range []string{http.MethodHead, http.MethodGet} {
-		req, err := http.NewRequestWithContext(ctx, method, targetPath, nil)
-		if err != nil {
-			log.Warn().Str("error", errorWithoutURL(err)).Msg("创建 Strm 解析请求失败")
-			return targetPath
-		}
-		if s.cfg.HttpStrm.UaPassthrough {
-			req.Header.Set("User-Agent", userAgent)
-		} else {
-			req.Header.Set("User-Agent", "Mozilla/5.0")
-		}
-		resp, err := s.httpClient.Do(req)
-		if err != nil {
-			log.Warn().Str("method", method).Str("error", errorWithoutURL(err)).Msg("解析失败")
-			return targetPath
-		}
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 32<<10))
-		_ = resp.Body.Close()
-		if isRedirectStatus(resp.StatusCode) {
-			location, err := resp.Location()
-			if err != nil || !isHTTPURL(location) {
-				log.Warn().Str("method", method).Str("error", errorWithoutURL(err)).Msg("Strm 重定向地址无效")
-				return targetPath
-			}
-			targetPath = location.String()
-			log.Info().Str("method", method).Str("target", urlForLog(targetPath)).Msg("解析成功")
-			if s.cfg.Cache.Enable {
-				ttl := time.Duration(s.cfg.Cache.HttpStrmTTL) * time.Minute
-				s.cache.Set(cacheKey, targetPath, ttl)
-				log.Info().Dur("ttl", ttl).Msg("已缓存直链")
-			}
-			return targetPath
-		}
-		if method == http.MethodHead {
-			log.Debug().Int("status", resp.StatusCode).Msg("HEAD 未返回重定向，改用 GET 解析")
-			continue
-		}
+	req, err := http.NewRequestWithContext(ctx, method, targetPath, nil)
+	if err != nil {
+		log.Warn().Str("error", errorWithoutURL(err)).Msg("创建 Strm 解析请求失败")
+		return targetPath
+	}
+	if s.cfg.HttpStrm.UaPassthrough {
+		req.Header.Set("User-Agent", userAgent)
+	} else {
+		req.Header.Set("User-Agent", "Mozilla/5.0")
+	}
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		log.Warn().Str("method", method).Str("error", errorWithoutURL(err)).Msg("解析失败")
+		return targetPath
+	}
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 32<<10))
+	_ = resp.Body.Close()
+	if !isRedirectStatus(resp.StatusCode) {
 		log.Warn().Str("method", method).Int("status", resp.StatusCode).Msg("Strm 链接未返回重定向")
 		return targetPath
+	}
+	location, err := resp.Location()
+	if err != nil || !isHTTPURL(location) {
+		log.Warn().Str("method", method).Str("error", errorWithoutURL(err)).Msg("Strm 重定向地址无效")
+		return targetPath
+	}
+	targetPath = location.String()
+	log.Info().Str("method", method).Str("target", urlForLog(targetPath)).Msg("解析成功")
+	if s.cfg.Cache.Enable {
+		ttl := time.Duration(s.cfg.Cache.HttpStrmTTL) * time.Minute
+		s.cache.Set(cacheKey, targetPath, ttl)
+		log.Info().Dur("ttl", ttl).Msg("已缓存直链")
 	}
 	return targetPath
 }

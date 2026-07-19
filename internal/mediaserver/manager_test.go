@@ -101,7 +101,7 @@ func TestProxyRetireWaitsForActiveRequest(t *testing.T) {
 	}
 }
 
-func TestHTTPStrmUsesCallerTokenAndHEADResolver(t *testing.T) {
+func TestHTTPStrmUsesCallerTokenAndGETResolver(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	var resolverMethod string
 	resolver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -136,7 +136,7 @@ func TestHTTPStrmUsesCallerTokenAndHEADResolver(t *testing.T) {
 	if recorder.Code != http.StatusFound || recorder.Header().Get("Location") != "https://storage.example/video.mp4" {
 		t.Fatalf("status=%d location=%q", recorder.Code, recorder.Header().Get("Location"))
 	}
-	if resolverMethod != http.MethodHead {
+	if resolverMethod != http.MethodGet {
 		t.Fatalf("resolver method=%q", resolverMethod)
 	}
 	if client.calls.Load() != 1 || client.itemID != "item-42" || client.sourceID != "source-1" || client.accessKey != "caller-token" {
@@ -144,26 +144,71 @@ func TestHTTPStrmUsesCallerTokenAndHEADResolver(t *testing.T) {
 	}
 }
 
-func TestHTTPStrmFallsBackToGETWhenHEADDoesNotRedirect(t *testing.T) {
-	var methods []string
+func TestHTTPStrmHEADUsesHEADResolver(t *testing.T) {
+	var resolverMethod string
 	resolver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		methods = append(methods, r.Method)
-		if r.Method == http.MethodHead {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
+		resolverMethod = r.Method
 		http.Redirect(w, r, "https://storage.example/video.mp4", http.StatusFound)
 	}))
 	defer resolver.Close()
 	proxy := NewProxyServer(&Config{Server: ServerConf{Addr: "https://example.com"}, HttpStrm: HttpStrmConf{ResolveStrmLinks: true}})
 	defer proxy.Close()
 
-	resolved := proxy.resolveHTTPStrm(context.Background(), "get-fallback", resolver.URL+"/video.mp4", "test")
+	resolved := proxy.resolveHTTPStrm(context.Background(), "head-resolver", resolver.URL+"/video.mp4", http.MethodHead, "test")
 	if resolved != "https://storage.example/video.mp4" {
 		t.Fatalf("resolved URL=%q", resolved)
 	}
-	if strings.Join(methods, ",") != "HEAD,GET" {
-		t.Fatalf("resolver methods=%v", methods)
+	if resolverMethod != http.MethodHead {
+		t.Fatalf("resolver method=%q", resolverMethod)
+	}
+}
+
+func TestHTTPStrmCacheSeparatesGETAndHEAD(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var calls atomic.Int32
+	resolver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Redirect(w, r, "https://storage.example/"+strings.ToLower(r.Method)+".mp4", http.StatusFound)
+	}))
+	defer resolver.Close()
+	client := &recordingMediaClient{path: resolver.URL + "/video.mp4"}
+	proxy := NewProxyServer(&Config{
+		Server:   ServerConf{Addr: "https://example.com"},
+		Cache:    CacheConf{Enable: true, HttpStrmTTL: 1},
+		HttpStrm: HttpStrmConf{Enable: true, ResolveStrmLinks: true},
+	})
+	defer proxy.Close()
+	proxy.mediaServer = client
+	manager := &Manager{servers: map[uint]*ProxyServer{1: proxy}}
+	router := gin.New()
+	router.Any("/*path", func(c *gin.Context) {
+		manager.HandleProxy(c, 1, c.Request.URL.EscapedPath())
+	})
+	server := httptest.NewServer(router)
+	defer server.Close()
+	httpClient := *server.Client()
+	httpClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+
+	for _, method := range []string{http.MethodHead, http.MethodGet, http.MethodGet} {
+		request, err := http.NewRequest(method, server.URL+"/videos/item-42/stream", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("X-Emby-Token", "caller-token")
+		response, err := httpClient.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = response.Body.Close()
+		wantLocation := "https://storage.example/" + strings.ToLower(method) + ".mp4"
+		if response.StatusCode != http.StatusFound || response.Header.Get("Location") != wantLocation {
+			t.Fatalf("method=%s status=%d location=%q", method, response.StatusCode, response.Header.Get("Location"))
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("resolver calls=%d", calls.Load())
 	}
 }
 
@@ -266,7 +311,7 @@ func TestRequestAccessTokenSupportsEmbyAuthorization(t *testing.T) {
 func TestPlaybackInfoModificationSetsURLQueryAndClearsValidators(t *testing.T) {
 	proxy := NewProxyServer(&Config{Server: ServerConf{Addr: "https://example.com"}, HttpStrm: HttpStrmConf{DisableTranscode: true}})
 	defer proxy.Close()
-	body := `{"MediaSources":[{"DirectStreamUrl":"/Videos/1/stream?x=1#part","SupportsTranscoding":true}]}`
+	body := `{"MediaSources":[{"DirectStreamUrl":"/Videos/1/stream?x=1#part","SupportsDirectPlay":false,"SupportsDirectStream":false,"SupportsTranscoding":true}]}`
 	request := httptest.NewRequest(http.MethodPost, "/Items/1/PlaybackInfo", nil)
 	request = request.WithContext(context.WithValue(request.Context(), proxyRequestContextKey{}, proxyRequestOptions{modifyPlaybackInfo: true}))
 	response := &http.Response{
@@ -283,7 +328,9 @@ func TestPlaybackInfoModificationSetsURLQueryAndClearsValidators(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(modified)
-	if !strings.Contains(text, `"DirectStreamUrl":"/Videos/1/stream?Emby2Alist=true&x=1#part"`) || !strings.Contains(text, `"SupportsTranscoding":false`) {
+	if !strings.Contains(text, `"DirectStreamUrl":"/Videos/1/stream?Emby2Alist=true&x=1#part"`) ||
+		!strings.Contains(text, `"SupportsDirectPlay":false`) || !strings.Contains(text, `"SupportsDirectStream":false`) ||
+		!strings.Contains(text, `"SupportsTranscoding":false`) {
 		t.Fatalf("modified body=%s", text)
 	}
 	if response.Header.Get("ETag") != "" || response.Header.Get("Content-MD5") != "" || response.Header.Get("Cache-Control") != "no-store" {
@@ -324,7 +371,7 @@ func TestResolveHTTPStrmCoalescesConcurrentMisses(t *testing.T) {
 	results := make(chan string, 2)
 	for range 2 {
 		go func() {
-			results <- proxy.resolveHTTPStrm(context.Background(), "same-key", resolver.URL+"/video.mp4", "test")
+			results <- proxy.resolveHTTPStrm(context.Background(), "same-key", resolver.URL+"/video.mp4", http.MethodGet, "test")
 		}()
 	}
 	for range 2 {
