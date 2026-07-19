@@ -33,20 +33,27 @@ type proxyRequestOptions struct {
 
 // ProxyServer 媒体服务器代理
 type ProxyServer struct {
-	cfg           *Config
-	mediaServer   MediaServerClient
-	httpClient    *http.Client
-	cache         *Cache
-	transport     *http.Transport
-	reverseProxy  *httputil.ReverseProxy
-	remoteURL     *url.URL
-	configErr     error
-	shutdown      chan struct{}
-	requestMu     sync.Mutex
-	requestClosed bool
-	requestWG     sync.WaitGroup
-	retireOnce    sync.Once
-	closeDone     chan struct{}
+	cfg            *Config
+	mediaServer    MediaServerClient
+	httpClient     *http.Client
+	cache          *Cache
+	transport      *http.Transport
+	reverseProxy   *httputil.ReverseProxy
+	remoteURL      *url.URL
+	configErr      error
+	shutdown       chan struct{}
+	requestMu      sync.Mutex
+	requestClosed  bool
+	requestWG      sync.WaitGroup
+	retireOnce     sync.Once
+	closeDone      chan struct{}
+	resolveMu      sync.Mutex
+	resolveFlights map[string]*resolveFlight
+}
+
+type resolveFlight struct {
+	done   chan struct{}
+	target string
 }
 
 // Cache 内存缓存（带大小限制）
@@ -161,11 +168,12 @@ func NewProxyServer(cfg *Config) *ProxyServer {
 	}
 
 	s := &ProxyServer{
-		cfg:       cfg,
-		cache:     NewCache(),
-		transport: transport,
-		shutdown:  make(chan struct{}),
-		closeDone: make(chan struct{}),
+		cfg:            cfg,
+		cache:          NewCache(),
+		transport:      transport,
+		shutdown:       make(chan struct{}),
+		closeDone:      make(chan struct{}),
+		resolveFlights: make(map[string]*resolveFlight),
 		httpClient: &http.Client{
 			Transport: transport,
 			Timeout:   10 * time.Second,
@@ -187,6 +195,7 @@ func NewProxyServer(cfg *Config) *ProxyServer {
 	proxy.Transport = transport
 	proxy.Director = func(req *http.Request) {
 		req.Header = req.Header.Clone()
+		removeCloudStreamCookie(req.Header)
 		baseDirector(req)
 
 		options, ok := req.Context().Value(proxyRequestContextKey{}).(proxyRequestOptions)
@@ -221,6 +230,23 @@ func NewProxyServer(cfg *Config) *ProxyServer {
 	s.reverseProxy = proxy
 
 	return s
+}
+
+func removeCloudStreamCookie(header http.Header) {
+	rawCookies := header.Values("Cookie")
+	header.Del("Cookie")
+	for _, rawCookie := range rawCookies {
+		request := &http.Request{Header: http.Header{"Cookie": []string{rawCookie}}}
+		cookies := make([]string, 0)
+		for _, cookie := range request.Cookies() {
+			if cookie.Name != "cloudstream_token" {
+				cookies = append(cookies, cookie.String())
+			}
+		}
+		if len(cookies) > 0 {
+			header.Add("Cookie", strings.Join(cookies, "; "))
+		}
+	}
 }
 
 func (s *ProxyServer) ReloadClient() {
@@ -366,6 +392,10 @@ func (s *ProxyServer) modifyProxyResponse(resp *http.Response) error {
 
 	newBody := s.modifyPlaybackInfo(respBody)
 	resp.Header.Del("Content-Encoding")
+	resp.Header.Del("ETag")
+	resp.Header.Del("Content-MD5")
+	resp.Header.Del("Digest")
+	resp.Header.Set("Cache-Control", "no-store")
 	resp.Header.Set("Content-Length", strconv.FormatInt(int64(len(newBody)), 10))
 	resp.ContentLength = int64(len(newBody))
 	resp.Body = io.NopCloser(bytes.NewReader(newBody))
@@ -406,10 +436,20 @@ func parseServerURL(addr string) (*url.URL, error) {
 		return nil, err
 	}
 	parsed.Scheme = strings.ToLower(parsed.Scheme)
-	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil {
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, fmt.Errorf("server address must use http or https")
 	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawPath = ""
 	return parsed, nil
+}
+
+func NormalizeServerAddress(addr string) (string, error) {
+	parsed, err := parseServerURL(addr)
+	if err != nil {
+		return "", err
+	}
+	return parsed.String(), nil
 }
 
 func joinURLPath(baseURL, requestURL *url.URL) (string, string) {
@@ -481,12 +521,13 @@ func (s *ProxyServer) modifyPlaybackInfo(body []byte) []byte {
 
 		dUrl := gjson.Get(jsonStr, prefix+".DirectStreamUrl").String()
 		if dUrl != "" {
-			sep := "?"
-			if strings.Contains(dUrl, "?") {
-				sep = "&"
+			parsedURL, err := url.Parse(dUrl)
+			if err == nil {
+				query := parsedURL.Query()
+				query.Set("Emby2Alist", "true")
+				parsedURL.RawQuery = query.Encode()
+				jsonStr, _ = sjson.Set(jsonStr, prefix+".DirectStreamUrl", parsedURL.String())
 			}
-			dUrl += sep + "Emby2Alist=true"
-			jsonStr, _ = sjson.Set(jsonStr, prefix+".DirectStreamUrl", dUrl)
 		}
 	}
 

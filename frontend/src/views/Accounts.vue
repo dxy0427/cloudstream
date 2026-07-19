@@ -130,6 +130,7 @@
 
   <n-form-item>
    <n-checkbox v-model:checked="form.EnableStreamSign">签名</n-checkbox>
+   <template #feedback>切换签名状态后，需以覆盖模式执行关联任务来更新已有 STRM 文件</template>
   </n-form-item>
 
   <n-form-item v-if="form.EnableStreamSign" label="直链有效期(小时)">

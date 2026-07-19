@@ -80,6 +80,10 @@ func UnifiedStreamHandler(c *gin.Context) {
 			c.String(http.StatusNotFound, "Account not found")
 			return
 		}
+		if account.EnableStreamSign {
+			c.String(http.StatusForbidden, "Signature required")
+			return
+		}
 
 		if account.Type == models.AccountTypeOpenList || account.Type == models.AccountTypeWebDAV {
 			pathPart := "/" + strings.Join(parts[1:], "/")

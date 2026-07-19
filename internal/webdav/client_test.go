@@ -44,6 +44,13 @@ func TestDoDownloadRequestNegotiatesDigestAuth(t *testing.T) {
 	}
 }
 
+func TestNewClientPreservesOpaquePassword(t *testing.T) {
+	client := NewClient(models.Account{WebDAVUsername: " user ", WebDAVPassword: " password "})
+	if client.Username != "user" || client.Password != " password " {
+		t.Fatalf("username=%q password=%q", client.Username, client.Password)
+	}
+}
+
 func TestListDirectoryContextCancelsRequest(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})

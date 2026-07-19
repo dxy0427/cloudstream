@@ -34,6 +34,33 @@ func TestMediaServerCreateBooleanDefaults(t *testing.T) {
 	}
 }
 
+func TestValidateMediaServerRejectsUnsafeLimitsAndNormalizesClients(t *testing.T) {
+	server := models.MediaServer{
+		Name: "emby", ServerType: "Emby", ServerAddr: "https://emby.example", APIKey: "key",
+		HttpStrmTTL: 1441, ClientMode: "BlackList", ClientList: "[]", PathMappings: "[]",
+	}
+	if ok, _ := validateMediaServer(&server); ok {
+		t.Fatal("oversized HTTPStrm TTL was accepted")
+	}
+	server.HttpStrmTTL = 1
+	server.ClientList = `[" Emby ","emby"]`
+	if ok, message := validateMediaServer(&server); !ok || message != "" {
+		t.Fatalf("valid client list rejected: %s", message)
+	}
+	if server.ClientList != `["Emby"]` {
+		t.Fatalf("normalized client list=%q", server.ClientList)
+	}
+	server.ClientList = `[""]`
+	if ok, _ := validateMediaServer(&server); ok {
+		t.Fatal("empty client keyword was accepted")
+	}
+	server.ClientList = "[]"
+	server.PathMappings = `[{"old":"http://127.0.0.1:5244","new":"javascript:alert(1)"}]`
+	if ok, _ := validateMediaServer(&server); ok {
+		t.Fatal("unsafe path mapping was accepted")
+	}
+}
+
 func TestMediaServerListRedactsAndDetailReturnsPlaintext(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := openMediaServerTestDB(t)

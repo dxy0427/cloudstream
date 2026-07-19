@@ -102,7 +102,11 @@ func GetMediaServerHandler(c *gin.Context) {
 }
 
 func normalizeMediaServerAddress(value string) string {
-	return strings.TrimRight(strings.TrimSpace(value), "/")
+	normalized, err := mediaserver.NormalizeServerAddress(value)
+	if err != nil {
+		return strings.TrimSpace(value)
+	}
+	return normalized
 }
 
 func validateMediaServer(server *models.MediaServer) (bool, string) {
@@ -127,8 +131,8 @@ func validateMediaServer(server *models.MediaServer) (bool, string) {
 	if server.HttpStrmTTL == 0 {
 		server.HttpStrmTTL = 1
 	}
-	if server.HttpStrmTTL < 1 {
-		return false, "HTTPStrm 缓存 TTL 必须大于 0"
+	if server.HttpStrmTTL < 1 || server.HttpStrmTTL > 1440 {
+		return false, "HTTPStrm 缓存 TTL 必须在 1 到 1440 分钟之间"
 	}
 	if server.ClientMode == "" {
 		server.ClientMode = "BlackList"
@@ -149,9 +153,29 @@ func validateMediaServer(server *models.MediaServer) (bool, string) {
 	if _, err := mediaserver.ParsePathMappings(server.PathMappings); err != nil {
 		return false, "路径映射 JSON 格式错误"
 	}
-	if _, err := mediaserver.ParseClientList(server.ClientList); err != nil {
+	clientList, err := mediaserver.ParseClientList(server.ClientList)
+	if err != nil {
 		return false, "客户端列表 JSON 格式错误"
 	}
+	normalizedClients := make([]string, 0, len(clientList))
+	seenClients := make(map[string]struct{}, len(clientList))
+	for _, client := range clientList {
+		client = strings.TrimSpace(client)
+		if client == "" {
+			return false, "客户端列表不能包含空关键词"
+		}
+		key := strings.ToLower(client)
+		if _, exists := seenClients[key]; exists {
+			continue
+		}
+		seenClients[key] = struct{}{}
+		normalizedClients = append(normalizedClients, client)
+	}
+	serializedClients, err := mediaserver.SerializeClientList(normalizedClients)
+	if err != nil {
+		return false, "客户端列表 JSON 格式错误"
+	}
+	server.ClientList = serializedClients
 	return true, ""
 }
 

@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"cloudstream/internal/auth"
 	"cloudstream/internal/core"
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
@@ -127,6 +128,10 @@ func UpdateCredentialsHandler(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "参数错误"})
 		return
 	}
+	if !utils.IsSHA256Hex(req.CurrentPassword) {
+		c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "当前密码格式无效"})
+		return
+	}
 
 	currentUsername, _ := c.Get("username")
 	var user models.User
@@ -155,6 +160,10 @@ func UpdateCredentialsHandler(c *gin.Context) {
 	}
 
 	if req.NewPassword != "" {
+		if !utils.IsSHA256Hex(req.NewPassword) || !utils.IsSHA256Hex(req.ConfirmPassword) {
+			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "新密码格式无效"})
+			return
+		}
 		if req.NewPassword != req.ConfirmPassword {
 			c.JSON(http.StatusBadRequest, gin.H{"code": 1, "message": "两次输入的新密码不一致"})
 			return
@@ -190,6 +199,8 @@ func UpdateCredentialsHandler(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "凭证已发生变化，请重新登录"})
 		return
 	}
+	c.SetSameSite(http.SameSiteStrictMode)
+	c.SetCookie("cloudstream_token", "", -1, "/", "", auth.IsSecureRequest(c), true)
 	if passwordChanged {
 		c.JSON(http.StatusOK, gin.H{"code": 0, "message": "凭证更新成功，请重新登录", "data": gin.H{"needsPasswordReminder": false, "passwordReminderShown": true}})
 		return

@@ -3,6 +3,7 @@ package core
 import (
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
+	"cloudstream/internal/utils"
 	"context"
 	"errors"
 	"fmt"
@@ -16,13 +17,14 @@ import (
 )
 
 var (
-	MainScheduler   *gocron.Scheduler
-	runningTasks    = make(map[uint]context.CancelFunc)
-	runningTaskDone = make(map[uint]chan struct{})
-	blockedTasks    = make(map[uint]struct{})
-	taskMutex       sync.Mutex
-	schedulerMutex  sync.Mutex
-	schedulerClosed atomic.Bool
+	MainScheduler    *gocron.Scheduler
+	runningTasks     = make(map[uint]context.CancelFunc)
+	runningTaskDone  = make(map[uint]chan struct{})
+	runningTaskPaths = make(map[uint]string)
+	blockedTasks     = make(map[uint]struct{})
+	taskMutex        sync.Mutex
+	schedulerMutex   sync.Mutex
+	schedulerClosed  atomic.Bool
 )
 
 func InitScheduler() {
@@ -41,14 +43,19 @@ func RefreshScheduler() error {
 	}
 
 	var tasks []models.Task
-	if err := database.DB.Where("enabled = ?", true).Find(&tasks).Error; err != nil {
+	if err := database.DB.Where("enabled = ?", true).Order("id asc").Find(&tasks).Error; err != nil {
 		return fmt.Errorf("从数据库加载任务失败: %w", err)
 	}
 	log.Info().Int("count", len(tasks)).Msg("发现已启用的任务，正在添加到调度器...")
 
 	nextScheduler := gocron.NewScheduler(time.Local)
+	scheduledTasks := make([]models.Task, 0, len(tasks))
 	for _, dbTask := range tasks {
 		t := dbTask
+		if conflictingID := overlappingTaskID(t, scheduledTasks); conflictingID != 0 {
+			log.Error().Uint("taskID", t.ID).Uint("conflictingTaskID", conflictingID).Str("path", t.LocalPath).Msg("任务输出路径与已加载任务冲突，已跳过")
+			continue
+		}
 		withSeconds, err := ParseCronSpec(t.Cron)
 		if err != nil {
 			log.Error().Err(err).Uint("taskID", t.ID).Str("task", t.Name).Str("cron", t.Cron).Msg("任务 Cron 无效，已跳过")
@@ -62,7 +69,7 @@ func RefreshScheduler() error {
 			jobScheduler = nextScheduler.Cron(t.Cron)
 		}
 		_, err = jobScheduler.Do(func() {
-			ctx, ok := reserveTaskRun(t.ID)
+			ctx, ok := reserveTaskRun(t.ID, t.LocalPath)
 			if !ok {
 				if IsTaskRunning(t.ID) {
 					log.Warn().Str("task", t.Name).Msg("任务已在运行，跳过此次定时执行")
@@ -105,6 +112,7 @@ func RefreshScheduler() error {
 			log.Error().Err(err).Uint("taskID", t.ID).Str("task", t.Name).Msg("添加任务到调度器失败，已跳过")
 			continue
 		}
+		scheduledTasks = append(scheduledTasks, t)
 	}
 
 	oldScheduler := MainScheduler
@@ -119,8 +127,17 @@ func RefreshScheduler() error {
 	return nil
 }
 
+func overlappingTaskID(task models.Task, scheduled []models.Task) uint {
+	for _, other := range scheduled {
+		if utils.PathsOverlap(task.LocalPath, other.LocalPath) {
+			return other.ID
+		}
+	}
+	return 0
+}
+
 func RunManualTask(task models.Task) bool {
-	ctx, ok := reserveTaskRun(task.ID)
+	ctx, ok := reserveTaskRun(task.ID, task.LocalPath)
 	if !ok {
 		return false
 	}
@@ -128,7 +145,7 @@ func RunManualTask(task models.Task) bool {
 	return true
 }
 
-func reserveTaskRun(taskID uint) (context.Context, bool) {
+func reserveTaskRun(taskID uint, localPath string) (context.Context, bool) {
 	taskMutex.Lock()
 	defer taskMutex.Unlock()
 	if schedulerClosed.Load() {
@@ -140,10 +157,16 @@ func reserveTaskRun(taskID uint) (context.Context, bool) {
 	if _, exists := runningTasks[taskID]; exists {
 		return nil, false
 	}
+	for _, runningPath := range runningTaskPaths {
+		if utils.PathsOverlap(localPath, runningPath) {
+			return nil, false
+		}
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	runningTasks[taskID] = cancel
 	runningTaskDone[taskID] = make(chan struct{})
+	runningTaskPaths[taskID] = localPath
 	return ctx, true
 }
 
@@ -158,24 +181,33 @@ func StopTask(taskID uint) bool {
 }
 
 func BlockTaskIfIdle(taskID uint) bool {
+	return BlockTasksIfIdle([]uint{taskID})
+}
+
+func BlockTasksIfIdle(taskIDs []uint) bool {
 	taskMutex.Lock()
 	defer taskMutex.Unlock()
 	if schedulerClosed.Load() {
 		return false
 	}
-	if _, running := runningTasks[taskID]; running {
-		return false
+	for _, taskID := range taskIDs {
+		if _, running := runningTasks[taskID]; running {
+			return false
+		}
+		if _, blocked := blockedTasks[taskID]; blocked {
+			return false
+		}
 	}
-	if _, blocked := blockedTasks[taskID]; blocked {
-		return false
+	for _, taskID := range taskIDs {
+		blockedTasks[taskID] = struct{}{}
 	}
-	blockedTasks[taskID] = struct{}{}
 	return true
 }
 
 func finishTaskRun(taskID uint) {
 	taskMutex.Lock()
 	delete(runningTasks, taskID)
+	delete(runningTaskPaths, taskID)
 	if done, ok := runningTaskDone[taskID]; ok {
 		close(done)
 		delete(runningTaskDone, taskID)

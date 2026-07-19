@@ -2,11 +2,14 @@ package handlers
 
 import (
 	"bytes"
+	"cloudstream/internal/core"
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
+	"cloudstream/internal/utils"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -66,6 +69,24 @@ func TestUpdateAccountRejectsMalformedID(t *testing.T) {
 	recorder := performHandlerRequest(t, http.MethodPut, "/accounts/1abc", map[string]any{"Name": "renamed"}, UpdateAccountHandler)
 	if recorder.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", recorder.Code, http.StatusBadRequest)
+	}
+}
+
+func TestTaskPathsOverlapResolvesSymlinkAliases(t *testing.T) {
+	root := t.TempDir()
+	realPath := filepath.Join(root, "media")
+	if err := os.Mkdir(realPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	aliasPath := filepath.Join(root, "media-alias")
+	if err := os.Symlink(realPath, aliasPath); err != nil {
+		t.Fatal(err)
+	}
+	if !utils.PathsOverlap(realPath, aliasPath) {
+		t.Fatal("symlink aliases were treated as separate task paths")
+	}
+	if !utils.PathsOverlap(filepath.Join(realPath, "future"), filepath.Join(aliasPath, "future", "child")) {
+		t.Fatal("symlink aliases with missing descendants were treated as separate task paths")
 	}
 }
 
@@ -602,6 +623,40 @@ func TestUpdateTaskLocalPathClearsHistory(t *testing.T) {
 	}
 }
 
+func TestTaskLocalPathRejectsOverlappingTasks(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t)
+	account := models.Account{Name: "pan", Type: models.AccountType123Pan, ClientID: "id", ClientSecret: "secret"}
+	if err := db.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "media")
+	existing := models.Task{Name: "existing", AccountID: account.ID, SourceFolderID: "0", LocalPath: root, Cron: "0 * * * *", Enabled: false, Threads: 1}
+	if err := db.Create(&existing).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{root, filepath.Join(root, "child"), filepath.Dir(root)} {
+		response := performHandlerRequest(t, http.MethodPost, "/tasks", map[string]any{
+			"Name": "new-" + filepath.Base(path), "AccountID": account.ID, "SourceFolderID": "0",
+			"LocalPath": path, "Cron": "0 * * * *", "Enabled": false, "Threads": 1,
+		}, CreateTaskHandler)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "本地路径不能与任务") {
+			t.Fatalf("path=%q status=%d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+
+	otherRoot := filepath.Join(t.TempDir(), "other")
+	second := models.Task{Name: "second", AccountID: account.ID, SourceFolderID: "0", LocalPath: otherRoot, Cron: "0 * * * *", Enabled: false, Threads: 1}
+	if err := db.Create(&second).Error; err != nil {
+		t.Fatal(err)
+	}
+	response := performHandlerRequest(t, http.MethodPut, "/tasks/2", map[string]any{"LocalPath": filepath.Join(root, "child")}, UpdateTaskHandler)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "本地路径不能与任务") {
+		t.Fatalf("update status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestUpdateAccountClientIDChangeRetainsOmittedSecret(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	db := openHandlerTestDB(t)
@@ -960,6 +1015,37 @@ func TestUpdateAccountTypeBlockedByTask(t *testing.T) {
 	}, UpdateAccountHandler)
 	if recorder.Code != http.StatusConflict {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestUpdateAccountBlockedWhileRelatedTaskIsBusy(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t)
+	account := models.Account{Name: "pan", Type: models.AccountType123Pan, ClientID: "id", ClientSecret: "secret"}
+	if err := db.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+	task := models.Task{Name: "task", AccountID: account.ID, SourceFolderID: "0", LocalPath: filepath.Join(t.TempDir(), "media"), Cron: "0 * * * *", Enabled: false, Threads: 1}
+	if err := db.Create(&task).Error; err != nil {
+		t.Fatal(err)
+	}
+	if !core.BlockTaskIfIdle(task.ID) {
+		t.Fatal("failed to reserve task for test")
+	}
+	t.Cleanup(func() { core.UnblockTasks([]uint{task.ID}) })
+
+	response := performHandlerRequest(t, http.MethodPut, "/accounts/1", map[string]any{
+		"Name": "renamed", "Version": account.Version,
+	}, UpdateAccountHandler)
+	if response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "关联任务运行中") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var stored models.Account
+	if err := db.First(&stored, account.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.Name != account.Name || stored.Version != account.Version {
+		t.Fatalf("busy account was modified: %+v", stored)
 	}
 }
 

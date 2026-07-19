@@ -256,6 +256,17 @@ func TestTokenCacheUsesConfigurationFingerprint(t *testing.T) {
 	}
 }
 
+func TestNewClientPreservesOpaqueCredentials(t *testing.T) {
+	passwordClient := NewClient(models.Account{
+		OpenListAuthMode: "password",
+		OpenListUsername: " user ",
+		OpenListPassword: " password ",
+	})
+	if passwordClient.Username != "user" || passwordClient.Password != " password " {
+		t.Fatalf("username=%q password=%q", passwordClient.Username, passwordClient.Password)
+	}
+}
+
 func TestDirectoryCacheUsesConfigurationFingerprint(t *testing.T) {
 	const accountID = 7102
 	InvalidateAccountCache(accountID)

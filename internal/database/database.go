@@ -68,11 +68,24 @@ func OpenExistingDatabase(dbPath string) (*gorm.DB, error) {
 }
 
 func ConnectDatabase(dbPath string) error {
-	if err := os.MkdirAll(filepath.Dir(dbPath), 0750); err != nil {
+	dataDir := filepath.Dir(dbPath)
+	if err := os.MkdirAll(dataDir, 0700); err != nil {
 		return fmt.Errorf("创建数据目录失败: %w", err)
 	}
+	if err := os.Chmod(dataDir, 0700); err != nil {
+		return fmt.Errorf("设置数据目录权限失败: %w", err)
+	}
+	dbFile, err := os.OpenFile(dbPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return fmt.Errorf("创建数据库文件失败: %w", err)
+	}
+	if err := dbFile.Close(); err != nil {
+		return fmt.Errorf("关闭数据库文件失败: %w", err)
+	}
+	if err := os.Chmod(dbPath, 0600); err != nil {
+		return fmt.Errorf("设置数据库文件权限失败: %w", err)
+	}
 
-	var err error
 	DB, err = openSQLiteDatabase(dbPath)
 	if err != nil {
 		return err
@@ -127,6 +140,11 @@ func ConnectDatabase(dbPath string) error {
 		log.Info().Msg("已创建初始管理员账户")
 		if generated {
 			fmt.Fprintf(os.Stderr, "\nCloudStream initial admin password (shown once): %s\n\n", initialPassword)
+		}
+	}
+	for _, sqlitePath := range []string{dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		if err := os.Chmod(sqlitePath, 0600); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("设置 SQLite 文件权限失败: %w", err)
 		}
 	}
 	log.Info().Msg("数据库连接和迁移成功 (WAL模式已启用)")

@@ -4,6 +4,7 @@ import (
 	"cloudstream/internal/auth"
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
+	"errors"
 	"net/http"
 	"strings"
 
@@ -49,7 +50,11 @@ func GetUserSettingsHandler(c *gin.Context) {
 
 	var user models.User
 	if err := database.DB.Where("username = ?", username).First(&user).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "用户不存在"})
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusNotFound, gin.H{"code": 1, "message": "用户不存在"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 1, "message": "读取用户设置失败"})
+		}
 		return
 	}
 

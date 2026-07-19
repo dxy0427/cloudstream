@@ -51,7 +51,7 @@ func currentUser(c *gin.Context) (models.User, bool) {
 func sanitizeNotification(notification models.Notification) gin.H {
 	return gin.H{
 		"ID": notification.ID, "CreatedAt": notification.CreatedAt, "UpdatedAt": notification.UpdatedAt,
-		"Name": notification.Name, "Type": notification.Type, "Version": notification.Version, "TelegramChatID": notification.TelegramChatID,
+		"Name": notification.Name, "Type": notification.Type, "Version": notification.Version,
 		"Enabled": notification.Enabled, "NotifyOnComplete": notification.NotifyOnComplete,
 		"NotifyOnError": notification.NotifyOnError, "NotifyOnStop": notification.NotifyOnStop,
 		"NotifyOnManual": notification.NotifyOnManual,

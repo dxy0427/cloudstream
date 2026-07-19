@@ -107,7 +107,7 @@ func NewClient(account models.Account) *Client {
 		client.StaticToken = strings.TrimSpace(account.OpenListToken)
 	case "password":
 		client.Username = strings.TrimSpace(account.OpenListUsername)
-		client.Password = strings.TrimSpace(account.OpenListPassword)
+		client.Password = account.OpenListPassword
 	}
 
 	return client

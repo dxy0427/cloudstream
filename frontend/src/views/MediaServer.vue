@@ -132,7 +132,7 @@
      </template>
     </n-dynamic-input>
     <template #feedback>
-     将原地址替换为新地址，用于内网地址映射
+     填写完整的 HTTP/HTTPS 地址前缀；空白行会被忽略
     </template>
    </n-form-item>
   </template>
@@ -307,7 +307,7 @@ const preparePayload = () => ({
  DisableTranscode: form.DisableTranscode,
  ResolveStrmLinks: form.ResolveStrmLinks,
  UaPassthrough: form.UaPassthrough,
- PathMappings: JSON.stringify(pathMappingsArray.value),
+ PathMappings: JSON.stringify(pathMappingsArray.value.filter(({ old, new: replacement }) => old.trim() || replacement.trim())),
  Port: form.Port
 })
 
@@ -353,6 +353,23 @@ const validateForm = () => {
  }
  if (!form.APIKey.trim()) {
   message.warning('请输入 API Key')
+  return false
+ }
+ const invalidMapping = pathMappingsArray.value.some(({ old, new: replacement }) => {
+  const source = old.trim()
+  const target = replacement.trim()
+  if (!source && !target) return false
+ try {
+   return [source, target].some((value) => {
+    const parsed = new URL(value)
+    return !['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.search || parsed.hash
+   })
+  } catch {
+   return true
+  }
+ })
+ if (invalidMapping) {
+  message.warning('路径映射必须填写完整的 HTTP/HTTPS 地址前缀')
   return false
  }
  return true

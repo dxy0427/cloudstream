@@ -39,6 +39,35 @@ func TestOpenExistingDatabaseUsesReadWriteMode(t *testing.T) {
 	}
 }
 
+func TestConnectDatabaseRestrictsSQLiteFilePermissions(t *testing.T) {
+	previousDB := DB
+	dataDir := filepath.Join(t.TempDir(), "data")
+	dbPath := filepath.Join(dataDir, "cloudstream.db")
+	t.Setenv("CLOUDSTREAM_ADMIN_PASSWORD", "test-password")
+	if err := ConnectDatabase(dbPath); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if sqlDB, err := DB.DB(); err == nil {
+			_ = sqlDB.Close()
+		}
+		DB = previousDB
+	})
+	for _, path := range []string{dataDir, dbPath, dbPath + "-wal", dbPath + "-shm"} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := os.FileMode(0600)
+		if info.IsDir() {
+			want = 0700
+		}
+		if info.Mode().Perm() != want {
+			t.Fatalf("path=%s permissions=%o want=%o", path, info.Mode().Perm(), want)
+		}
+	}
+}
+
 func TestAccountModelUsesCurrentPlaybackColumn(t *testing.T) {
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "current.db")), &gorm.Config{})
 	if err != nil {

@@ -335,6 +335,16 @@ func UpdateAccountHandler(c *gin.Context) {
 	}
 	accountTaskMutationMu.Lock()
 	defer accountTaskMutationMu.Unlock()
+	var taskIDs []uint
+	if err := database.DB.Model(&models.Task{}).Where("account_id = ?", accountID).Pluck("id", &taskIDs).Error; err != nil {
+		respondMutationError(c, err, "查询关联任务失败", "任务名称已存在")
+		return
+	}
+	if !core.BlockTasksIfIdle(taskIDs) {
+		c.JSON(http.StatusConflict, gin.H{"code": 1, "message": "关联任务运行中，停止后才能修改账户"})
+		return
+	}
+	defer core.UnblockTasks(taskIDs)
 
 	var account models.Account
 	err = database.DB.Transaction(func(tx *gorm.DB) error {

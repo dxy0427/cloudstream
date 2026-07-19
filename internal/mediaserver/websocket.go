@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +23,11 @@ func isWebSocketRequest(c *gin.Context) bool {
 
 // handleWebSocket 先连接后端，成功后再升级客户端，避免后端失败时提前返回 101。
 func handleWebSocket(c *gin.Context, svr *ProxyServer, upstreamPath string) {
+	if !webSocketOriginAllowed(c.Request) {
+		c.AbortWithStatus(http.StatusForbidden)
+		return
+	}
+
 	ctx, cancel := context.WithCancel(c.Request.Context())
 	defer cancel()
 	go func() {
@@ -43,10 +49,7 @@ func handleWebSocket(c *gin.Context, svr *ProxyServer, upstreamPath string) {
 		backendURL.Scheme = "ws"
 	}
 
-	header := http.Header{}
-	if apiKey := svr.cfg.Server.Auth; apiKey != "" {
-		header.Set("X-Emby-Token", apiKey)
-	}
+	header := webSocketBackendHeaders(c.Request)
 	header.Set("User-Agent", c.Request.UserAgent())
 
 	requestedProtocols := websocket.Subprotocols(c.Request)
@@ -89,9 +92,7 @@ func handleWebSocket(c *gin.Context, svr *ProxyServer, upstreamPath string) {
 	}
 
 	upgrader := websocket.Upgrader{
-		CheckOrigin: func(_ *http.Request) bool {
-			return true
-		},
+		CheckOrigin: webSocketOriginAllowed,
 	}
 	if selectedProtocol != "" {
 		upgrader.Subprotocols = []string{selectedProtocol}
@@ -155,6 +156,39 @@ func handleWebSocket(c *gin.Context, svr *ProxyServer, upstreamPath string) {
 
 	wg.Wait()
 	log.Info().Str("path", logPath(backendURL)).Msg("WebSocket 代理已关闭")
+}
+
+func webSocketOriginAllowed(request *http.Request) bool {
+	origin := request.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	parsedOrigin, err := url.Parse(origin)
+	if err != nil || parsedOrigin.User != nil || (parsedOrigin.Scheme != "http" && parsedOrigin.Scheme != "https") {
+		return false
+	}
+	requestScheme := "http"
+	if request.TLS != nil {
+		requestScheme = "https"
+	} else if forwardedProto := strings.TrimSpace(strings.Split(request.Header.Get("X-Forwarded-Proto"), ",")[0]); strings.EqualFold(forwardedProto, "https") {
+		requestScheme = "https"
+	}
+	return strings.EqualFold(parsedOrigin.Scheme, requestScheme) && strings.EqualFold(parsedOrigin.Host, request.Host)
+}
+
+func webSocketBackendHeaders(request *http.Request) http.Header {
+	header := request.Header.Clone()
+	for name := range header {
+		header.Del(name)
+	}
+	for _, name := range []string{"Authorization", "X-Emby-Authorization", "X-Emby-Token", "X-MediaBrowser-Token"} {
+		if value := request.Header.Get(name); value != "" {
+			header.Set(name, value)
+		}
+	}
+	header["Cookie"] = request.Header.Values("Cookie")
+	removeCloudStreamCookie(header)
+	return header
 }
 
 func containsString(values []string, target string) bool {

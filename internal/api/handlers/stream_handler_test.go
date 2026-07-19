@@ -425,6 +425,33 @@ func TestAccountSignedStreamRequiresSigningToRemainEnabled(t *testing.T) {
 	}
 }
 
+func TestAccountWithSigningEnabledRejectsUnsignedStream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	db := openHandlerTestDB(t)
+	account := models.Account{
+		Name:             "required-sign-dav",
+		Type:             models.AccountTypeWebDAV,
+		WebDAVURL:        "https://dav.example",
+		PlaybackMode:     models.PlaybackModeProxy,
+		EnableStreamSign: true,
+	}
+	if err := db.Create(&account).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	router := gin.New()
+	router.Match([]string{http.MethodGet, http.MethodHead}, "/api/v1/stream/s/*path", UnifiedStreamHandler)
+	path := "/api/v1/stream/s/" + strconv.FormatUint(uint64(account.ID), 10) + "/media/video.mkv"
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		recorder := httptest.NewRecorder()
+		router.ServeHTTP(recorder, httptest.NewRequest(method, path, nil))
+
+		if recorder.Code != http.StatusForbidden {
+			t.Fatalf("method=%s status=%d body=%q", method, recorder.Code, recorder.Body.String())
+		}
+	}
+}
+
 func TestWebDAVRedirectModePassesNotModifiedAndRangeErrors(t *testing.T) {
 	for _, test := range []struct {
 		name   string

@@ -22,5 +22,8 @@ ENV TZ=Asia/Shanghai
 WORKDIR /app
 COPY --from=backend-builder /cloudstream .
 COPY --from=frontend-builder /web/dist ./public
+RUN mkdir -p /app/data /app/strm
 EXPOSE 12398 8091
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget -q -O /dev/null http://127.0.0.1:12398/healthz || exit 1
 CMD ["./cloudstream"]

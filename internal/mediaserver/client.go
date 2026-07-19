@@ -3,13 +3,14 @@ package mediaserver
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strings"
 )
 
 const ProxyPort = 8091
 
 type MediaServerClient interface {
-	GetItemInfo(itemId string, mediaSourceId string) (string, error)
+	GetItemInfo(itemId string, mediaSourceId string, accessToken string) (string, error)
 	Ping() error
 }
 
@@ -117,7 +118,33 @@ func ParsePathMappings(jsonStr string) ([]PathMapping, error) {
 	if err != nil {
 		return nil, err
 	}
-	return mappings, nil
+	normalized := make([]PathMapping, 0, len(mappings))
+	for _, mapping := range mappings {
+		mapping.Old = strings.TrimSpace(mapping.Old)
+		mapping.New = strings.TrimSpace(mapping.New)
+		if mapping.Old == "" && mapping.New == "" {
+			continue
+		}
+		if err := validatePathMappingURL(mapping.Old); err != nil {
+			return nil, fmt.Errorf("invalid old path mapping: %w", err)
+		}
+		if err := validatePathMappingURL(mapping.New); err != nil {
+			return nil, fmt.Errorf("invalid new path mapping: %w", err)
+		}
+		normalized = append(normalized, mapping)
+	}
+	return normalized, nil
+}
+
+func validatePathMappingURL(rawURL string) error {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("mapping must be an HTTP URL prefix without query or fragment")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("mapping must use HTTP or HTTPS")
+	}
+	return nil
 }
 
 // ParseClientList 从JSON字符串解析客户端列表

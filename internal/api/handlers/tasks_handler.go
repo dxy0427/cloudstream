@@ -4,6 +4,7 @@ import (
 	"cloudstream/internal/core"
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
+	"cloudstream/internal/utils"
 	"context"
 	"encoding/json"
 	"errors"
@@ -48,6 +49,19 @@ func validateTask(tx *gorm.DB, task *models.Task) error {
 		return fmt.Errorf("本地路径不能是根目录")
 	}
 	task.LocalPath = cleanPath
+	var otherTasks []models.Task
+	query := tx.Select("id", "local_path")
+	if task.ID != 0 {
+		query = query.Where("id <> ?", task.ID)
+	}
+	if err := query.Find(&otherTasks).Error; err != nil {
+		return fmt.Errorf("检查本地路径失败")
+	}
+	for _, other := range otherTasks {
+		if utils.PathsOverlap(cleanPath, other.LocalPath) {
+			return fmt.Errorf("本地路径不能与任务 #%d 的路径相同或互相包含", other.ID)
+		}
+	}
 	if task.Threads < 1 || task.Threads > 16 {
 		return fmt.Errorf("并发线程必须在 1 到 16 之间")
 	}

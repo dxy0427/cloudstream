@@ -158,9 +158,8 @@ func sendTelegramNotification(token, chatID, title, message string) error {
 	}
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", token)
 	payload := map[string]string{
-		"chat_id":    chatID,
-		"text":       fmt.Sprintf("*%s*\n\n%s", title, message),
-		"parse_mode": "Markdown",
+		"chat_id": chatID,
+		"text":    fmt.Sprintf("%s\n\n%s", title, message),
 	}
 	resp, err := restyClient.R().SetFormData(payload).Post(url)
 	if err != nil || resp == nil || !resp.IsSuccess() {

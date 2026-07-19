@@ -3,9 +3,11 @@ package mediaserver
 import (
 	"cloudstream/internal/database"
 	"cloudstream/internal/models"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -281,21 +283,35 @@ func (m *Manager) HandleProxy(c *gin.Context, serverID uint, upstreamPath string
 	}
 
 	// PlaybackInfo 拦截
-	if strings.Contains(path, "/PlaybackInfo") {
+	if strings.Contains(strings.ToLower(path), "/playbackinfo") {
 		log.Info().Uint("server_id", serverID).Str("client_ip", c.ClientIP()).Msg("拦截 PlaybackInfo 请求")
-		proxy.ReverseProxy(c, upstreamPath, true)
+		proxy.ReverseProxy(c, upstreamPath, cfg.HttpStrm.DisableTranscode)
 		return
 	}
 
 	// 识别流媒体请求
-	isStream := strings.Contains(path, "/stream") || strings.Contains(path, "/Download") || strings.Contains(path, "/original")
+	lowerPath := strings.ToLower(path)
+	isStream := strings.Contains(lowerPath, "/stream") || strings.Contains(lowerPath, "/download") || strings.Contains(lowerPath, "/original")
 
 	if !isStream {
 		proxy.ReverseProxy(c, upstreamPath, false)
 		return
 	}
+	if !cfg.HttpStrm.Enable || (c.Request.Method != http.MethodGet && c.Request.Method != http.MethodHead) {
+		proxy.ReverseProxy(c, upstreamPath, false)
+		return
+	}
 
 	itemId := extractItemId(path)
+	if itemId == "" {
+		proxy.ReverseProxy(c, upstreamPath, false)
+		return
+	}
+	accessToken := requestAccessToken(c)
+	if accessToken == "" {
+		proxy.ReverseProxy(c, upstreamPath, false)
+		return
+	}
 	mediaSourceId := c.Query("MediaSourceId")
 	if mediaSourceId == "" {
 		mediaSourceId = c.Query("mediaSourceId")
@@ -303,7 +319,7 @@ func (m *Manager) HandleProxy(c *gin.Context, serverID uint, upstreamPath string
 
 	log.Info().Uint("server_id", serverID).Str("item_id", itemId).Str("source_id", mediaSourceId).Msg("接收到播放请求")
 
-	realPath, err := proxy.mediaServer.GetItemInfo(itemId, mediaSourceId)
+	realPath, err := proxy.mediaServer.GetItemInfo(itemId, mediaSourceId, accessToken)
 	if err != nil {
 		log.Error().Err(err).Uint("server_id", serverID).Msg("获取路径失败，回源代理")
 		proxy.ReverseProxy(c, upstreamPath, false)
@@ -313,11 +329,6 @@ func (m *Manager) HandleProxy(c *gin.Context, serverID uint, upstreamPath string
 	// 处理 HTTPStrm
 	realURL, err := url.Parse(realPath)
 	if err == nil && isHTTPURL(realURL) {
-		if !cfg.HttpStrm.Enable {
-			proxy.ReverseProxy(c, upstreamPath, false)
-			return
-		}
-
 		// 缓存检查
 		cacheKey := fmt.Sprintf("strm:%d:%s", serverID, realPath)
 		if cfg.HttpStrm.UaPassthrough {
@@ -332,66 +343,10 @@ func (m *Manager) HandleProxy(c *gin.Context, serverID uint, upstreamPath string
 			}
 		}
 
-		targetPath := realPath
-		// 路径替换
-		for _, m := range cfg.HttpStrm.PathMappings {
-			if m.Old != "" {
-				targetPath = strings.Replace(targetPath, m.Old, m.New, 1)
-			}
-		}
+		targetPath := applyPathMappings(realPath, cfg.HttpStrm.PathMappings)
 
-		req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, targetPath, nil)
-		if err != nil {
-			log.Warn().
-				Str("target", urlForLog(targetPath)).
-				Str("error", errorWithoutURL(err)).
-				Msg("Strm 链接无效，回源代理")
-			proxy.ReverseProxy(c, upstreamPath, false)
-			return
-		}
-		if !isHTTPURL(req.URL) {
-			log.Warn().Str("target", urlForLog(targetPath)).Msg("Strm 链接协议不受支持，回源代理")
-			proxy.ReverseProxy(c, upstreamPath, false)
-			return
-		}
-
-		// UA 透传
-		if cfg.HttpStrm.UaPassthrough {
-			req.Header.Set("User-Agent", c.Request.UserAgent())
-		} else {
-			req.Header.Set("User-Agent", "Mozilla/5.0")
-		}
-
-		// 自动解析 302
 		if cfg.HttpStrm.ResolveStrmLinks {
-			log.Info().Str("target", urlForLog(targetPath)).Msg("开始解析 Strm 链接")
-
-			resp, err := proxy.httpClient.Do(req)
-			if err == nil {
-				defer resp.Body.Close()
-				if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-					location, locationErr := resp.Location()
-					if locationErr == nil && isHTTPURL(location) {
-						targetPath = location.String()
-						log.Info().Str("target", urlForLog(targetPath)).Msg("解析成功")
-
-						// 写入缓存
-						if cfg.Cache.Enable {
-							ttl := time.Duration(cfg.Cache.HttpStrmTTL) * time.Minute
-							proxy.cache.Set(cacheKey, targetPath, ttl)
-							log.Info().Dur("ttl", ttl).Msg("已缓存直链")
-						}
-					} else if locationErr != nil {
-						log.Warn().Str("error", errorWithoutURL(locationErr)).Msg("Strm 重定向地址无效")
-					} else {
-						log.Warn().Str("target", urlForLog(location.String())).Msg("Strm 重定向协议不受支持")
-					}
-				} else {
-					log.Warn().Int("status", resp.StatusCode).Msg("Strm 链接未返回重定向")
-				}
-			} else {
-				log.Warn().Str("error", errorWithoutURL(err)).Msg("解析失败")
-			}
+			targetPath = proxy.resolveHTTPStrm(c.Request.Context(), cacheKey, targetPath, c.Request.UserAgent())
 		} else {
 			// 如果没有开启解析302，但开启了缓存，也缓存替换后的路径
 			if cfg.Cache.Enable {
@@ -409,15 +364,89 @@ func (m *Manager) HandleProxy(c *gin.Context, serverID uint, upstreamPath string
 	proxy.ReverseProxy(c, upstreamPath, false)
 }
 
+func (s *ProxyServer) resolveHTTPStrm(ctx context.Context, cacheKey, targetPath, userAgent string) string {
+	s.resolveMu.Lock()
+	if flight, exists := s.resolveFlights[cacheKey]; exists {
+		s.resolveMu.Unlock()
+		select {
+		case <-flight.done:
+			return flight.target
+		case <-ctx.Done():
+			return targetPath
+		}
+	}
+	flight := &resolveFlight{done: make(chan struct{}), target: targetPath}
+	s.resolveFlights[cacheKey] = flight
+	s.resolveMu.Unlock()
+
+	defer func() {
+		s.resolveMu.Lock()
+		flight.target = targetPath
+		close(flight.done)
+		delete(s.resolveFlights, cacheKey)
+		s.resolveMu.Unlock()
+	}()
+
+	parsedTarget, err := url.Parse(targetPath)
+	if err != nil || !isHTTPURL(parsedTarget) {
+		log.Warn().Str("target", urlForLog(targetPath)).Str("error", errorWithoutURL(err)).Msg("Strm 链接无效")
+		return targetPath
+	}
+
+	log.Info().Str("target", urlForLog(targetPath)).Msg("开始解析 Strm 链接")
+	for _, method := range []string{http.MethodHead, http.MethodGet} {
+		req, err := http.NewRequestWithContext(ctx, method, targetPath, nil)
+		if err != nil {
+			log.Warn().Str("error", errorWithoutURL(err)).Msg("创建 Strm 解析请求失败")
+			return targetPath
+		}
+		if s.cfg.HttpStrm.UaPassthrough {
+			req.Header.Set("User-Agent", userAgent)
+		} else {
+			req.Header.Set("User-Agent", "Mozilla/5.0")
+		}
+		resp, err := s.httpClient.Do(req)
+		if err != nil {
+			log.Warn().Str("method", method).Str("error", errorWithoutURL(err)).Msg("解析失败")
+			return targetPath
+		}
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 32<<10))
+		_ = resp.Body.Close()
+		if isRedirectStatus(resp.StatusCode) {
+			location, err := resp.Location()
+			if err != nil || !isHTTPURL(location) {
+				log.Warn().Str("method", method).Str("error", errorWithoutURL(err)).Msg("Strm 重定向地址无效")
+				return targetPath
+			}
+			targetPath = location.String()
+			log.Info().Str("method", method).Str("target", urlForLog(targetPath)).Msg("解析成功")
+			if s.cfg.Cache.Enable {
+				ttl := time.Duration(s.cfg.Cache.HttpStrmTTL) * time.Minute
+				s.cache.Set(cacheKey, targetPath, ttl)
+				log.Info().Dur("ttl", ttl).Msg("已缓存直链")
+			}
+			return targetPath
+		}
+		if method == http.MethodHead {
+			log.Debug().Int("status", resp.StatusCode).Msg("HEAD 未返回重定向，改用 GET 解析")
+			continue
+		}
+		log.Warn().Str("method", method).Int("status", resp.StatusCode).Msg("Strm 链接未返回重定向")
+		return targetPath
+	}
+	return targetPath
+}
+
 func allowProxyClient(c *gin.Context, cfg ClientFilterConf) bool {
 	if !cfg.Enable {
 		return true
 	}
 
-	userAgent := c.Request.UserAgent()
+	userAgent := strings.ToLower(c.Request.UserAgent())
 	matched := false
 	for _, client := range cfg.List {
-		if strings.Contains(userAgent, client) {
+		client = strings.ToLower(strings.TrimSpace(client))
+		if client != "" && strings.Contains(userAgent, client) {
 			matched = true
 			break
 		}
@@ -438,6 +467,55 @@ func allowProxyClient(c *gin.Context, cfg ClientFilterConf) bool {
 		Msg("客户端过滤拒绝访问")
 	c.AbortWithStatus(http.StatusForbidden)
 	return false
+}
+
+func requestAccessToken(c *gin.Context) string {
+	for _, header := range []string{"X-Emby-Token", "X-MediaBrowser-Token"} {
+		if token := strings.TrimSpace(c.GetHeader(header)); token != "" {
+			return token
+		}
+	}
+	for _, parameter := range []string{"api_key", "apiKey", "token"} {
+		if token := strings.TrimSpace(c.Query(parameter)); token != "" {
+			return token
+		}
+	}
+	if authorization := strings.TrimSpace(c.GetHeader("Authorization")); strings.HasPrefix(strings.ToLower(authorization), "bearer ") {
+		return strings.TrimSpace(authorization[len("Bearer "):])
+	}
+	if authorization := c.GetHeader("X-Emby-Authorization"); authorization != "" {
+		for _, part := range strings.Split(authorization, ",") {
+			key, value, found := strings.Cut(strings.TrimSpace(part), "=")
+			if found && strings.EqualFold(strings.TrimSpace(key), "Token") {
+				return strings.Trim(strings.TrimSpace(value), `"`)
+			}
+		}
+	}
+	return ""
+}
+
+func applyPathMappings(target string, mappings []PathMapping) string {
+	for _, mapping := range mappings {
+		oldPrefix := strings.TrimRight(strings.TrimSpace(mapping.Old), "/")
+		newPrefix := strings.TrimRight(strings.TrimSpace(mapping.New), "/")
+		if oldPrefix == "" || !strings.HasPrefix(target, oldPrefix) {
+			continue
+		}
+		remainder := strings.TrimPrefix(target, oldPrefix)
+		if remainder == "" || strings.HasPrefix(remainder, "/") || strings.HasPrefix(remainder, "?") || strings.HasPrefix(remainder, "#") {
+			return newPrefix + remainder
+		}
+	}
+	return target
+}
+
+func isRedirectStatus(status int) bool {
+	switch status {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	default:
+		return false
+	}
 }
 
 func isHTTPURL(target *url.URL) bool {

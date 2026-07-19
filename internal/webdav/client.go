@@ -84,7 +84,7 @@ func NewClient(account models.Account) *Client {
 	base = strings.TrimRight(base, "/")
 
 	username := strings.TrimSpace(account.WebDAVUsername)
-	password := strings.TrimSpace(account.WebDAVPassword)
+	password := account.WebDAVPassword
 	c := &Client{
 		AccountID:           account.ID,
 		BaseURL:             base,

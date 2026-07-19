@@ -77,6 +77,9 @@ func InitRouter() *gin.Engine {
 	})
 	logStreams := &sseConnectionLimiter{slots: make(chan struct{}, maxSSEConnections)}
 	taskStreams := &sseConnectionLimiter{slots: make(chan struct{}, maxSSEConnections)}
+	r.GET("/healthz", func(c *gin.Context) {
+		c.JSON(http.StatusOK, gin.H{"status": "ok"})
+	})
 
 	v1 := r.Group("/api/v1")
 	{
@@ -85,6 +88,12 @@ func InitRouter() *gin.Engine {
 
 		authorized := v1.Group("/")
 		authorized.Use(auth.JWTAuthMiddleware())
+		authorized.Use(func(c *gin.Context) {
+			c.Header("Cache-Control", "private, no-store, max-age=0")
+			c.Header("Pragma", "no-cache")
+			c.Header("Vary", "Cookie, Authorization")
+			c.Next()
+		})
 		{
 			authorized.POST("/logout", handlers.LogoutHandler)
 
@@ -158,7 +167,7 @@ func InitRouter() *gin.Engine {
 
 	r.NoRoute(func(c *gin.Context) {
 		reqPath := c.Request.URL.Path
-		if strings.HasPrefix(reqPath, "/api") {
+		if reqPath == "/api" || strings.HasPrefix(reqPath, "/api/") {
 			c.JSON(http.StatusNotFound, gin.H{"code": 404, "message": "API route not found"})
 			return
 		}
@@ -167,6 +176,18 @@ func InitRouter() *gin.Engine {
 			return
 		}
 		if servePublicFile(c, strings.TrimPrefix(reqPath, "/")) {
+			return
+		}
+		acceptsHTML := false
+		for _, mediaRange := range strings.Split(c.GetHeader("Accept"), ",") {
+			mediaType, _, err := mime.ParseMediaType(strings.TrimSpace(mediaRange))
+			if err == nil && (mediaType == "text/html" || mediaType == "*/*") {
+				acceptsHTML = true
+				break
+			}
+		}
+		if !acceptsHTML || path.Ext(reqPath) != "" {
+			c.Status(http.StatusNotFound)
 			return
 		}
 		if !servePublicFile(c, "index.html") {

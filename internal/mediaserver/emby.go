@@ -36,14 +36,14 @@ func (e *EmbyClient) Ping() error {
 	return nil
 }
 
-func (e *EmbyClient) GetItemInfo(itemId string, mediaSourceId string) (string, error) {
+func (e *EmbyClient) GetItemInfo(itemId string, mediaSourceId string, accessToken string) (string, error) {
 	url := fmt.Sprintf("%s/Items", e.host)
 	req := e.client.R().
 		SetQueryParam("Ids", itemId).
 		SetQueryParam("Fields", "Path,MediaSources").
 		SetQueryParam("Limit", "1")
-	if e.apiKey != "" {
-		req.SetHeader("X-Emby-Token", e.apiKey)
+	if accessToken != "" {
+		req.SetHeader("X-Emby-Token", accessToken)
 	}
 
 	resp, err := req.Get(url)

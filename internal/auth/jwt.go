@@ -48,6 +48,12 @@ func loadOrCreateJWTSecret() error {
 	fullPath := filepath.Join(secretDirPath, secretFileName)
 	secret, err := os.ReadFile(fullPath)
 	if err == nil && len(secret) >= 32 {
+		if err := os.Chmod(secretDirPath, 0o700); err != nil {
+			return fmt.Errorf("无法设置 JWT 密钥目录权限: %w", err)
+		}
+		if err := os.Chmod(fullPath, 0o600); err != nil {
+			return fmt.Errorf("无法设置 JWT 密钥文件权限: %w", err)
+		}
 		jwtSecret = secret
 		log.Info().Str("path", fullPath).Msg("已从文件加载 JWT 密钥")
 		return nil
@@ -57,8 +63,11 @@ func loadOrCreateJWTSecret() error {
 	if _, err := rand.Read(newSecret); err != nil {
 		return fmt.Errorf("无法生成 JWT 密钥: %w", err)
 	}
-	if err := os.MkdirAll(secretDirPath, 0o750); err != nil {
+	if err := os.MkdirAll(secretDirPath, 0o700); err != nil {
 		return fmt.Errorf("无法创建用于存储 JWT 密钥的目录: %w", err)
+	}
+	if err := os.Chmod(secretDirPath, 0o700); err != nil {
+		return fmt.Errorf("无法设置 JWT 密钥目录权限: %w", err)
 	}
 	if err := os.WriteFile(fullPath, newSecret, 0o600); err != nil {
 		return fmt.Errorf("无法保存 JWT 密钥: %w", err)
@@ -77,6 +86,10 @@ func LoginHandler(c *gin.Context) {
 	var req LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "用户名或密码不能为空"})
+		return
+	}
+	if !utils.IsSHA256Hex(req.Password) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "密码格式无效"})
 		return
 	}
 	var user models.User

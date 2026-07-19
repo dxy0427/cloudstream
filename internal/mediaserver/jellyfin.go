@@ -36,15 +36,15 @@ func (j *JellyfinClient) Ping() error {
 	return nil
 }
 
-func (j *JellyfinClient) GetItemInfo(itemId string, mediaSourceId string) (string, error) {
+func (j *JellyfinClient) GetItemInfo(itemId string, mediaSourceId string, accessToken string) (string, error) {
 	url := fmt.Sprintf("%s/Items", j.host)
 	req := j.client.R().
 		SetQueryParam("Ids", itemId).
 		SetQueryParam("Fields", "Path,MediaSources").
 		SetQueryParam("Limit", "1")
 
-	if j.apiKey != "" {
-		req.SetHeader("X-Emby-Token", j.apiKey)
+	if accessToken != "" {
+		req.SetHeader("X-Emby-Token", accessToken)
 	}
 
 	resp, err := req.Get(url)
